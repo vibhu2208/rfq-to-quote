@@ -1,0 +1,8 @@
+name,phone,email,whatsappId,preferredChannel,category,subcategory,keywords
+Vision Secure Systems,+919810000101,sales@visionsecure.example,,EMAIL,CCTV & Surveillance,Cameras,"cctv|camera|dome|bullet|ptz|2mp|5mp"
+Vision Secure Systems,+919810000101,sales@visionsecure.example,,EMAIL,Storage (HDD / SSD),Surveillance HDD,"surveillance|hdd|2tb|4tb"
+TechBridge Computers,+919810000102,quotes@techbridge.example,,EMAIL,Computers & Laptops,Desktop & Laptop,"computer|desktop|laptop|i5|i7|business"
+TechBridge Computers,+919810000102,quotes@techbridge.example,,EMAIL,Memory (RAM),Desktop RAM,"ram|ddr4|8gb|16gb|32gb"
+Display Hub,+919810000103,sales@displayhub.example,,EMAIL,Monitors & Displays,LED & IPS,"monitor|display|screen|led|ips|24|32|4k"
+NetWire Solutions,+919810000104,orders@netwire.example,,EMAIL,Networking & Cables,PoE & CAT6,"network|poe|switch|cat6|cable|gigabit"
+PowerSafe India,+919810000105,sales@powersafe.example,,EMAIL,UPS & Power,UPS,"ups|600va|1kva|backup|power"

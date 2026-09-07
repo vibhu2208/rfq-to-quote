@@ -1,0 +1,6 @@
+code,name,description,unit,base_price,offer_price,tax_rate,tax_category
+CCTV-DVR-8CH,8CH HD DVR,"8 channel HD DVR, HDMI out, supports 5MP cameras",pcs,3200,4500,18,GST18
+CCTV-CAM-DOME,2MP Dome Camera,"2MP IR dome CCTV camera, night vision 20m",pcs,750,1100,18,GST18
+PC-DESK-I5,Desktop PC Core i5,"Intel Core i5, 16GB RAM, 512GB SSD",pcs,28500,34990,18,GST18
+MON-24-FHD,24 inch Full HD Monitor,"24 inch IPS FHD monitor, HDMI + VGA",pcs,7200,9490,18,GST18
+HDD-2TB-SURV,2TB Surveillance HDD,"2TB CCTV/surveillance hard disk, 24x7 rated",pcs,4200,5490,18,GST18
