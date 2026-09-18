@@ -16,7 +16,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
     where: { id },
     include: {
       lineItems: {
-        include: { product: { select: { code: true } } },
+        include: { product: { select: { code: true, hsnCode: true } } },
         orderBy: { sortOrder: "asc" },
       },
     },

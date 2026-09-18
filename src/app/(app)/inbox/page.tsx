@@ -65,7 +65,7 @@ export default function InboxPage() {
       );
     } else {
       setPollMsg(
-        `Gmail: fetched ${data.fetched}, RFQs created ${data.created}, vendor replies ${data.vendorReplies ?? 0}, skipped ${data.skipped}`
+        `Gmail: fetched ${data.fetched}, RFQs created ${data.created}, vendor replies ${data.vendorReplies ?? 0}, quote replies ${data.quoteReplies ?? 0}, skipped ${data.skipped}`
       );
     }
     await load();

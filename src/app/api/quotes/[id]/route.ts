@@ -10,6 +10,7 @@ const lineSchema = z.object({
   id: z.string().optional(),
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
+  aliasName: z.string().optional().default(""),
   qty: z.coerce.number().positive(),
   unit: z.string().default("pcs"),
   unitPrice: z.coerce.number().nonnegative(),
@@ -24,6 +25,7 @@ const quoteSchema = z.object({
   buyerPhone: z.string().optional(),
   buyerState: z.string().optional(),
   buyerAddress: z.string().optional(),
+  buyerGstin: z.string().optional(),
   withGst: z.boolean().optional(),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional(),
   deliveryCharge: z.coerce.number().nonnegative().optional(),
@@ -51,6 +53,7 @@ function serializeQuote(quote: {
   buyerPhone: string;
   buyerState: string;
   buyerAddress: string;
+  buyerGstin: string;
   withGst: boolean;
   gstMode: string;
   subtotal: unknown;
@@ -74,6 +77,7 @@ function serializeQuote(quote: {
     id: string;
     productId: string | null;
     description: string;
+    aliasName: string;
     qty: unknown;
     unit: string;
     unitPrice: unknown;
@@ -97,6 +101,7 @@ function serializeQuote(quote: {
     grandTotal: decimalToNumber(quote.grandTotal),
     lineItems: (quote.lineItems || []).map((li) => ({
       ...li,
+      aliasName: li.aliasName || "",
       qty: decimalToNumber(li.qty),
       unitPrice: decimalToNumber(li.unitPrice),
       taxRate: decimalToNumber(li.taxRate),
@@ -187,6 +192,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
         buyerPhone: data.buyerPhone ?? existing.buyerPhone,
         buyerState: data.buyerState ?? existing.buyerState,
         buyerAddress: data.buyerAddress ?? existing.buyerAddress,
+        buyerGstin:
+          data.buyerGstin !== undefined
+            ? data.buyerGstin.trim().toUpperCase()
+            : existing.buyerGstin,
         withGst: data.withGst ?? existing.withGst,
         gstMode: data.gstMode ?? existing.gstMode,
         subtotal: calc.subtotal,
@@ -208,6 +217,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
           create: lineItems.map((l, i) => ({
             productId: l.productId || null,
             description: l.description,
+            aliasName: l.aliasName?.trim() || "",
             qty: l.qty,
             unit: l.unit,
             unitPrice: l.unitPrice,

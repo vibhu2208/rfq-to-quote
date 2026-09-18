@@ -21,6 +21,19 @@ export type SendEmailResult = {
   messageId: string;
 };
 
+function toAngleAddr(id: string): string {
+  const bare = id.replace(/[<>]/g, "").trim();
+  return bare ? `<${bare}>` : "";
+}
+
+function toReferencesHeader(refs: string): string {
+  return refs
+    .split(/\s+/)
+    .map((r) => toAngleAddr(r))
+    .filter(Boolean)
+    .join(" ");
+}
+
 function requireSmtpConfig() {
   const user = process.env.GMAIL_USER?.trim();
   const pass = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
@@ -61,9 +74,14 @@ export async function sendGmailEmail(
       content: a.content,
       contentType: a.contentType,
     })),
+    // RFC 5322 Message-IDs must use angle brackets or many clients drop threading.
     headers: {
-      ...(input.inReplyTo ? { "In-Reply-To": input.inReplyTo } : {}),
-      ...(input.references ? { References: input.references } : {}),
+      ...(input.inReplyTo
+        ? { "In-Reply-To": toAngleAddr(input.inReplyTo) }
+        : {}),
+      ...(input.references
+        ? { References: toReferencesHeader(input.references) }
+        : {}),
     },
   });
 

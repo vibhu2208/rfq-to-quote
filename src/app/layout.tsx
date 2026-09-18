@@ -20,7 +20,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${manrope.variable} h-full antialiased`}>
-      <body className="min-h-full font-sans text-dark-primary">
+      <body className="h-full min-h-full font-sans text-dark-primary">
         <Providers>{children}</Providers>
       </body>
     </html>

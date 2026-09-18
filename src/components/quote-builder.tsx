@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Download, Plus, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
+import { Download, Eye, Plus, RotateCcw, Search, Send, Trash2, X } from "lucide-react";
 import {
   calculateQuoteTotals,
   formatMoney,
@@ -14,6 +14,10 @@ import {
   type QuoteSendChannel,
   type QuoteSendDefaults,
 } from "@/lib/quote-send-defaults";
+import {
+  QuotePreviewModal,
+  type QuotePreviewCompany,
+} from "@/components/quote-preview";
 
 type ProductHit = {
   id: string;
@@ -29,6 +33,7 @@ type LineItem = {
   key: string;
   productId: string | null;
   description: string;
+  aliasName: string;
   qty: number;
   unit: string;
   unitPrice: number;
@@ -44,6 +49,7 @@ export type QuoteFormState = {
   buyerPhone: string;
   buyerState: string;
   buyerAddress: string;
+  buyerGstin: string;
   withGst: boolean;
   gstMode: "AUTO" | "CGST_SGST" | "IGST";
   deliveryCharge: number;
@@ -70,11 +76,38 @@ export type QuoteSendContext = {
 type Props = {
   initial?: QuoteFormState;
   sellerState: string;
+  company: QuotePreviewCompany;
   sendContext?: QuoteSendContext;
 };
 
 function newKey() {
   return Math.random().toString(36).slice(2);
+}
+
+function matchIndianState(raw?: string | null): string {
+  if (!raw?.trim()) return "";
+  const n = raw.trim().toLowerCase();
+  return INDIAN_STATES.find((s) => s.toLowerCase() === n) || "";
+}
+
+function formatGstAddress(parts: {
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  fallback?: string;
+}): string {
+  const joined = [
+    parts.addressLine1,
+    parts.addressLine2,
+    parts.city,
+    parts.state,
+    parts.postalCode,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  return joined || parts.fallback || "";
 }
 
 const emptyQuote = (): QuoteFormState => ({
@@ -84,6 +117,7 @@ const emptyQuote = (): QuoteFormState => ({
   buyerPhone: "",
   buyerState: "",
   buyerAddress: "",
+  buyerGstin: "",
   withGst: true,
   gstMode: "AUTO",
   deliveryCharge: 0,
@@ -99,6 +133,7 @@ const emptyQuote = (): QuoteFormState => ({
       key: newKey(),
       productId: null,
       description: "",
+      aliasName: "",
       qty: 1,
       unit: "pcs",
       unitPrice: 0,
@@ -107,7 +142,7 @@ const emptyQuote = (): QuoteFormState => ({
   ],
 });
 
-export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
+export function QuoteBuilder({ initial, sellerState, company, sendContext }: Props) {
   const router = useRouter();
   const [form, setForm] = useState<QuoteFormState>(initial || emptyQuote());
   const [saving, setSaving] = useState(false);
@@ -122,6 +157,9 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
   const [sendNote, setSendNote] = useState("");
   const [sendHint, setSendHint] = useState("");
   const [sendError, setSendError] = useState("");
+  const [gstinFetching, setGstinFetching] = useState(false);
+  const [gstinMsg, setGstinMsg] = useState("");
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const sendDefaults = useMemo(
     () =>
@@ -160,7 +198,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
       return () => clearTimeout(timeout);
     }
     const t = setTimeout(async () => {
-      const res = await fetch(`/api/products?q=${encodeURIComponent(searchQ)}&active=true&take=8`);
+      const res = await fetch(`/api/products?q=${encodeURIComponent(searchQ)}&active=true&take=25`);
       const data = await res.json();
       setHits(Array.isArray(data) ? data : []);
     }, 200);
@@ -210,6 +248,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
           key: newKey(),
           productId: null,
           description: "",
+          aliasName: "",
           qty: 1,
           unit: "pcs",
           unitPrice: 0,
@@ -230,6 +269,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
     updateLine(idx, {
       productId: p.id,
       description: p.name + (p.description ? ` — ${p.description}` : ""),
+      aliasName: p.name,
       unit: p.unit,
       unitPrice: p.offerPrice,
       taxRate: p.taxRate,
@@ -257,6 +297,57 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
     }));
   }
 
+  async function fetchBuyerFromGstin() {
+    const value = form.buyerGstin.trim().toUpperCase();
+    if (value.length !== 15) {
+      setGstinMsg("Enter a valid 15-character GSTIN");
+      return;
+    }
+    setGstinFetching(true);
+    setGstinMsg("");
+    try {
+      const res = await fetch("/api/parties", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "gstin", gstin: value, save: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.verification?.message || "GSTIN lookup failed");
+      }
+      const v = data.verification || {};
+      const a = data.address || {};
+      const companyName = (v.legalName || v.tradeName || "").trim();
+      const address = formatGstAddress({
+        addressLine1: a.addressLine1 || v.address,
+        addressLine2: a.addressLine2,
+        city: a.city,
+        state: a.state || v.stateName,
+        postalCode: a.postalCode,
+        fallback: v.address,
+      });
+      const state = matchIndianState(a.state || v.stateName);
+      setForm((f) => ({
+        ...f,
+        buyerGstin: value,
+        buyerCompany: companyName || f.buyerCompany,
+        buyerAddress: address || f.buyerAddress,
+        buyerState: state || f.buyerState,
+        withGst: true,
+      }));
+      setGstinMsg(
+        v.message ||
+          (companyName
+            ? `Filled from GST portal: ${companyName}`
+            : "Details fetched from GST portal")
+      );
+    } catch (e) {
+      setGstinMsg(e instanceof Error ? e.message : "GSTIN lookup failed");
+    } finally {
+      setGstinFetching(false);
+    }
+  }
+
   async function onSave(e: FormEvent, status?: "DRAFT" | "SENT") {
     e.preventDefault();
     setSaving(true);
@@ -269,6 +360,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
       buyerPhone: form.buyerPhone,
       buyerState: form.buyerState,
       buyerAddress: form.buyerAddress,
+      buyerGstin: form.buyerGstin.trim().toUpperCase(),
       withGst: form.withGst,
       gstMode: form.gstMode,
       deliveryCharge: calc.deliveryCharge,
@@ -285,6 +377,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
       lineItems: form.lineItems.map((l, i) => ({
         productId: l.productId,
         description: l.description,
+        aliasName: l.aliasName,
         qty: l.qty,
         unit: l.unit,
         unitPrice: l.unitPrice,
@@ -359,6 +452,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
         buyerPhone: form.buyerPhone,
         buyerState: form.buyerState,
         buyerAddress: form.buyerAddress,
+        buyerGstin: form.buyerGstin.trim().toUpperCase(),
         withGst: form.withGst,
         gstMode: form.gstMode,
         deliveryCharge: calc.deliveryCharge,
@@ -375,6 +469,7 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
         lineItems: form.lineItems.map((l, i) => ({
           productId: l.productId,
           description: l.description,
+          aliasName: l.aliasName,
           qty: l.qty,
           unit: l.unit,
           unitPrice: l.unitPrice,
@@ -424,18 +519,52 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
   const destinationPlaceholder =
     sendChannel === "EMAIL" ? "buyer@company.com" : "+919876543210";
 
+  function renderPreviewModal() {
+    return (
+      <QuotePreviewModal
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        quoteNumber={form.quoteNumber}
+        company={company}
+        buyer={{
+          name: form.buyerName,
+          company: form.buyerCompany,
+          email: form.buyerEmail,
+          phone: form.buyerPhone,
+          state: form.buyerState,
+          address: form.buyerAddress,
+          gstin: form.buyerGstin,
+        }}
+        withGst={form.withGst}
+        notes={form.notes}
+        otherTaxLabel={form.otherTaxLabel}
+        lineItems={form.lineItems}
+        calc={calc}
+      />
+    );
+  }
+
   return (
-    <form onSubmit={(e) => onSave(e)} className="space-y-8">
+    <form onSubmit={(e) => onSave(e)} className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">
             {form.id ? form.quoteNumber || "Edit quote" : "New quote"}
           </h1>
           <p className="mt-1 text-sm text-mid-green">
-            Line items auto-fill from catalog — every total stays editable
+            Set an alias name per line for how it appears on the quotation
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
+            title="Preview quote"
+          >
+            <Eye className="h-4 w-4 text-mid-green" strokeWidth={1.5} />
+            Preview
+          </button>
           {form.id ? (
             <button
               type="button"
@@ -466,6 +595,8 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
       </div>
 
       {msg ? <p className="text-sm text-mid-green">{msg}</p> : null}
+
+      {renderPreviewModal()}
 
       {sendOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
@@ -605,371 +736,474 @@ export function QuoteBuilder({ initial, sellerState, sendContext }: Props) {
         </div>
       ) : null}
 
-      <section className="grid gap-4 rounded-xl bg-white/40 p-5 shadow-[0_4px_20px_rgba(11,43,38,0.06)] md:grid-cols-2">
-        <h2 className="md:col-span-2 text-sm font-medium text-mid-green">Buyer</h2>
-        {(
-          [
-            ["buyerCompany", "Company"],
-            ["buyerName", "Contact name"],
-            ["buyerEmail", "Email"],
-            ["buyerPhone", "Phone"],
-          ] as const
-        ).map(([key, label]) => (
-          <label key={key} className="block text-sm">
-            <span className="mb-1 block text-mid-green">{label}</span>
-            <input
-              value={form[key]}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
-            />
-          </label>
-        ))}
-        <label className="block text-sm">
-          <span className="mb-1 block text-mid-green">State (for GST)</span>
-          <select
-            value={form.buyerState}
-            onChange={(e) => setForm((f) => ({ ...f, buyerState: e.target.value }))}
-            className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
-          >
-            <option value="">Select state</option>
-            {INDIAN_STATES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block text-sm md:col-span-2">
-          <span className="mb-1 block text-mid-green">Address</span>
-          <textarea
-            value={form.buyerAddress}
-            onChange={(e) => setForm((f) => ({ ...f, buyerAddress: e.target.value }))}
-            rows={2}
-            className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
-          />
-        </label>
-      </section>
-
-      <section className="rounded-xl bg-white/40 p-5 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-sm font-medium text-mid-green">Line items</h2>
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={form.withGst}
-                onChange={(e) => setForm((f) => ({ ...f, withGst: e.target.checked }))}
-              />
-              With GST
-            </label>
-            <select
-              value={form.gstMode}
-              onChange={(e) =>
-                setForm((f) => ({
-                  ...f,
-                  gstMode: e.target.value as QuoteFormState["gstMode"],
-                }))
-              }
-              className="rounded-lg border border-light-green/40 bg-background px-2 py-1.5 text-sm"
-            >
-              <option value="AUTO">GST auto (state)</option>
-              <option value="CGST_SGST">CGST + SGST</option>
-              <option value="IGST">IGST</option>
-            </select>
-            <button
-              type="button"
-              onClick={addLine}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-mid-green/10 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/20"
-            >
-              <Plus className="h-4 w-4" strokeWidth={1.5} />
-              Add line
-            </button>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="text-mid-green">
-              <tr>
-                <th className="pb-2 font-medium">Product / description</th>
-                <th className="pb-2 font-medium w-20">Qty</th>
-                <th className="pb-2 font-medium w-20">Unit</th>
-                <th className="pb-2 font-medium w-28">Price</th>
-                <th className="pb-2 font-medium w-20">Tax%</th>
-                <th className="pb-2 font-medium w-28 text-right">Line total</th>
-                <th className="pb-2 w-10"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {form.lineItems.map((line, idx) => (
-                <tr key={line.key} className={idx % 2 === 1 ? "bg-light-green/10" : undefined}>
-                  <td className="py-2 pr-2 align-top">
-                    <div className="relative">
-                      <div className="mb-1 flex gap-1">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSearchIdx(idx);
-                            setSearchQ("");
-                          }}
-                          className="inline-flex items-center gap-1 rounded border border-light-green/40 px-2 py-1 text-xs text-mid-green hover:bg-light-green/20"
-                        >
-                          <Search className="h-3 w-3" strokeWidth={1.5} />
-                          Catalog
-                        </button>
-                      </div>
-                      {searchIdx === idx ? (
-                        <div className="absolute z-20 mt-1 w-full min-w-[280px] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
-                          <input
-                            autoFocus
-                            value={searchQ}
-                            onChange={(e) => setSearchQ(e.target.value)}
-                            placeholder="Search code or name…"
-                            className="mb-2 w-full rounded border border-light-green/40 px-2 py-1.5 text-sm outline-none"
-                          />
-                          <div className="max-h-40 overflow-y-auto">
-                            {hits.map((h) => (
-                              <button
-                                key={h.id}
-                                type="button"
-                                onClick={() => pickProduct(idx, h)}
-                                className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-light-green/20"
-                              >
-                                <span className="font-medium">{h.code}</span> — {h.name}
-                                <span className="ml-2 text-xs text-mid-green">
-                                  {formatMoney(h.offerPrice)}
-                                </span>
-                              </button>
-                            ))}
-                            {searchQ && hits.length === 0 ? (
-                              <p className="px-2 py-2 text-xs text-mid-green">No matches</p>
-                            ) : null}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setSearchIdx(null)}
-                            className="mt-1 text-xs text-mid-green"
-                          >
-                            Close
-                          </button>
-                        </div>
-                      ) : null}
-                      <input
-                        value={line.description}
-                        onChange={(e) => updateLine(idx, { description: e.target.value })}
-                        className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
-                        placeholder="Description"
-                      />
-                    </div>
-                  </td>
-                  <td className="py-2 pr-2 align-top">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(18rem,0.9fr)_minmax(0,1.6fr)]">
+            <section className="rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+              <h2 className="mb-3 text-sm font-medium text-mid-green">Buyer</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm sm:col-span-2">
+                  <span className="mb-1 block text-mid-green">Buyer GSTIN</span>
+                  <div className="flex flex-wrap gap-2">
                     <input
-                      type="number"
-                      min={0}
-                      step="0.001"
-                      value={line.qty}
-                      onChange={(e) => updateLine(idx, { qty: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none"
+                      value={form.buyerGstin}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          buyerGstin: e.target.value.toUpperCase(),
+                        }))
+                      }
+                      maxLength={15}
+                      placeholder="15-character GSTIN"
+                      className="min-w-0 flex-1 rounded-lg border border-light-green/40 bg-background px-3 py-2 font-mono text-sm outline-none focus:border-mid-green"
                     />
-                  </td>
-                  <td className="py-2 pr-2 align-top">
-                    <input
-                      value={line.unit}
-                      onChange={(e) => updateLine(idx, { unit: e.target.value })}
-                      className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none"
-                    />
-                  </td>
-                  <td className="py-2 pr-2 align-top">
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={line.unitPrice}
-                      onChange={(e) => updateLine(idx, { unitPrice: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none"
-                    />
-                  </td>
-                  <td className="py-2 pr-2 align-top">
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={line.taxRate}
-                      onChange={(e) => updateLine(idx, { taxRate: Number(e.target.value) })}
-                      className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none"
-                    />
-                  </td>
-                  <td className="py-2 pr-2 text-right align-top tabular-nums">
-                    {formatMoney(calc.lineTotals[idx] ?? 0)}
-                  </td>
-                  <td className="py-2 align-top">
                     <button
                       type="button"
-                      onClick={() => removeLine(idx)}
-                      className="rounded p-1 text-mid-green hover:bg-light-green/30"
-                      disabled={form.lineItems.length <= 1}
+                      onClick={fetchBuyerFromGstin}
+                      disabled={gstinFetching || form.buyerGstin.trim().length !== 15}
+                      className="shrink-0 rounded-lg border border-mid-green/40 px-3 py-2 text-sm hover:bg-mid-green/10 disabled:opacity-50"
                     >
-                      <Trash2 className="h-4 w-4" strokeWidth={1.5} />
+                      {gstinFetching ? "Fetching…" : "Fetch"}
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="grid gap-6 md:grid-cols-2">
-        <div className="space-y-3 rounded-xl bg-white/40 p-5 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <h2 className="text-sm font-medium text-mid-green">Charges & notes</h2>
-          <label className="block text-sm">
-            <span className="mb-1 block text-mid-green">Discount %</span>
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              value={form.discountPercent}
-              onChange={(e) =>
-                setForm((f) => ({
-                  ...f,
-                  discountPercent: Number(e.target.value),
-                  manualOverrides: { ...f.manualOverrides, discountAmount: false },
-                }))
-              }
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-mid-green">
-              Delivery / freight {form.manualOverrides.deliveryCharge ? "(manual)" : ""}
-            </span>
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              value={calc.deliveryCharge}
-              onChange={(e) => setOverride("deliveryCharge", Number(e.target.value))}
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-mid-green">Other tax label</span>
-            <input
-              value={form.otherTaxLabel}
-              onChange={(e) => setForm((f) => ({ ...f, otherTaxLabel: e.target.value }))}
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-              placeholder="e.g. TCS"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-mid-green">
-              Other tax amount {form.manualOverrides.otherTaxAmount ? "(manual)" : ""}
-            </span>
-            <input
-              type="number"
-              min={0}
-              step="0.01"
-              value={calc.otherTaxAmount}
-              onChange={(e) => setOverride("otherTaxAmount", Number(e.target.value))}
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-            />
-          </label>
-          <label className="block text-sm">
-            <span className="mb-1 block text-mid-green">Notes</span>
-            <textarea
-              value={form.notes}
-              onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}
-              rows={3}
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-            />
-          </label>
-        </div>
-
-        <div className="rounded-xl bg-white/40 p-5 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-medium text-mid-green">Totals</h2>
-            {hasOverrides ? (
-              <button
-                type="button"
-                onClick={resetCalculations}
-                className="inline-flex items-center gap-1 text-xs text-mid-green hover:underline"
-              >
-                <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
-                Reset calculations
-              </button>
-            ) : null}
-          </div>
-          <div className="space-y-2 text-sm">
-            <label className="flex items-center justify-between gap-4">
-              <span>
-                Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}
-              </span>
-              <input
-                type="number"
-                step="0.01"
-                value={calc.subtotal}
-                onChange={(e) => setOverride("subtotal", Number(e.target.value))}
-                className="w-36 rounded border border-light-green/40 bg-background px-2 py-1 text-right outline-none"
-              />
-            </label>
-            <div className="flex justify-between text-mid-green">
-              <span>Discount</span>
-              <span className="tabular-nums">-{formatMoney(calc.discountAmount)}</span>
-            </div>
-            {form.withGst && calc.gstSplit === "CGST_SGST" ? (
-              <>
-                <div className="flex justify-between">
-                  <span>CGST</span>
-                  <span className="tabular-nums">{formatMoney(calc.cgstAmount)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>SGST</span>
-                  <span className="tabular-nums">{formatMoney(calc.sgstAmount)}</span>
-                </div>
-              </>
-            ) : null}
-            {form.withGst && calc.gstSplit === "IGST" ? (
-              <div className="flex justify-between">
-                <span>IGST</span>
-                <span className="tabular-nums">{formatMoney(calc.igstAmount)}</span>
+                  </div>
+                  {gstinMsg ? (
+                    <p className="mt-1 text-xs text-dark-primary">{gstinMsg}</p>
+                  ) : null}
+                </label>
+                {(
+                  [
+                    ["buyerCompany", "Company (official name)"],
+                    ["buyerName", "Contact name"],
+                    ["buyerEmail", "Email"],
+                    ["buyerPhone", "Phone"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="block text-sm">
+                    <span className="mb-1 block text-mid-green">{label}</span>
+                    <input
+                      value={form[key]}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, [key]: e.target.value }))
+                      }
+                      className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
+                    />
+                  </label>
+                ))}
+                <label className="block text-sm sm:col-span-2">
+                  <span className="mb-1 block text-mid-green">State (for GST)</span>
+                  <select
+                    value={form.buyerState}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, buyerState: e.target.value }))
+                    }
+                    className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
+                  >
+                    <option value="">Select state</option>
+                    {INDIAN_STATES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-sm sm:col-span-2">
+                  <span className="mb-1 block text-mid-green">Address</span>
+                  <textarea
+                    value={form.buyerAddress}
+                    onChange={(e) =>
+                      setForm((f) => ({ ...f, buyerAddress: e.target.value }))
+                    }
+                    rows={2}
+                    className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
+                  />
+                </label>
               </div>
-            ) : null}
-            <label className="flex items-center justify-between gap-4">
-              <span>
-                GST total {form.manualOverrides.gstAmount ? "(manual)" : ""}
-              </span>
-              <input
-                type="number"
-                step="0.01"
-                value={calc.gstAmount}
-                onChange={(e) => setOverride("gstAmount", Number(e.target.value))}
-                disabled={!form.withGst}
-                className="w-36 rounded border border-light-green/40 bg-background px-2 py-1 text-right outline-none disabled:opacity-40"
-              />
-            </label>
-            <div className="flex justify-between">
-              <span>Other tax</span>
-              <span className="tabular-nums">{formatMoney(calc.otherTaxAmount)}</span>
+            </section>
+
+            <section className="min-w-0 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-medium text-mid-green">Line items</h2>
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-1.5 text-xs sm:text-sm">
+                    <input
+                      type="checkbox"
+                      checked={form.withGst}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, withGst: e.target.checked }))
+                      }
+                    />
+                    With GST
+                  </label>
+                  <select
+                    value={form.gstMode}
+                    onChange={(e) =>
+                      setForm((f) => ({
+                        ...f,
+                        gstMode: e.target.value as QuoteFormState["gstMode"],
+                      }))
+                    }
+                    className="rounded-lg border border-light-green/40 bg-background px-2 py-1.5 text-xs sm:text-sm"
+                  >
+                    <option value="AUTO">GST auto</option>
+                    <option value="CGST_SGST">CGST + SGST</option>
+                    <option value="IGST">IGST</option>
+                  </select>
+                  <button
+                    type="button"
+                    onClick={addLine}
+                    className="inline-flex items-center gap-1 rounded-lg bg-mid-green/10 px-2.5 py-1.5 text-xs text-mid-green hover:bg-mid-green/20 sm:text-sm"
+                  >
+                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    Add
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[42rem] text-left text-sm">
+                  <thead className="text-mid-green">
+                    <tr>
+                      <th className="pb-2 font-medium">Product / description</th>
+                      <th className="min-w-[8rem] pb-2 font-medium">Alias name</th>
+                      <th className="w-16 pb-2 font-medium">Qty</th>
+                      <th className="w-16 pb-2 font-medium">Unit</th>
+                      <th className="w-24 pb-2 font-medium">Price</th>
+                      <th className="w-16 pb-2 font-medium">Tax%</th>
+                      <th className="w-24 pb-2 text-right font-medium">Total</th>
+                      <th className="w-8 pb-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {form.lineItems.map((line, idx) => (
+                      <tr
+                        key={line.key}
+                        className={idx % 2 === 1 ? "bg-light-green/10" : undefined}
+                      >
+                        <td className="py-2 pr-2 align-top">
+                          <div className="relative">
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSearchIdx(idx);
+                                  setSearchQ("");
+                                }}
+                                className="inline-flex h-[2.125rem] w-[2.125rem] shrink-0 items-center justify-center rounded-lg border border-light-green/40 text-mid-green hover:bg-light-green/20"
+                                title="Search catalog"
+                                aria-label="Search catalog"
+                              >
+                                <Search className="h-4 w-4" strokeWidth={1.5} />
+                              </button>
+                              <input
+                                value={line.description}
+                                onChange={(e) =>
+                                  updateLine(idx, { description: e.target.value })
+                                }
+                                className="min-w-0 flex-1 rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
+                                placeholder="Catalog / internal description"
+                              />
+                            </div>
+                            {searchIdx === idx ? (
+                              <div className="absolute left-0 right-0 z-20 mt-1 min-w-[240px] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
+                                <input
+                                  autoFocus
+                                  value={searchQ}
+                                  onChange={(e) => setSearchQ(e.target.value)}
+                                  placeholder="Search code or name…"
+                                  className="mb-2 w-full rounded border border-light-green/40 px-2 py-1.5 text-sm outline-none"
+                                />
+                                <div className="max-h-40 overflow-y-auto">
+                                  {hits.map((h) => (
+                                    <button
+                                      key={h.id}
+                                      type="button"
+                                      onClick={() => pickProduct(idx, h)}
+                                      className="block w-full rounded px-2 py-1.5 text-left text-sm hover:bg-light-green/20"
+                                    >
+                                      <span className="font-medium">{h.code}</span> —{" "}
+                                      {h.name}
+                                      <span className="ml-2 text-xs text-mid-green">
+                                        {formatMoney(h.offerPrice)}
+                                      </span>
+                                    </button>
+                                  ))}
+                                  {searchQ && hits.length === 0 ? (
+                                    <p className="px-2 py-2 text-xs text-mid-green">
+                                      No matches
+                                    </p>
+                                  ) : null}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setSearchIdx(null)}
+                                  className="mt-1 text-xs text-mid-green"
+                                >
+                                  Close
+                                </button>
+                              </div>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-2 align-top">
+                          <input
+                            value={line.aliasName}
+                            onChange={(e) =>
+                              updateLine(idx, { aliasName: e.target.value })
+                            }
+                            className="w-full rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
+                            placeholder="Name on quote"
+                            title="Shown as the product name on the quotation"
+                          />
+                        </td>
+                        <td className="py-2 pr-1 align-top">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.001"
+                            value={line.qty}
+                            onChange={(e) =>
+                              updateLine(idx, { qty: Number(e.target.value) })
+                            }
+                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                          />
+                        </td>
+                        <td className="py-2 pr-1 align-top">
+                          <input
+                            value={line.unit}
+                            onChange={(e) =>
+                              updateLine(idx, { unit: e.target.value })
+                            }
+                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                          />
+                        </td>
+                        <td className="py-2 pr-1 align-top">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={line.unitPrice}
+                            onChange={(e) =>
+                              updateLine(idx, { unitPrice: Number(e.target.value) })
+                            }
+                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                          />
+                        </td>
+                        <td className="py-2 pr-1 align-top">
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={line.taxRate}
+                            onChange={(e) =>
+                              updateLine(idx, { taxRate: Number(e.target.value) })
+                            }
+                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                          />
+                        </td>
+                        <td className="py-2 pr-1 text-right align-top text-xs tabular-nums sm:text-sm">
+                          {formatMoney(calc.lineTotals[idx] ?? 0)}
+                        </td>
+                        <td className="py-2 align-top">
+                          <button
+                            type="button"
+                            onClick={() => removeLine(idx)}
+                            className="rounded p-1 text-mid-green hover:bg-light-green/30"
+                            disabled={form.lineItems.length <= 1}
+                          >
+                            <Trash2 className="h-4 w-4" strokeWidth={1.5} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+          <section className="grid gap-4 md:grid-cols-2 lg:col-span-2">
+            <div className="space-y-3 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+              <h2 className="text-sm font-medium text-mid-green">Charges & notes</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">Discount %</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={form.discountPercent}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      discountPercent: Number(e.target.value),
+                      manualOverrides: {
+                        ...f.manualOverrides,
+                        discountAmount: false,
+                      },
+                    }))
+                  }
+                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">
+                  Delivery / freight{" "}
+                  {form.manualOverrides.deliveryCharge ? "(manual)" : ""}
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={calc.deliveryCharge}
+                  onChange={(e) =>
+                    setOverride("deliveryCharge", Number(e.target.value))
+                  }
+                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">Other tax label</span>
+                <input
+                  value={form.otherTaxLabel}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, otherTaxLabel: e.target.value }))
+                  }
+                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
+                  placeholder="e.g. TCS"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">
+                  Other tax amount{" "}
+                  {form.manualOverrides.otherTaxAmount ? "(manual)" : ""}
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={calc.otherTaxAmount}
+                  onChange={(e) =>
+                    setOverride("otherTaxAmount", Number(e.target.value))
+                  }
+                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
+                />
+              </label>
+              <label className="block text-sm sm:col-span-2">
+                <span className="mb-1 block text-mid-green">Notes</span>
+                <textarea
+                  value={form.notes}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, notes: e.target.value }))
+                  }
+                  rows={3}
+                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
+                />
+              </label>
+              </div>
             </div>
-            <div className="flex justify-between">
-              <span>Delivery</span>
-              <span className="tabular-nums">{formatMoney(calc.deliveryCharge)}</span>
+
+            <div className="rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-medium text-mid-green">Totals</h2>
+                {hasOverrides ? (
+                  <button
+                    type="button"
+                    onClick={resetCalculations}
+                    className="inline-flex items-center gap-1 text-xs text-mid-green hover:underline"
+                  >
+                    <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
+                    Reset calculations
+                  </button>
+                ) : null}
+              </div>
+              <div className="space-y-2 text-sm">
+                <label className="flex items-center justify-between gap-4">
+                  <span>
+                    Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={calc.subtotal}
+                    onChange={(e) =>
+                      setOverride("subtotal", Number(e.target.value))
+                    }
+                    className="w-36 rounded border border-light-green/40 bg-background px-2 py-1 text-right outline-none"
+                  />
+                </label>
+                <div className="flex justify-between text-mid-green">
+                  <span>Discount</span>
+                  <span className="tabular-nums">
+                    -{formatMoney(calc.discountAmount)}
+                  </span>
+                </div>
+                {form.withGst && calc.gstSplit === "CGST_SGST" ? (
+                  <>
+                    <div className="flex justify-between">
+                      <span>CGST</span>
+                      <span className="tabular-nums">
+                        {formatMoney(calc.cgstAmount)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>SGST</span>
+                      <span className="tabular-nums">
+                        {formatMoney(calc.sgstAmount)}
+                      </span>
+                    </div>
+                  </>
+                ) : null}
+                {form.withGst && calc.gstSplit === "IGST" ? (
+                  <div className="flex justify-between">
+                    <span>IGST</span>
+                    <span className="tabular-nums">
+                      {formatMoney(calc.igstAmount)}
+                    </span>
+                  </div>
+                ) : null}
+                <label className="flex items-center justify-between gap-4">
+                  <span>
+                    GST total {form.manualOverrides.gstAmount ? "(manual)" : ""}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={calc.gstAmount}
+                    onChange={(e) =>
+                      setOverride("gstAmount", Number(e.target.value))
+                    }
+                    disabled={!form.withGst}
+                    className="w-36 rounded border border-light-green/40 bg-background px-2 py-1 text-right outline-none disabled:opacity-40"
+                  />
+                </label>
+                <div className="flex justify-between">
+                  <span>Other tax</span>
+                  <span className="tabular-nums">
+                    {formatMoney(calc.otherTaxAmount)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Delivery</span>
+                  <span className="tabular-nums">
+                    {formatMoney(calc.deliveryCharge)}
+                  </span>
+                </div>
+                <label className="flex items-center justify-between gap-4 border-t border-light-green/30 pt-3 text-base font-semibold">
+                  <span>
+                    Grand total{" "}
+                    {form.manualOverrides.grandTotal ? "(manual)" : ""}
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={calc.grandTotal}
+                    onChange={(e) =>
+                      setOverride("grandTotal", Number(e.target.value))
+                    }
+                    className="w-36 rounded border border-mid-green/50 bg-background px-2 py-1 text-right font-semibold outline-none"
+                  />
+                </label>
+              </div>
             </div>
-            <label className="flex items-center justify-between gap-4 border-t border-light-green/30 pt-3 text-base font-semibold">
-              <span>
-                Grand total {form.manualOverrides.grandTotal ? "(manual)" : ""}
-              </span>
-              <input
-                type="number"
-                step="0.01"
-                value={calc.grandTotal}
-                onChange={(e) => setOverride("grandTotal", Number(e.target.value))}
-                className="w-36 rounded border border-mid-green/50 bg-background px-2 py-1 text-right font-semibold outline-none"
-              />
-            </label>
-          </div>
-        </div>
-      </section>
+          </section>
+      </div>
     </form>
   );
 }

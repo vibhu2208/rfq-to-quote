@@ -10,6 +10,7 @@ const lineSchema = z.object({
   id: z.string().optional(),
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
+  aliasName: z.string().optional().default(""),
   qty: z.coerce.number().positive(),
   unit: z.string().default("pcs"),
   unitPrice: z.coerce.number().nonnegative(),
@@ -24,6 +25,7 @@ const quoteSchema = z.object({
   buyerPhone: z.string().optional().default(""),
   buyerState: z.string().optional().default(""),
   buyerAddress: z.string().optional().default(""),
+  buyerGstin: z.string().optional().default(""),
   withGst: z.boolean().optional().default(true),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional().default("AUTO"),
   deliveryCharge: z.coerce.number().nonnegative().optional().default(0),
@@ -52,6 +54,7 @@ function serializeQuote(quote: {
   buyerPhone: string;
   buyerState: string;
   buyerAddress: string;
+  buyerGstin: string;
   withGst: boolean;
   gstMode: string;
   subtotal: unknown;
@@ -75,6 +78,7 @@ function serializeQuote(quote: {
     id: string;
     productId: string | null;
     description: string;
+    aliasName: string;
     qty: unknown;
     unit: string;
     unitPrice: unknown;
@@ -98,6 +102,7 @@ function serializeQuote(quote: {
     grandTotal: decimalToNumber(quote.grandTotal),
     lineItems: (quote.lineItems || []).map((li) => ({
       ...li,
+      aliasName: li.aliasName || "",
       qty: decimalToNumber(li.qty),
       unitPrice: decimalToNumber(li.unitPrice),
       taxRate: decimalToNumber(li.taxRate),
@@ -176,6 +181,7 @@ export async function POST(req: NextRequest) {
       buyerPhone: data.buyerPhone,
       buyerState: data.buyerState,
       buyerAddress: data.buyerAddress,
+      buyerGstin: data.buyerGstin.trim().toUpperCase(),
       withGst: data.withGst,
       gstMode: data.gstMode,
       subtotal: calc.subtotal,
@@ -196,6 +202,7 @@ export async function POST(req: NextRequest) {
         create: data.lineItems.map((l, i) => ({
           productId: l.productId || null,
           description: l.description,
+          aliasName: l.aliasName?.trim() || "",
           qty: l.qty,
           unit: l.unit,
           unitPrice: l.unitPrice,

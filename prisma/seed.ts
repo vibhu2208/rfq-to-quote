@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 
 const prisma = new PrismaClient();
 
@@ -204,6 +205,7 @@ const ELECTRONICS_PRODUCTS = [
     offerPrice: 2500,
     taxRate: 18,
     taxCategory: "GST18",
+    productType: "SERVICE" as const,
   },
 ] as const;
 
@@ -300,17 +302,289 @@ const ELECTRONICS_VENDORS = [
 ] as const;
 
 async function main() {
-  const passwordHash = await bcrypt.hash("admin123", 10);
+  const configuredPassword = process.env.SEED_ADMIN_PASSWORD;
+  const bootstrapPassword = configuredPassword ?? randomBytes(32).toString("base64url");
+  const passwordHash = await bcrypt.hash(bootstrapPassword, 12);
 
-  await prisma.user.upsert({
+  const admin = await prisma.user.upsert({
     where: { email: "admin@example.com" },
-    update: {},
+    update: configuredPassword ? { passwordHash } : {},
     create: {
       email: "admin@example.com",
       name: "Admin",
       passwordHash,
     },
   });
+
+  const organisation = await prisma.organisation.upsert({
+    where: { code: "DEFAULT" },
+    update: {
+      name: "Default Organisation",
+      status: "ACTIVE",
+      inventoryPolicy: "WEIGHTED_AVERAGE",
+    },
+    create: {
+      code: "DEFAULT",
+      name: "Default Organisation",
+      inventoryPolicy: "WEIGHTED_AVERAGE",
+      policyMetadata: {
+        inventoryValuation: "WEIGHTED_AVERAGE",
+        negativeStockAllowed: false,
+        costingPrecision: 4,
+      },
+    },
+  });
+
+  const legalEntity = await prisma.legalEntity.upsert({
+    where: {
+      organisationId_legalName: {
+        organisationId: organisation.id,
+        legalName: "Default Organisation",
+      },
+    },
+    update: { active: true },
+    create: {
+      organisationId: organisation.id,
+      name: "Default Organisation",
+      legalName: "Default Organisation",
+      entityType: "PROPRIETORSHIP",
+    },
+  });
+
+  // A syntactically valid non-production GSTIN reserved for local bootstrap data.
+  const gstRegistration = await prisma.gSTRegistration.upsert({
+    where: { gstin: "29AAAAA0000A1Z5" },
+    update: { legalEntityId: legalEntity.id, active: true },
+    create: {
+      legalEntityId: legalEntity.id,
+      gstin: "29AAAAA0000A1Z5",
+      stateCode: "29",
+      tradeName: "Default Organisation",
+    },
+  });
+
+  const location = await prisma.businessLocation.upsert({
+    where: {
+      gstRegistrationId_code: {
+        gstRegistrationId: gstRegistration.id,
+        code: "HO",
+      },
+    },
+    update: { active: true, isPrimary: true },
+    create: {
+      gstRegistrationId: gstRegistration.id,
+      code: "HO",
+      name: "Head Office",
+      addressLine1: "Local development address",
+      city: "Bengaluru",
+      state: "Karnataka",
+      stateCode: "29",
+      postalCode: "560001",
+      isPrimary: true,
+    },
+  });
+
+  const roleDefs = [
+    { code: "ADMIN", name: "Administrator", description: "Full organisation administration" },
+    { code: "OWNER", name: "Owner", description: "Business owner" },
+    { code: "ACCOUNTANT", name: "Accountant", description: "Journals, GST, payments" },
+    { code: "SALES", name: "Sales", description: "Quotes, proformas, invoices" },
+    { code: "INVENTORY", name: "Inventory Manager", description: "Stock movements and warehouses" },
+    { code: "AUDITOR", name: "Auditor", description: "Read-only financial audit access" },
+  ] as const;
+
+  const roles: Record<string, { id: string }> = {};
+  for (const def of roleDefs) {
+    roles[def.code] = await prisma.role.upsert({
+      where: {
+        organisationId_code: {
+          organisationId: organisation.id,
+          code: def.code,
+        },
+      },
+      update: { name: def.name, description: def.description, system: true },
+      create: {
+        organisationId: organisation.id,
+        code: def.code,
+        name: def.name,
+        description: def.description,
+        system: true,
+      },
+    });
+  }
+  const adminRole = roles.ADMIN;
+
+  const membership = await prisma.organisationMembership.upsert({
+    where: {
+      organisationId_userId: {
+        organisationId: organisation.id,
+        userId: admin.id,
+      },
+    },
+    update: { status: "ACTIVE", joinedAt: new Date() },
+    create: {
+      organisationId: organisation.id,
+      userId: admin.id,
+      status: "ACTIVE",
+      joinedAt: new Date(),
+    },
+  });
+
+  await prisma.membershipRole.upsert({
+    where: {
+      membershipId_roleId: {
+        membershipId: membership.id,
+        roleId: adminRole.id,
+      },
+    },
+    update: {},
+    create: { membershipId: membership.id, roleId: adminRole.id },
+  });
+
+  const permissionDefs = [
+    ["organisation.manage", "Manage all organisation settings and transactions"],
+    ["invoice.issue", "Issue and cancel tax invoices"],
+    ["invoice.file", "Approve GST and e-invoice submissions"],
+    ["inventory.adjust", "Post inventory adjustments"],
+    ["journal.post", "Post and reverse journals"],
+    ["reports.read", "Read financial and GST reports"],
+  ] as const;
+
+  for (const [code, description] of permissionDefs) {
+    const permission = await prisma.permission.upsert({
+      where: { code },
+      update: { description },
+      create: { code, description },
+    });
+    await prisma.rolePermission.upsert({
+      where: {
+        roleId_permissionId: {
+          roleId: adminRole.id,
+          permissionId: permission.id,
+        },
+      },
+      update: { effect: "ALLOW" },
+      create: {
+        roleId: adminRole.id,
+        permissionId: permission.id,
+        effect: "ALLOW",
+      },
+    });
+  }
+
+  // Grant accountant filing + journal permissions
+  for (const code of ["invoice.issue", "invoice.file", "journal.post", "reports.read"] as const) {
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code } });
+    await prisma.rolePermission.upsert({
+      where: {
+        roleId_permissionId: { roleId: roles.ACCOUNTANT.id, permissionId: permission.id },
+      },
+      update: { effect: "ALLOW" },
+      create: {
+        roleId: roles.ACCOUNTANT.id,
+        permissionId: permission.id,
+        effect: "ALLOW",
+      },
+    });
+  }
+  const now = new Date();
+  const currentYear = now.getUTCFullYear();
+  const fiscalStartYear = now.getUTCMonth() >= 3 ? currentYear : currentYear - 1;
+  const fiscalStart = new Date(Date.UTC(fiscalStartYear, 3, 1));
+  const fiscalEnd = new Date(Date.UTC(fiscalStartYear + 1, 2, 31));
+  const fiscalYear = await prisma.fiscalYear.upsert({
+    where: {
+      legalEntityId_startsOn: {
+        legalEntityId: legalEntity.id,
+        startsOn: fiscalStart,
+      },
+    },
+    update: { name: `FY ${fiscalStartYear}-${String(fiscalStartYear + 1).slice(-2)}` },
+    create: {
+      organisationId: organisation.id,
+      legalEntityId: legalEntity.id,
+      name: `FY ${fiscalStartYear}-${String(fiscalStartYear + 1).slice(-2)}`,
+      startsOn: fiscalStart,
+      endsOn: fiscalEnd,
+    },
+  });
+
+  for (let index = 0; index < 12; index += 1) {
+    const startsOn = new Date(Date.UTC(fiscalStartYear, 3 + index, 1));
+    const endsOn = new Date(Date.UTC(fiscalStartYear, 4 + index, 0));
+    await prisma.fiscalPeriod.upsert({
+      where: {
+        fiscalYearId_number: {
+          fiscalYearId: fiscalYear.id,
+          number: index + 1,
+        },
+      },
+      update: { startsOn, endsOn },
+      create: {
+        fiscalYearId: fiscalYear.id,
+        number: index + 1,
+        name: startsOn.toLocaleString("en-IN", {
+          month: "short",
+          year: "numeric",
+          timeZone: "UTC",
+        }),
+        startsOn,
+        endsOn,
+      },
+    });
+  }
+
+  await prisma.warehouse.upsert({
+    where: {
+      organisationId_code: {
+        organisationId: organisation.id,
+        code: "MAIN",
+      },
+    },
+    update: {
+      gstRegistrationId: gstRegistration.id,
+      businessLocationId: location.id,
+      active: true,
+    },
+    create: {
+      organisationId: organisation.id,
+      gstRegistrationId: gstRegistration.id,
+      businessLocationId: location.id,
+      code: "MAIN",
+      name: "Main Warehouse",
+      valuationMethod: "WEIGHTED_AVERAGE",
+      policyMetadata: { negativeStockAllowed: false, costingPrecision: 4 },
+    },
+  });
+
+  const accounts = [
+    ["1000", "Cash", "ASSET", "CASH"],
+    ["1010", "Bank", "ASSET", "BANK"],
+    ["1100", "Accounts Receivable", "ASSET", "ACCOUNTS_RECEIVABLE"],
+    ["1200", "Inventory", "ASSET", "INVENTORY"],
+    ["1300", "Input GST", "ASSET", "INPUT_GST"],
+    ["2000", "Accounts Payable", "LIABILITY", "ACCOUNTS_PAYABLE"],
+    ["2100", "Output GST", "LIABILITY", "OUTPUT_GST"],
+    ["3000", "Owner's Equity", "EQUITY", "EQUITY"],
+    ["4000", "Sales", "INCOME", "SALES"],
+    ["5000", "Cost of Goods Sold", "EXPENSE", "COGS"],
+  ] as const;
+  for (const [code, name, type, systemKey] of accounts) {
+    await prisma.chartOfAccount.upsert({
+      where: {
+        legalEntityId_code: { legalEntityId: legalEntity.id, code },
+      },
+      update: { name, type, systemKey, active: true },
+      create: {
+        organisationId: organisation.id,
+        legalEntityId: legalEntity.id,
+        code,
+        name,
+        type,
+        systemKey,
+      },
+    });
+  }
 
   // Deactivate old industrial demo SKUs if present
   await prisma.product.updateMany({
@@ -321,8 +595,49 @@ async function main() {
   for (const p of ELECTRONICS_PRODUCTS) {
     await prisma.product.upsert({
       where: { code: p.code },
-      update: { ...p, active: true },
-      create: { ...p, active: true },
+      update: { ...p, organisationId: organisation.id, active: true },
+      create: { ...p, organisationId: organisation.id, active: true },
+    });
+  }
+
+  // Mark legacy install SKU as service if it was seeded as goods earlier
+  await prisma.product.updateMany({
+    where: { code: "SVC-INSTALL" },
+    data: { productType: "SERVICE" },
+  });
+
+  const mainWarehouse = await prisma.warehouse.findUniqueOrThrow({
+    where: {
+      organisationId_code: { organisationId: organisation.id, code: "MAIN" },
+    },
+  });
+
+  const goods = await prisma.product.findMany({
+    where: {
+      active: true,
+      productType: "GOODS",
+      OR: [{ organisationId: organisation.id }, { organisationId: null }],
+    },
+    select: { id: true, basePrice: true, code: true },
+  });
+
+  for (const product of goods) {
+    await prisma.stockBalance.upsert({
+      where: {
+        warehouseId_productId: {
+          warehouseId: mainWarehouse.id,
+          productId: product.id,
+        },
+      },
+      update: {},
+      create: {
+        warehouseId: mainWarehouse.id,
+        productId: product.id,
+        quantityOnHand: 0,
+        quantityReserved: 0,
+        averageCost: 0,
+        inventoryValue: 0,
+      },
     });
   }
 
@@ -394,8 +709,13 @@ async function main() {
   }
 
   console.log(
-    `Seed complete: admin@example.com / admin123 + ${ELECTRONICS_PRODUCTS.length} products + ${ELECTRONICS_VENDORS.length} vendors`
+    `Seed complete: default accounting organisation + ${ELECTRONICS_PRODUCTS.length} products + ${ELECTRONICS_VENDORS.length} vendors`
   );
+  if (!configuredPassword) {
+    console.warn(
+      "SEED_ADMIN_PASSWORD was not set. A random, undisclosed bootstrap password was used; set SEED_ADMIN_PASSWORD before seeding a fresh environment to enable admin login."
+    );
+  }
 }
 
 main()

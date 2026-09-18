@@ -3,6 +3,8 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
+import { getDefaultOrgContext } from "@/lib/accounting/context";
+import { syncProductToInventory } from "@/lib/accounting/inventory";
 
 type Row = Record<string, unknown>;
 
@@ -29,6 +31,7 @@ function normalizeRows(rows: Row[]) {
       const code = pick(row, ["code", "product_code", "sku", "product code"]);
       const name = pick(row, ["name", "product_name", "product name", "title"]);
       if (!code || !name) return null;
+      const typeRaw = pick(row, ["product_type", "product type", "type"]).toUpperCase();
       return {
         code,
         name,
@@ -38,7 +41,10 @@ function normalizeRows(rows: Row[]) {
         offerPrice: num(row, ["offer_price", "offer price", "price", "selling_price"], 0),
         taxRate: num(row, ["tax_rate", "tax rate", "gst", "gst_rate"], 18),
         taxCategory: pick(row, ["tax_category", "tax category", "hsn"]) || "GST18",
+        productType: typeRaw === "SERVICE" ? ("SERVICE" as const) : ("GOODS" as const),
         active: true,
+        openingQty: num(row, ["opening_qty", "opening qty", "stock", "qty_on_hand"], 0),
+        openingUnitCost: num(row, ["opening_cost", "opening unit cost", "unit_cost"], 0),
       };
     })
     .filter(Boolean) as Array<{
@@ -50,7 +56,10 @@ function normalizeRows(rows: Row[]) {
     offerPrice: number;
     taxRate: number;
     taxCategory: string;
+    productType: "GOODS" | "SERVICE";
     active: boolean;
+    openingQty: number;
+    openingUnitCost: number;
   }>;
 }
 
@@ -85,19 +94,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No valid product rows found" }, { status: 400 });
   }
 
+  const ctx = await getDefaultOrgContext();
   let created = 0;
   let updated = 0;
+  let synced = 0;
 
   for (const p of products) {
+    const { openingQty, openingUnitCost, ...data } = p;
     const existing = await prisma.product.findUnique({ where: { code: p.code } });
-    if (existing) {
-      await prisma.product.update({ where: { code: p.code }, data: p });
-      updated += 1;
-    } else {
-      await prisma.product.create({ data: p });
-      created += 1;
-    }
+    const product = existing
+      ? await prisma.product.update({
+          where: { code: p.code },
+          data: { ...data, organisationId: ctx.organisationId },
+        })
+      : await prisma.product.create({
+          data: { ...data, organisationId: ctx.organisationId },
+        });
+
+    if (existing) updated += 1;
+    else created += 1;
+
+    await syncProductToInventory({
+      productId: product.id,
+      productType: product.productType,
+      openingQty: openingQty > 0 ? openingQty : undefined,
+      unitCost: openingUnitCost || p.basePrice,
+      warehouseId: ctx.warehouseId,
+      gstRegistrationId: ctx.gstRegistrationId,
+    });
+    synced += 1;
   }
 
-  return NextResponse.json({ created, updated, total: products.length });
+  return NextResponse.json({ created, updated, synced, total: products.length });
 }

@@ -4,7 +4,7 @@ import { getCompanyConfig } from "@/lib/company";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
 import { buildQuotePdfBuffer } from "@/lib/pdf/render-quote-buffer";
 import { formatMoney } from "@/lib/tax";
-import { decimalToNumber } from "@/lib/quotes";
+import { decimalToNumber, makeQuoteThreadRef } from "@/lib/quotes";
 import type { QuoteSendChannel } from "@/lib/quote-send-defaults";
 
 export type { QuoteSendChannel } from "@/lib/quote-send-defaults";
@@ -22,6 +22,7 @@ function buildBuyerEmailBody(input: {
   quoteNumber: string;
   grandTotal: number;
   companyName: string;
+  threadRef: string;
 }) {
   const greeting = input.buyerName.trim()
     ? `Hello ${input.buyerName.trim()},`
@@ -34,6 +35,8 @@ Please find attached our quotation ${input.quoteNumber}.
 Grand total: ${formatMoney(input.grandTotal)}
 
 If you have any questions or need changes, reply to this email.
+
+Reference: [${input.threadRef}]
 
 Thanks,
 ${input.companyName}`;
@@ -68,7 +71,7 @@ export async function sendQuoteToBuyer(
     where: { id: input.quoteId },
     include: {
       lineItems: {
-        include: { product: { select: { code: true } } },
+        include: { product: { select: { code: true, hsnCode: true } } },
         orderBy: { sortOrder: "asc" },
       },
       rfq: {
@@ -101,7 +104,8 @@ export async function sendQuoteToBuyer(
   const company = getCompanyConfig();
   const { buffer, filename } = await buildQuotePdfBuffer(quote);
   const grandTotal = decimalToNumber(quote.grandTotal);
-  const subject = `Quotation ${quote.quoteNumber}${
+  const threadRef = quote.threadRef?.trim() || makeQuoteThreadRef(quote.quoteNumber);
+  const subject = `Quotation ${quote.quoteNumber} [${threadRef}]${
     quote.rfq?.subject ? ` — ${quote.rfq.subject}` : ""
   }`;
 
@@ -110,6 +114,7 @@ export async function sendQuoteToBuyer(
     quoteNumber: quote.quoteNumber,
     grandTotal,
     companyName: company.name,
+    threadRef,
   });
   if (input.note?.trim()) {
     text += `\n\nNote: ${input.note.trim()}`;
@@ -146,9 +151,28 @@ export async function sendQuoteToBuyer(
       data: {
         status: "SENT",
         sentAt: quote.sentAt ?? now,
-        ...(isEmailLike(to) && !quote.buyerEmail.trim()
-          ? { buyerEmail: to }
-          : {}),
+        outboundMsgId: sent.messageId,
+        threadRef,
+        needsAssistance: false,
+        assistanceReason: "",
+        // Keep buyerEmail in sync with the address we actually emailed so
+        // per-quote thread checks search the right "from:" mailbox.
+        ...(isEmailLike(to) ? { buyerEmail: to } : {}),
+      },
+    });
+
+    await tx.quoteMessage.create({
+      data: {
+        quoteId: quote.id,
+        direction: "OUT",
+        channel: outboundChannel,
+        subject,
+        body: text,
+        messageId: sent.messageId,
+        inReplyTo: inReplyTo || "",
+        fromEmail: process.env.GMAIL_USER?.trim() || "",
+        toEmail: to,
+        analysis: { kind: "quote_send", filename },
       },
     });
 
@@ -166,6 +190,7 @@ export async function sendQuoteToBuyer(
             to,
             messageId: sent.messageId,
             filename,
+            threadRef,
           },
         },
       });

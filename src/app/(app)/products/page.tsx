@@ -10,6 +10,7 @@ type Product = {
   name: string;
   description: string;
   unit: string;
+  productType?: "GOODS" | "SERVICE";
   basePrice: number;
   offerPrice: number;
   taxRate: number;
@@ -22,11 +23,14 @@ const emptyForm = {
   name: "",
   description: "",
   unit: "pcs",
+  productType: "GOODS" as "GOODS" | "SERVICE",
   basePrice: 0,
   offerPrice: 0,
   taxRate: 18,
   taxCategory: "GST18",
   active: true,
+  openingQty: 0,
+  openingUnitCost: 0,
 };
 
 export default function ProductsPage() {
@@ -69,11 +73,14 @@ export default function ProductsPage() {
       name: p.name,
       description: p.description,
       unit: p.unit,
+      productType: p.productType === "SERVICE" ? "SERVICE" : "GOODS",
       basePrice: p.basePrice,
       offerPrice: p.offerPrice,
       taxRate: p.taxRate,
       taxCategory: p.taxCategory,
       active: p.active,
+      openingQty: 0,
+      openingUnitCost: p.basePrice,
     });
     setModalOpen(true);
   }
@@ -123,7 +130,9 @@ export default function ProductsPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Product catalog</h1>
-          <p className="mt-1 text-sm text-mid-green">Single source of truth for quote line items</p>
+          <p className="mt-1 text-sm text-mid-green">
+            Catalog syncs to inventory for goods · services are not stocked
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-light-green/40 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20">
@@ -265,6 +274,22 @@ export default function ProductsPage() {
           >
             <h2 className="text-lg font-semibold">{editing ? "Edit product" : "Add product"}</h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm sm:col-span-1">
+                <span className="mb-1 block text-mid-green">Type</span>
+                <select
+                  value={form.productType}
+                  onChange={(e) =>
+                    setForm((f) => ({
+                      ...f,
+                      productType: e.target.value as "GOODS" | "SERVICE",
+                    }))
+                  }
+                  className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
+                >
+                  <option value="GOODS">Goods (inventory)</option>
+                  <option value="SERVICE">Service (no stock)</option>
+                </select>
+              </label>
               {(
                 [
                   ["code", "Code", "text"],
@@ -293,6 +318,36 @@ export default function ProductsPage() {
                   />
                 </label>
               ))}
+              {!editing && form.productType === "GOODS" ? (
+                <>
+                  <label className="block text-sm sm:col-span-1">
+                    <span className="mb-1 block text-mid-green">Opening qty</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={form.openingQty}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, openingQty: Number(e.target.value) }))
+                      }
+                      className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
+                    />
+                  </label>
+                  <label className="block text-sm sm:col-span-1">
+                    <span className="mb-1 block text-mid-green">Opening unit cost</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="any"
+                      value={form.openingUnitCost}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, openingUnitCost: Number(e.target.value) }))
+                      }
+                      className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
+                    />
+                  </label>
+                </>
+              ) : null}
               <label className="block text-sm sm:col-span-2">
                 <span className="mb-1 block text-mid-green">Description</span>
                 <textarea

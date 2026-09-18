@@ -3,6 +3,7 @@ import { simpleParser } from "mailparser";
 import { prisma } from "@/lib/prisma";
 import { createRfqWithMessage, resolveEmailChannel } from "@/lib/rfq";
 import { handleVendorReplyEmail } from "@/lib/vendor-outreach";
+import { handleQuoteReplyEmail } from "@/lib/quote-thread";
 
 export type PolledEmail = {
   messageId: string;
@@ -78,6 +79,7 @@ export async function pollGmailInbox(options?: {
   created: number;
   skipped: number;
   vendorReplies: number;
+  quoteReplies: number;
   initialized: boolean;
   lastSeenUid: number;
   rfqs: Array<{ id: string; status: string; subject: string; fromEmail: string }>;
@@ -99,6 +101,7 @@ export async function pollGmailInbox(options?: {
   let created = 0;
   let skipped = 0;
   let vendorReplies = 0;
+  let quoteReplies = 0;
   let initialized = false;
   let lastSeenUid = await getLastSeenGmailUid();
 
@@ -119,7 +122,16 @@ export async function pollGmailInbox(options?: {
         }
 
         initialized = true;
-        return { fetched, created, skipped, vendorReplies, initialized, lastSeenUid, rfqs };
+        return {
+          fetched,
+          created,
+          skipped,
+          vendorReplies,
+          quoteReplies,
+          initialized,
+          lastSeenUid,
+          rfqs,
+        };
       }
 
       const selected = unreadUids.filter((uid) => uid > lastSeenUid).slice(-limit);
@@ -137,6 +149,15 @@ export async function pollGmailInbox(options?: {
         const vendorReply = await handleVendorReplyEmail(parsed);
         if (vendorReply.handled) {
           vendorReplies += 1;
+          skipped += 1;
+          if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+          lastSeenUid = Math.max(lastSeenUid, uid);
+          continue;
+        }
+
+        const quoteReply = await handleQuoteReplyEmail(parsed);
+        if (quoteReply.handled) {
+          quoteReplies += 1;
           skipped += 1;
           if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
           lastSeenUid = Math.max(lastSeenUid, uid);
@@ -214,5 +235,263 @@ export async function pollGmailInbox(options?: {
     await client.logout().catch(() => undefined);
   }
 
-  return { fetched, created, skipped, vendorReplies, initialized, lastSeenUid, rfqs };
+  return { fetched, created, skipped, vendorReplies, quoteReplies, initialized, lastSeenUid, rfqs };
+}
+
+function normalizeMsgId(id?: string | null): string {
+  return (id || "").replace(/[<>]/g, "").trim();
+}
+
+/**
+ * Skip only true outbound copies of our own sends.
+ * Do NOT skip self-replies (same Gmail account used for testing / same-address buyers)
+ * — those still have Re:/In-Reply-To and must be captured.
+ */
+function isOwnOutboundCopy(input: {
+  fromEmail: string;
+  gmailUser: string;
+  subject: string;
+  messageId: string;
+  inReplyTo: string;
+  outboundMsgId: string;
+  knownOutboundIds: Set<string>;
+}): boolean {
+  const msgId = normalizeMsgId(input.messageId);
+  if (msgId && (msgId === input.outboundMsgId || input.knownOutboundIds.has(msgId))) {
+    return true;
+  }
+
+  const from = input.fromEmail.trim().toLowerCase();
+  const user = input.gmailUser.trim().toLowerCase();
+  if (!from || !user || from !== user) return false;
+
+  const isReply =
+    Boolean(normalizeMsgId(input.inReplyTo)) || /^re\s*:/i.test(input.subject || "");
+  // Self-replies keep going; original outbound without reply headers is skipped.
+  return !isReply;
+}
+
+/** Quote a Gmail search phrase so hyphens in Q-2026-0001 are not treated as NOT. */
+function gmailPhrase(value: string): string {
+  return `"${value.replace(/"/g, "").trim()}"`;
+}
+
+async function lockThreadMailbox(client: ImapFlow) {
+  // Prefer All Mail so archived / labeled replies are still found.
+  for (const path of ["[Gmail]/All Mail", "[Google Mail]/All Mail", "INBOX"]) {
+    try {
+      const lock = await client.getMailboxLock(path);
+      return { lock, path };
+    } catch {
+      // try next
+    }
+  }
+  const lock = await client.getMailboxLock("INBOX");
+  return { lock, path: "INBOX" };
+}
+
+/**
+ * Search Gmail for messages related to one quote's buyer / QREF / quote number
+ * and process only that thread (does not create RFQs or advance the global UID cursor).
+ */
+export async function checkQuoteEmailThread(quoteId: string): Promise<{
+  scanned: number;
+  matched: number;
+  newReplies: number;
+  alreadyCaptured: number;
+  buyerEmail: string;
+  quoteNumber: string;
+  results: Array<{
+    subject: string;
+    fromEmail: string;
+    intent?: string;
+    needsAssistance?: boolean;
+    autoReplied?: boolean;
+    alreadyCaptured?: boolean;
+  }>;
+}> {
+  const quote = await prisma.quote.findUnique({
+    where: { id: quoteId },
+    include: {
+      messages: {
+        select: { direction: true, toEmail: true, messageId: true },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      },
+    },
+  });
+  if (!quote) throw new Error("Quote not found.");
+  if (quote.status === "DRAFT" && !quote.sentAt) {
+    throw new Error("Send the quote first before checking its email thread.");
+  }
+
+  const candidateEmails = new Set<string>();
+  const buyerEmail = quote.buyerEmail.trim().toLowerCase();
+  if (buyerEmail) candidateEmails.add(buyerEmail);
+  const knownOutboundIds = new Set<string>();
+  if (quote.outboundMsgId) knownOutboundIds.add(normalizeMsgId(quote.outboundMsgId));
+  for (const m of quote.messages) {
+    if (m.direction === "OUT") {
+      const to = m.toEmail.trim().toLowerCase();
+      if (to.includes("@")) candidateEmails.add(to);
+      const mid = normalizeMsgId(m.messageId);
+      if (mid) knownOutboundIds.add(mid);
+    }
+  }
+
+  const threadRef = quote.threadRef || `QREF-${quote.quoteNumber}`;
+  const since = quote.sentAt
+    ? new Date(quote.sentAt.getTime() - 24 * 60 * 60 * 1000)
+    : new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+  const after = formatGmailAfter(since);
+
+  const config = requireGmailConfig();
+  const client = new ImapFlow({
+    host: config.host,
+    port: config.port,
+    secure: true,
+    auth: { user: config.user, pass: config.pass },
+    logger: false,
+  });
+
+  const results: Array<{
+    subject: string;
+    fromEmail: string;
+    intent?: string;
+    needsAssistance?: boolean;
+    autoReplied?: boolean;
+    alreadyCaptured?: boolean;
+  }> = [];
+  let scanned = 0;
+  let matched = 0;
+  let newReplies = 0;
+  let alreadyCaptured = 0;
+
+  await client.connect();
+  try {
+    const { lock, path: mailbox } = await lockThreadMailbox(client);
+    try {
+      const uidSet = new Set<number>();
+
+      const gmailQueries: string[] = [
+        // Must quote Q-####-#### — unquoted hyphens mean NOT in Gmail search.
+        `(${gmailPhrase(quote.quoteNumber)} OR ${gmailPhrase(threadRef)} OR subject:${gmailPhrase(quote.quoteNumber)}) after:${after}`,
+      ];
+      for (const email of candidateEmails) {
+        gmailQueries.push(`from:${email} after:${after}`);
+      }
+
+      for (const q of gmailQueries) {
+        try {
+          const found = await client.search({ gmailraw: q }, { uid: true });
+          for (const uid of found || []) uidSet.add(uid);
+        } catch {
+          // gmailraw may be unavailable on non-Gmail hosts
+        }
+      }
+
+      // Always also run IMAP criteria (merge) — do not rely on gmailraw alone.
+      for (const email of candidateEmails) {
+        try {
+          const fromHits = await client.search({ from: email, since }, { uid: true });
+          for (const uid of fromHits || []) uidSet.add(uid);
+        } catch {
+          // ignore
+        }
+      }
+      for (const subject of [quote.quoteNumber, threadRef]) {
+        try {
+          const subjectHits = await client.search({ subject, since }, { uid: true });
+          for (const uid of subjectHits || []) uidSet.add(uid);
+        } catch {
+          // ignore
+        }
+      }
+
+      const uids = [...uidSet].sort((a, b) => a - b).slice(-40);
+
+      for (const uid of uids) {
+        const downloaded = await client.download(uid, undefined, { uid: true });
+        if (!downloaded?.content) continue;
+
+        const parsed = await simpleParser(downloaded.content);
+        scanned += 1;
+
+        const fromRaw =
+          parsed.from?.text || parsed.from?.value?.[0]?.address || "";
+        const { email: fromEmail } = parseAddress(
+          typeof fromRaw === "string" ? fromRaw : String(fromRaw)
+        );
+
+        const messageId = normalizeMsgId(parsed.messageId);
+        const inReplyTo = normalizeMsgId(
+          typeof parsed.inReplyTo === "string"
+            ? parsed.inReplyTo
+            : Array.isArray(parsed.inReplyTo)
+              ? parsed.inReplyTo[0]
+              : ""
+        );
+
+        // Skip our sent copies only — keep self-replies (same mailbox as GMAIL_USER).
+        if (
+          isOwnOutboundCopy({
+            fromEmail,
+            gmailUser: config.user,
+            subject: parsed.subject || "",
+            messageId,
+            inReplyTo,
+            outboundMsgId: quote.outboundMsgId,
+            knownOutboundIds,
+          })
+        ) {
+          continue;
+        }
+
+        const reply = await handleQuoteReplyEmail(parsed, {
+          expectedQuoteId: quoteId,
+        });
+        if (!reply.handled) continue;
+
+        matched += 1;
+        if (reply.alreadyCaptured) {
+          alreadyCaptured += 1;
+        } else {
+          newReplies += 1;
+          if (config.markSeen && mailbox === "INBOX") {
+            await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+          }
+        }
+
+        results.push({
+          subject: parsed.subject || "(no subject)",
+          fromEmail,
+          intent: reply.intent,
+          needsAssistance: reply.needsAssistance,
+          autoReplied: reply.autoReplied,
+          alreadyCaptured: reply.alreadyCaptured,
+        });
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+
+  return {
+    scanned,
+    matched,
+    newReplies,
+    alreadyCaptured,
+    buyerEmail: buyerEmail || [...candidateEmails][0] || "",
+    quoteNumber: quote.quoteNumber,
+    results,
+  };
+}
+
+function formatGmailAfter(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}/${m}/${d}`;
 }

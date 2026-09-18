@@ -18,8 +18,40 @@ export async function GET(_req: NextRequest, { params }: Params) {
     },
   });
   if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(rfq);
+
+  // productSelections may exist in DB before Prisma client is regenerated
+  const rows = await prisma.$queryRaw<Array<{ productSelections: unknown }>>`
+    SELECT "productSelections" FROM "Rfq" WHERE id = ${id}
+  `;
+  return NextResponse.json({
+    ...rfq,
+    productSelections: rows[0]?.productSelections ?? null,
+  });
 }
+
+const productSnapshotSchema = z.object({
+  id: z.string(),
+  code: z.string(),
+  name: z.string(),
+  description: z.string().optional().default(""),
+  unit: z.string().optional().default("pcs"),
+  offerPrice: z.number(),
+  taxRate: z.number().optional().default(18),
+});
+
+const productSelectionsSchema = z.object({
+  lineSelection: z.record(z.string(), z.string()).optional().default({}),
+  selectedIds: z.array(z.string()).optional().default([]),
+  extras: z
+    .array(
+      z.object({
+        lineNumber: z.number().int().positive().optional(),
+        product: productSnapshotSchema,
+      })
+    )
+    .optional()
+    .default([]),
+});
 
 const patchSchema = z.object({
   status: z.enum(["NEW", "NEEDS_REVIEW", "PARSED", "QUOTED", "CLOSED"]).optional(),
@@ -28,6 +60,7 @@ const patchSchema = z.object({
   customerEmail: z.string().optional(),
   customerPhone: z.string().optional(),
   customerCompany: z.string().optional(),
+  productSelections: productSelectionsSchema.nullable().optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: Params) {
@@ -41,16 +74,48 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
+  const { productSelections, ...rest } = parsed.data;
+
   try {
-    const rfq = await prisma.rfq.update({
+    if (Object.keys(rest).length > 0) {
+      await prisma.rfq.update({
+        where: { id },
+        data: rest,
+      });
+    }
+
+    if (productSelections !== undefined) {
+      if (productSelections === null) {
+        await prisma.$executeRaw`
+          UPDATE "Rfq" SET "productSelections" = NULL, "updatedAt" = NOW() WHERE id = ${id}
+        `;
+      } else {
+        await prisma.$executeRaw`
+          UPDATE "Rfq"
+          SET "productSelections" = ${JSON.stringify(productSelections)}::jsonb,
+              "updatedAt" = NOW()
+          WHERE id = ${id}
+        `;
+      }
+    }
+
+    const rfq = await prisma.rfq.findUnique({
       where: { id },
-      data: parsed.data,
       include: {
         messages: { orderBy: { createdAt: "asc" } },
         quotes: { orderBy: { createdAt: "desc" }, select: { id: true, quoteNumber: true, status: true, grandTotal: true } },
       },
     });
-    return NextResponse.json(rfq);
+    if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const rows = await prisma.$queryRaw<Array<{ productSelections: unknown }>>`
+      SELECT "productSelections" FROM "Rfq" WHERE id = ${id}
+    `;
+
+    return NextResponse.json({
+      ...rfq,
+      productSelections: rows[0]?.productSelections ?? null,
+    });
   } catch {
     return NextResponse.json({ error: "Update failed" }, { status: 400 });
   }

@@ -13,11 +13,23 @@ const statusStyles: Record<string, string> = {
   PAYMENT_RECEIVED: "bg-mid-green/40 text-dark-primary",
   DELIVERED: "bg-mid-green/50 text-dark-primary",
   CLOSED: "bg-dark-primary/20 text-dark-primary",
+  // Invoice / proforma
+  ISSUED: "bg-mid-green text-background",
+  PARTIALLY_PAID: "bg-light-green/50 text-dark-primary",
+  PAID: "bg-mid-green/40 text-dark-primary",
+  CANCELLED: "bg-dark-primary/15 text-dark-primary",
+  VOID: "bg-dark-primary/20 text-dark-primary",
   // RFQ statuses
   NEW: "bg-light-green/25 text-dark-primary",
   NEEDS_REVIEW: "bg-dark-primary/15 text-dark-primary",
   PARSED: "bg-mid-green/25 text-mid-green",
   QUOTED: "bg-mid-green text-background",
+  // GST / stock
+  PREPARED: "bg-mid-green/25 text-mid-green",
+  FILED: "bg-mid-green text-background",
+  MATCHED: "bg-mid-green/40 text-dark-primary",
+  UNMATCHED: "bg-dark-primary/15 text-dark-primary",
+  MISMATCH: "bg-dark-primary/20 text-dark-primary",
 };
 
 export function StatusBadge({ status }: { status: string }) {

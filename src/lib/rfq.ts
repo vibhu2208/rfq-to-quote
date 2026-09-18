@@ -106,9 +106,11 @@ export async function parseAndUpdateRfq(rfqId: string) {
       parsedCategory: result.productCategory,
       parsedSpecs: {
         ...result.specs,
+        items: result.items,
         _meta: {
           language: result.language,
           summary: result.summary,
+          itemCount: result.items.length,
         },
       } as Prisma.InputJsonValue,
       parseConfidence: result.confidence,

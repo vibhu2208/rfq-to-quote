@@ -28,3 +28,7 @@ export function decimalToNumber(v: unknown): number {
   }
   return Number(v);
 }
+
+export function makeQuoteThreadRef(quoteNumber: string): string {
+  return `QREF-${quoteNumber}`;
+}

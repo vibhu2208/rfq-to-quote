@@ -55,6 +55,21 @@ enum VendorOutreachStatus {
   FAILED
 }
 
+enum QuoteReplyIntent {
+  ACCEPT
+  REJECT
+  QUESTION
+  COUNTER_OFFER
+  REQUEST_REVISION
+  ACKNOWLEDGEMENT
+  UNCLEAR
+}
+
+enum KnowledgeSource {
+  HUMAN_REPLY
+  MANUAL
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -62,49 +77,70 @@ model User {
   name         String
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+
+  memberships      OrganisationMembership[]
+  auditEvents      AuditEvent[]             @relation("AuditActor")
+  knowledgeEntries KnowledgeEntry[]
+  copilotChats     CopilotChat[]
 }
 
 model Product {
-  id          String   @id @default(cuid())
-  code        String   @unique
-  name        String
-  description String   @default("")
-  unit        String   @default("pcs")
-  basePrice   Decimal  @db.Decimal(12, 2)
-  offerPrice  Decimal  @db.Decimal(12, 2)
-  taxRate     Decimal  @default(18) @db.Decimal(5, 2)
-  taxCategory String   @default("GST18")
-  active      Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id             String      @id @default(cuid())
+  code           String      @unique
+  name           String
+  description    String      @default("")
+  unit           String      @default("pcs")
+  uqc            UqcCode     @default(NOS)
+  hsnCode        String?
+  productType    ProductType @default(GOODS)
+  organisationId String?
+  basePrice      Decimal     @db.Decimal(12, 2)
+  offerPrice     Decimal     @db.Decimal(12, 2)
+  taxRate        Decimal     @default(18) @db.Decimal(5, 2)
+  taxCategory    String      @default("GST18")
+  active         Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
 
-  lineItems QuoteLineItem[]
+  lineItems             QuoteLineItem[]
+  organisation          Organisation?             @relation(fields: [organisationId], references: [id], onDelete: SetNull)
+  invoiceLines          InvoiceLine[]
+  proformaLines         ProformaInvoiceLine[]
+  noteLines             CreditDebitNoteLine[]
+  stockMovements        StockMovement[]
+  stockBalances         StockBalance[]
+  valuationLayers       InventoryValuationLayer[]
+  transactionDraftLines TransactionDraftLine[]
 
   @@index([name])
   @@index([active])
+  @@index([organisationId])
+  @@index([hsnCode])
 }
 
 model Rfq {
-  id              String     @id @default(cuid())
-  channel         RfqChannel
-  sourceRef       String     @default("") // message id / thread id
-  subject         String     @default("")
-  rawText         String     @default("")
-  rawAttachments  Json       @default("[]") // [{ name, url?, contentType? }]
-  customerName    String     @default("")
-  customerPhone   String     @default("")
-  customerEmail   String     @default("")
-  customerCompany String     @default("")
-  status          RfqStatus  @default(NEW)
-  parsedCategory  String?
-  parsedSpecs     Json? // structured extraction from AI
-  parseConfidence Float?
-  parseError      String?
-  marketplacePrices Json? // cached Amazon/Flipkart/IndiaMART snapshot
-  marketplaceQuery  String? // search query used for the snapshot
+  id                   String     @id @default(cuid())
+  channel              RfqChannel
+  sourceRef            String     @default("") // message id / thread id
+  subject              String     @default("")
+  rawText              String     @default("")
+  rawAttachments       Json       @default("[]") // [{ name, url?, contentType? }]
+  customerName         String     @default("")
+  customerPhone        String     @default("")
+  customerEmail        String     @default("")
+  customerCompany      String     @default("")
+  status               RfqStatus  @default(NEW)
+  parsedCategory       String?
+  parsedSpecs          Json? // structured extraction from AI
+  parseConfidence      Float?
+  parseError           String?
+  marketplacePrices    Json? // cached Amazon/Flipkart/IndiaMART snapshot
+  marketplaceQuery     String? // search query used for the snapshot
   marketplaceFetchedAt DateTime?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
+  /** User-picked catalog products per requirement line (survives reload). */
+  productSelections    Json?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   messages           RfqMessage[]
   quotes             Quote[]
@@ -145,6 +181,7 @@ model Quote {
   buyerPhone   String @default("")
   buyerState   String @default("")
   buyerAddress String @default("")
+  buyerGstin   String @default("")
 
   withGst         Boolean @default(true)
   gstMode         String  @default("AUTO") // AUTO | CGST_SGST | IGST
@@ -166,15 +203,107 @@ model Quote {
   notes      String    @default("")
   validUntil DateTime?
   sentAt     DateTime?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
 
-  lineItems QuoteLineItem[]
-  rfq       Rfq?            @relation(fields: [rfqId], references: [id], onDelete: SetNull)
+  /// Outbound Message-ID of the quote email (for In-Reply-To matching)
+  outboundMsgId String @default("")
+  /// Synthetic ref embedded in quote emails, e.g. QREF-Q-2026-0001
+  threadRef     String @default("")
+
+  needsAssistance     Boolean           @default(false)
+  assistanceReason    String            @default("")
+  lastBuyerReplyAt    DateTime?
+  lastReplyIntent     QuoteReplyIntent?
+  lastAnalysisSummary String            @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lineItems        QuoteLineItem[]
+  messages         QuoteMessage[]
+  knowledgeEntries KnowledgeEntry[]
+  rfq              Rfq?              @relation(fields: [rfqId], references: [id], onDelete: SetNull)
+  proformaInvoices ProformaInvoice[]
 
   @@index([status])
   @@index([createdAt])
   @@index([rfqId])
+  @@index([outboundMsgId])
+  @@index([threadRef])
+  @@index([needsAssistance])
+  @@index([buyerEmail])
+}
+
+model QuoteMessage {
+  id          String            @id @default(cuid())
+  quoteId     String
+  direction   MessageDirection
+  channel     RfqChannel        @default(EMAIL)
+  subject     String            @default("")
+  body        String            @default("")
+  messageId   String            @default("")
+  inReplyTo   String            @default("")
+  fromEmail   String            @default("")
+  toEmail     String            @default("")
+  intent      QuoteReplyIntent?
+  analysis    Json              @default("{}")
+  autoReplied Boolean           @default(false)
+  createdAt   DateTime          @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+  @@index([messageId])
+  @@index([createdAt])
+  @@index([direction])
+}
+
+model KnowledgeEntry {
+  id               String          @id @default(cuid())
+  question         String
+  answer           String
+  tags             String[]        @default([])
+  source           KnowledgeSource @default(HUMAN_REPLY)
+  quoteId          String?
+  inboundMessageId String          @default("")
+  createdById      String?
+  embedding        Json?
+  active           Boolean         @default(true)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  quote     Quote? @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([active])
+  @@index([quoteId])
+  @@index([createdAt])
+}
+
+model CopilotChat {
+  id        String   @id @default(cuid())
+  userId    String?
+  title     String   @default("New chat")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user     User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  messages CopilotChatMessage[]
+
+  @@index([userId, updatedAt])
+  @@index([updatedAt])
+}
+
+model CopilotChatMessage {
+  id        String   @id @default(cuid())
+  chatId    String
+  role      String
+  content   String
+  payload   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  chat CopilotChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
 }
 
 model QuoteLineItem {
@@ -182,6 +311,7 @@ model QuoteLineItem {
   quoteId     String
   productId   String?
   description String  @default("")
+  aliasName   String  @default("")
   qty         Decimal @default(1) @db.Decimal(12, 3)
   unit        String  @default("pcs")
   unitPrice   Decimal @default(0) @db.Decimal(12, 2)
@@ -284,4 +414,1227 @@ model AppState {
   value     String   @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+enum OrganisationStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum LegalEntityType {
+  PROPRIETORSHIP
+  PARTNERSHIP
+  LLP
+  PRIVATE_LIMITED
+  PUBLIC_LIMITED
+  TRUST
+  SOCIETY
+  OTHER
+}
+
+enum MembershipStatus {
+  INVITED
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum PermissionEffect {
+  ALLOW
+  DENY
+}
+
+enum FiscalPeriodStatus {
+  OPEN
+  SOFT_CLOSED
+  CLOSED
+  LOCKED
+}
+
+enum DocumentType {
+  QUOTATION
+  PROFORMA_INVOICE
+  TAX_INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
+  PAYMENT_RECEIPT
+  JOURNAL_VOUCHER
+  E_WAY_BILL
+}
+
+enum PartyType {
+  CUSTOMER
+  VENDOR
+  BOTH
+  EMPLOYEE
+  GOVERNMENT
+  OTHER
+}
+
+enum AddressType {
+  BILLING
+  SHIPPING
+  REGISTERED
+  WAREHOUSE
+  OTHER
+}
+
+enum ProductType {
+  GOODS
+  SERVICE
+}
+
+enum UqcCode {
+  BAG
+  BAL
+  BDL
+  BKL
+  BOU
+  BOX
+  BTL
+  BUN
+  CAN
+  CBM
+  CCM
+  CMS
+  CTN
+  DOZ
+  DRM
+  GGR
+  GMS
+  GRS
+  GYD
+  KGS
+  KLR
+  KME
+  LTR
+  MLT
+  MTR
+  MTS
+  NOS
+  PAC
+  PCS
+  PRS
+  QTL
+  ROL
+  SET
+  SQF
+  SQM
+  SQY
+  TBS
+  TGM
+  THD
+  TON
+  TUB
+  UGS
+  UNT
+  YDS
+  OTH
+}
+
+enum SourceDocumentType {
+  RFQ
+  PURCHASE_ORDER
+  SALES_ORDER
+  PROFORMA_INVOICE
+  TAX_INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
+  BANK_STATEMENT
+  PAYMENT_ADVICE
+  GST_RETURN
+  OTHER
+}
+
+enum ExtractionStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  NEEDS_REVIEW
+  FAILED
+}
+
+enum DraftStatus {
+  DRAFT
+  VALIDATING
+  NEEDS_REVIEW
+  VALID
+  POSTED
+  REJECTED
+  VOID
+}
+
+enum ValidationSeverity {
+  INFO
+  WARNING
+  ERROR
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+  VOID
+}
+
+enum NoteType {
+  CREDIT
+  DEBIT
+}
+
+enum StockMovementType {
+  OPENING
+  PURCHASE
+  SALE
+  SALE_RETURN
+  PURCHASE_RETURN
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+}
+
+enum InventoryValuationMethod {
+  WEIGHTED_AVERAGE
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+}
+
+enum JournalStatus {
+  DRAFT
+  POSTED
+  REVERSED
+  VOID
+}
+
+enum PaymentDirection {
+  RECEIPT
+  PAYMENT
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  UPI
+  CARD
+  CHEQUE
+  DEMAND_DRAFT
+  OTHER
+}
+
+enum PaymentStatus {
+  DRAFT
+  PENDING
+  CLEARED
+  BOUNCED
+  CANCELLED
+}
+
+enum GstReturnType {
+  GSTR1
+  GSTR3B
+  GSTR9
+  GSTR9C
+}
+
+enum GstRecordStatus {
+  DRAFT
+  PREPARED
+  VALIDATED
+  FILED
+  ACCEPTED
+  REJECTED
+  SUPERSEDED
+}
+
+enum GstReconciliationStatus {
+  UNMATCHED
+  MATCHED
+  PARTIAL
+  MISMATCH
+  RESOLVED
+}
+
+enum ExternalRecordStatus {
+  PENDING
+  GENERATED
+  CANCELLED
+  FAILED
+  EXPIRED
+}
+
+model Organisation {
+  id              String                   @id @default(cuid())
+  code            String                   @unique
+  name            String
+  status          OrganisationStatus       @default(ACTIVE)
+  baseCurrency    String                   @default("INR")
+  timezone        String                   @default("Asia/Kolkata")
+  inventoryPolicy InventoryValuationMethod @default(WEIGHTED_AVERAGE)
+  policyMetadata  Json                     @default("{\"inventoryValuation\":\"WEIGHTED_AVERAGE\",\"negativeStockAllowed\":false}")
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  legalEntities     LegalEntity[]
+  memberships       OrganisationMembership[]
+  roles             Role[]
+  fiscalYears       FiscalYear[]
+  documentSeries    DocumentSeries[]
+  parties           Party[]
+  products          Product[]
+  warehouses        Warehouse[]
+  auditEvents       AuditEvent[]
+  sourceDocuments   SourceDocument[]
+  transactionDrafts TransactionDraft[]
+  proformaInvoices  ProformaInvoice[]
+  invoices          Invoice[]
+  creditDebitNotes  CreditDebitNote[]
+  chartOfAccounts   ChartOfAccount[]
+  journals          JournalEntry[]
+  payments          Payment[]
+
+  @@index([status])
+}
+
+model LegalEntity {
+  id                String          @id @default(cuid())
+  organisationId    String
+  name              String
+  legalName         String
+  entityType        LegalEntityType
+  pan               String?
+  cin               String?
+  tan               String?
+  registeredAddress Json?
+  active            Boolean         @default(true)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organisation     Organisation      @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistrations GSTRegistration[]
+  fiscalYears      FiscalYear[]
+  chartOfAccounts  ChartOfAccount[]
+  journals         JournalEntry[]
+
+  @@unique([organisationId, legalName])
+  @@unique([organisationId, pan])
+  @@index([organisationId, active])
+}
+
+model GSTRegistration {
+  id               String    @id @default(cuid())
+  legalEntityId    String
+  gstin            String    @unique
+  stateCode        String
+  tradeName        String?
+  registrationType String    @default("REGULAR")
+  effectiveFrom    DateTime?
+  cancelledAt      DateTime?
+  filingFrequency  String    @default("MONTHLY")
+  active           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  legalEntity        LegalEntity         @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  locations          BusinessLocation[]
+  documentSeries     DocumentSeries[]
+  parties            Party[]
+  warehouses         Warehouse[]
+  proformaInvoices   ProformaInvoice[]
+  invoices           Invoice[]
+  creditDebitNotes   CreditDebitNote[]
+  stockMovements     StockMovement[]
+  gstReturns         GstReturn[]
+  gstReconciliations GstReconciliation[]
+  eInvoiceRecords    EInvoiceRecord[]
+  eWayBillRecords    EWayBillRecord[]
+
+  @@index([legalEntityId, active])
+  @@index([stateCode])
+}
+
+model BusinessLocation {
+  id                String   @id @default(cuid())
+  gstRegistrationId String
+  code              String
+  name              String
+  addressLine1      String
+  addressLine2      String?
+  city              String
+  district          String?
+  state             String
+  stateCode         String
+  postalCode        String
+  countryCode       String   @default("IN")
+  isPrimary         Boolean  @default(false)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  gstRegistration GSTRegistration @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  warehouses      Warehouse[]
+
+  @@unique([gstRegistrationId, code])
+  @@index([gstRegistrationId, active])
+}
+
+model OrganisationMembership {
+  id             String           @id @default(cuid())
+  organisationId String
+  userId         String
+  status         MembershipStatus @default(ACTIVE)
+  joinedAt       DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  user         User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roles        MembershipRole[]
+
+  @@unique([organisationId, userId])
+  @@index([userId, status])
+}
+
+model Role {
+  id             String   @id @default(cuid())
+  organisationId String
+  code           String
+  name           String
+  description    String   @default("")
+  system         Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  memberships  MembershipRole[]
+  permissions  RolePermission[]
+
+  @@unique([organisationId, code])
+}
+
+model MembershipRole {
+  membershipId String
+  roleId       String
+  assignedAt   DateTime @default(now())
+
+  membership OrganisationMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  role       Role                   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([membershipId, roleId])
+  @@index([roleId])
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  description String   @default("")
+  createdAt   DateTime @default(now())
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  effect       PermissionEffect @default(ALLOW)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model FiscalYear {
+  id             String    @id @default(cuid())
+  organisationId String
+  legalEntityId  String
+  name           String
+  startsOn       DateTime  @db.Date
+  endsOn         DateTime  @db.Date
+  closedAt       DateTime?
+  createdAt      DateTime  @default(now())
+
+  organisation Organisation     @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  legalEntity  LegalEntity      @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  periods      FiscalPeriod[]
+  series       DocumentSeries[]
+  journals     JournalEntry[]
+
+  @@unique([legalEntityId, startsOn])
+  @@index([organisationId, startsOn])
+}
+
+model FiscalPeriod {
+  id           String             @id @default(cuid())
+  fiscalYearId String
+  number       Int
+  name         String
+  startsOn     DateTime           @db.Date
+  endsOn       DateTime           @db.Date
+  status       FiscalPeriodStatus @default(OPEN)
+  lockedAt     DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  fiscalYear FiscalYear     @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  journals   JournalEntry[]
+
+  @@unique([fiscalYearId, number])
+  @@index([fiscalYearId, status])
+}
+
+model DocumentSeries {
+  id                String       @id @default(cuid())
+  organisationId    String
+  gstRegistrationId String?
+  fiscalYearId      String?
+  documentType      DocumentType
+  code              String
+  prefix            String       @default("")
+  suffix            String       @default("")
+  nextNumber        BigInt       @default(1)
+  padding           Int          @default(4)
+  active            Boolean      @default(true)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  organisation    Organisation               @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration GSTRegistration?           @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  fiscalYear      FiscalYear?                @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  allocations     DocumentNumberAllocation[]
+
+  @@unique([organisationId, code])
+  @@index([gstRegistrationId, documentType, active])
+}
+
+model DocumentNumberAllocation {
+  id              String    @id @default(cuid())
+  seriesId        String
+  number          BigInt
+  formattedNumber String
+  idempotencyKey  String    @unique
+  sourceType      String?
+  sourceId        String?
+  allocatedAt     DateTime  @default(now())
+  committedAt     DateTime?
+  voidedAt        DateTime?
+  metadata        Json      @default("{}")
+
+  series DocumentSeries @relation(fields: [seriesId], references: [id], onDelete: Restrict)
+
+  @@unique([seriesId, number])
+  @@unique([seriesId, formattedNumber])
+  @@index([sourceType, sourceId])
+}
+
+model Party {
+  id                String    @id @default(cuid())
+  organisationId    String
+  gstRegistrationId String?
+  code              String
+  type              PartyType
+  legalName         String
+  tradeName         String?
+  gstin             String?
+  pan               String?
+  email             String?
+  phone             String?
+  placeOfSupplyCode String?
+  gstinVerifiedAt   DateTime?
+  gstinLegalName    String?
+  gstinStatus       String?
+  gstinRawResponse  Json?
+  creditLimit       Decimal   @default(0) @db.Decimal(18, 2)
+  active            Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organisation      Organisation       @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration   GSTRegistration?   @relation(fields: [gstRegistrationId], references: [id], onDelete: SetNull)
+  addresses         Address[]
+  proformaInvoices  ProformaInvoice[]
+  invoices          Invoice[]
+  creditDebitNotes  CreditDebitNote[]
+  payments          Payment[]
+  transactionDrafts TransactionDraft[]
+  journalLines      JournalLine[]
+
+  @@unique([organisationId, code])
+  @@index([organisationId, legalName])
+  @@index([gstin])
+}
+
+model Address {
+  id           String      @id @default(cuid())
+  partyId      String
+  type         AddressType
+  label        String      @default("")
+  addressLine1 String
+  addressLine2 String?
+  city         String
+  district     String?
+  state        String
+  stateCode    String
+  postalCode   String
+  countryCode  String      @default("IN")
+  isDefault    Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  party Party @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  @@index([partyId, type])
+}
+
+model Warehouse {
+  id                 String                   @id @default(cuid())
+  organisationId     String
+  gstRegistrationId  String
+  businessLocationId String?
+  code               String
+  name               String
+  valuationMethod    InventoryValuationMethod @default(WEIGHTED_AVERAGE)
+  policyMetadata     Json                     @default("{\"negativeStockAllowed\":false}")
+  active             Boolean                  @default(true)
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  organisation     Organisation              @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration  GSTRegistration           @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  businessLocation BusinessLocation?         @relation(fields: [businessLocationId], references: [id], onDelete: SetNull)
+  movements        StockMovement[]
+  balances         StockBalance[]
+  valuationLayers  InventoryValuationLayer[]
+
+  @@unique([organisationId, code])
+  @@index([gstRegistrationId, active])
+}
+
+model AuditEvent {
+  id             String   @id @default(cuid())
+  organisationId String
+  actorUserId    String?
+  occurredAt     DateTime @default(now())
+  action         String
+  entityType     String
+  entityId       String
+  correlationId  String?
+  ipAddress      String?
+  userAgent      String?
+  before         Json?
+  after          Json?
+  metadata       Json     @default("{}")
+  hash           String?
+  previousHash   String?
+
+  organisation Organisation @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  actor        User?        @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organisationId, occurredAt])
+  @@index([entityType, entityId])
+  @@index([correlationId])
+}
+
+model SourceDocument {
+  id             String             @id @default(cuid())
+  organisationId String
+  type           SourceDocumentType
+  externalRef    String?
+  fileName       String
+  contentType    String?
+  storageKey     String
+  checksum       String
+  receivedAt     DateTime           @default(now())
+  metadata       Json               @default("{}")
+  createdAt      DateTime           @default(now())
+
+  organisation Organisation         @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  extractions  DocumentExtraction[]
+  drafts       TransactionDraft[]
+
+  @@unique([organisationId, checksum])
+  @@index([organisationId, receivedAt])
+}
+
+model DocumentExtraction {
+  id               String           @id @default(cuid())
+  sourceDocumentId String
+  status           ExtractionStatus @default(PENDING)
+  engine           String?
+  engineVersion    String?
+  extractedData    Json?
+  confidence       Decimal?         @db.Decimal(5, 4)
+  errorMessage     String?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime         @default(now())
+
+  sourceDocument SourceDocument     @relation(fields: [sourceDocumentId], references: [id], onDelete: Restrict)
+  drafts         TransactionDraft[]
+
+  @@index([sourceDocumentId, createdAt])
+  @@index([status])
+}
+
+model TransactionDraft {
+  id                   String       @id @default(cuid())
+  organisationId       String
+  sourceDocumentId     String?
+  documentExtractionId String?
+  partyId              String?
+  type                 DocumentType
+  status               DraftStatus  @default(DRAFT)
+  documentDate         DateTime?    @db.Date
+  payload              Json         @default("{}")
+  revision             Int          @default(1)
+  validatedAt          DateTime?
+  postedAt             DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  organisation       Organisation           @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  sourceDocument     SourceDocument?        @relation(fields: [sourceDocumentId], references: [id], onDelete: SetNull)
+  documentExtraction DocumentExtraction?    @relation(fields: [documentExtractionId], references: [id], onDelete: SetNull)
+  party              Party?                 @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  lines              TransactionDraftLine[]
+  validations        DraftValidation[]
+
+  @@index([organisationId, status, createdAt])
+  @@index([sourceDocumentId])
+}
+
+model TransactionDraftLine {
+  id                 String   @id @default(cuid())
+  transactionDraftId String
+  lineNumber         Int
+  productId          String?
+  description        String
+  hsnCode            String?
+  uqc                UqcCode?
+  quantity           Decimal  @default(0) @db.Decimal(18, 3)
+  unitPrice          Decimal  @default(0) @db.Decimal(18, 4)
+  taxRate            Decimal  @default(0) @db.Decimal(5, 2)
+  taxableValue       Decimal  @default(0) @db.Decimal(18, 2)
+  payload            Json     @default("{}")
+
+  draft   TransactionDraft @relation(fields: [transactionDraftId], references: [id], onDelete: Cascade)
+  product Product?         @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([transactionDraftId, lineNumber])
+  @@index([productId])
+}
+
+model DraftValidation {
+  id                 String             @id @default(cuid())
+  transactionDraftId String
+  severity           ValidationSeverity
+  code               String
+  fieldPath          String?
+  message            String
+  details            Json               @default("{}")
+  resolvedAt         DateTime?
+  createdAt          DateTime           @default(now())
+
+  draft TransactionDraft @relation(fields: [transactionDraftId], references: [id], onDelete: Cascade)
+
+  @@index([transactionDraftId, severity])
+}
+
+model ProformaInvoice {
+  id                String        @id @default(cuid())
+  organisationId    String
+  gstRegistrationId String
+  partyId           String
+  quoteId           String?
+  number            String
+  status            InvoiceStatus @default(DRAFT)
+  issueDate         DateTime      @db.Date
+  validUntil        DateTime?     @db.Date
+  placeOfSupplyCode String
+  currency          String        @default("INR")
+  subtotal          Decimal       @default(0) @db.Decimal(18, 2)
+  taxAmount         Decimal       @default(0) @db.Decimal(18, 2)
+  total             Decimal       @default(0) @db.Decimal(18, 2)
+  amountPaid        Decimal       @default(0) @db.Decimal(18, 2)
+  paymentReceivedAt DateTime?
+  billingSnapshot   Json
+  shippingSnapshot  Json?
+  terms             Json          @default("{}")
+  issuedAt          DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  organisation    Organisation          @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration GSTRegistration       @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  party           Party                 @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  quote           Quote?                @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  lines           ProformaInvoiceLine[]
+  invoices        Invoice[]
+
+  @@unique([gstRegistrationId, number])
+  @@index([organisationId, issueDate])
+  @@index([partyId, status])
+}
+
+model ProformaInvoiceLine {
+  id                String  @id @default(cuid())
+  proformaInvoiceId String
+  lineNumber        Int
+  productId         String?
+  description       String
+  hsnCode           String?
+  uqc               UqcCode
+  quantity          Decimal @db.Decimal(18, 3)
+  unitPrice         Decimal @db.Decimal(18, 4)
+  discountAmount    Decimal @default(0) @db.Decimal(18, 2)
+  taxableValue      Decimal @db.Decimal(18, 2)
+  taxRate           Decimal @db.Decimal(5, 2)
+  cgstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  sgstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  igstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  cessAmount        Decimal @default(0) @db.Decimal(18, 2)
+  lineTotal         Decimal @db.Decimal(18, 2)
+
+  proformaInvoice ProformaInvoice @relation(fields: [proformaInvoiceId], references: [id], onDelete: Restrict)
+  product         Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([proformaInvoiceId, lineNumber])
+}
+
+model Invoice {
+  id                String        @id @default(cuid())
+  organisationId    String
+  gstRegistrationId String
+  partyId           String
+  proformaInvoiceId String?
+  number            String
+  status            InvoiceStatus @default(DRAFT)
+  issueDate         DateTime      @db.Date
+  dueDate           DateTime?     @db.Date
+  placeOfSupplyCode String
+  reverseCharge     Boolean       @default(false)
+  currency          String        @default("INR")
+  subtotal          Decimal       @default(0) @db.Decimal(18, 2)
+  taxAmount         Decimal       @default(0) @db.Decimal(18, 2)
+  roundOff          Decimal       @default(0) @db.Decimal(18, 2)
+  total             Decimal       @default(0) @db.Decimal(18, 2)
+  balanceDue        Decimal       @default(0) @db.Decimal(18, 2)
+  billingSnapshot   Json
+  shippingSnapshot  Json?
+  immutableSnapshot Json?
+  issuedAt          DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  organisation       Organisation        @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration    GSTRegistration     @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  party              Party               @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  proformaInvoice    ProformaInvoice?    @relation(fields: [proformaInvoiceId], references: [id], onDelete: SetNull)
+  lines              InvoiceLine[]
+  notes              CreditDebitNote[]
+  stockMovements     StockMovement[]
+  paymentAllocations PaymentAllocation[]
+  eInvoiceRecords    EInvoiceRecord[]
+  eWayBillRecords    EWayBillRecord[]
+  gstReconciliations GstReconciliation[]
+
+  @@unique([gstRegistrationId, number])
+  @@index([organisationId, issueDate])
+  @@index([partyId, status, dueDate])
+}
+
+model InvoiceLine {
+  id             String  @id @default(cuid())
+  invoiceId      String
+  lineNumber     Int
+  productId      String?
+  description    String
+  hsnCode        String?
+  uqc            UqcCode
+  quantity       Decimal @db.Decimal(18, 3)
+  unitPrice      Decimal @db.Decimal(18, 4)
+  discountAmount Decimal @default(0) @db.Decimal(18, 2)
+  taxableValue   Decimal @db.Decimal(18, 2)
+  taxRate        Decimal @db.Decimal(5, 2)
+  cgstAmount     Decimal @default(0) @db.Decimal(18, 2)
+  sgstAmount     Decimal @default(0) @db.Decimal(18, 2)
+  igstAmount     Decimal @default(0) @db.Decimal(18, 2)
+  cessAmount     Decimal @default(0) @db.Decimal(18, 2)
+  lineTotal      Decimal @db.Decimal(18, 2)
+
+  invoice Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([invoiceId, lineNumber])
+}
+
+model CreditDebitNote {
+  id                String        @id @default(cuid())
+  organisationId    String
+  gstRegistrationId String
+  partyId           String
+  invoiceId         String?
+  number            String
+  noteType          NoteType
+  status            InvoiceStatus @default(DRAFT)
+  issueDate         DateTime      @db.Date
+  reason            String
+  subtotal          Decimal       @default(0) @db.Decimal(18, 2)
+  taxAmount         Decimal       @default(0) @db.Decimal(18, 2)
+  total             Decimal       @default(0) @db.Decimal(18, 2)
+  immutableSnapshot Json?
+  issuedAt          DateTime?
+  cancelledAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  organisation    Organisation          @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  gstRegistration GSTRegistration       @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  party           Party                 @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  invoice         Invoice?              @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  lines           CreditDebitNoteLine[]
+
+  @@unique([gstRegistrationId, number])
+  @@index([partyId, issueDate])
+}
+
+model CreditDebitNoteLine {
+  id                String  @id @default(cuid())
+  creditDebitNoteId String
+  lineNumber        Int
+  productId         String?
+  description       String
+  hsnCode           String?
+  uqc               UqcCode
+  quantity          Decimal @db.Decimal(18, 3)
+  taxableValue      Decimal @db.Decimal(18, 2)
+  taxRate           Decimal @db.Decimal(5, 2)
+  cgstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  sgstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  igstAmount        Decimal @default(0) @db.Decimal(18, 2)
+  cessAmount        Decimal @default(0) @db.Decimal(18, 2)
+  lineTotal         Decimal @db.Decimal(18, 2)
+
+  note    CreditDebitNote @relation(fields: [creditDebitNoteId], references: [id], onDelete: Restrict)
+  product Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([creditDebitNoteId, lineNumber])
+}
+
+model StockMovement {
+  id                 String            @id @default(cuid())
+  gstRegistrationId  String
+  warehouseId        String
+  productId          String
+  invoiceId          String?
+  type               StockMovementType
+  occurredAt         DateTime
+  quantity           Decimal           @db.Decimal(18, 3)
+  unitCost           Decimal           @default(0) @db.Decimal(18, 4)
+  value              Decimal           @default(0) @db.Decimal(18, 2)
+  runningQuantity    Decimal?          @db.Decimal(18, 3)
+  runningAverageCost Decimal?          @db.Decimal(18, 4)
+  sourceType         String
+  sourceId           String
+  idempotencyKey     String            @unique
+  metadata           Json              @default("{}")
+  reversedById       String?           @unique
+  createdAt          DateTime          @default(now())
+
+  gstRegistration GSTRegistration           @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  warehouse       Warehouse                 @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  product         Product                   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  invoice         Invoice?                  @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  reversedBy      StockMovement?            @relation("MovementReversal", fields: [reversedById], references: [id], onDelete: Restrict)
+  reverses        StockMovement?            @relation("MovementReversal")
+  valuationLayers InventoryValuationLayer[]
+
+  @@index([warehouseId, productId, occurredAt])
+  @@index([sourceType, sourceId])
+}
+
+model StockBalance {
+  id               String   @id @default(cuid())
+  warehouseId      String
+  productId        String
+  quantityOnHand   Decimal  @default(0) @db.Decimal(18, 3)
+  quantityReserved Decimal  @default(0) @db.Decimal(18, 3)
+  averageCost      Decimal  @default(0) @db.Decimal(18, 4)
+  inventoryValue   Decimal  @default(0) @db.Decimal(18, 2)
+  version          Int      @default(0)
+  updatedAt        DateTime @updatedAt
+
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([warehouseId, productId])
+}
+
+model InventoryValuationLayer {
+  id             String                   @id @default(cuid())
+  warehouseId    String
+  productId      String
+  asOf           DateTime
+  movementId     String?
+  quantity       Decimal                  @db.Decimal(18, 3)
+  averageCost    Decimal                  @db.Decimal(18, 4)
+  inventoryValue Decimal                  @db.Decimal(18, 2)
+  policy         InventoryValuationMethod @default(WEIGHTED_AVERAGE)
+  policyMetadata Json                     @default("{}")
+  createdAt      DateTime                 @default(now())
+
+  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  product   Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  movement  StockMovement? @relation(fields: [movementId], references: [id], onDelete: Restrict)
+
+  @@index([warehouseId, productId, asOf])
+  @@index([movementId])
+}
+
+model ChartOfAccount {
+  id             String      @id @default(cuid())
+  organisationId String
+  legalEntityId  String
+  parentId       String?
+  code           String
+  name           String
+  type           AccountType
+  systemKey      String?
+  active         Boolean     @default(true)
+  allowPosting   Boolean     @default(true)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organisation    Organisation     @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  legalEntity     LegalEntity      @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  parent          ChartOfAccount?  @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: Restrict)
+  children        ChartOfAccount[] @relation("AccountHierarchy")
+  journalLines    JournalLine[]
+  paymentAccounts Payment[]
+
+  @@unique([legalEntityId, code])
+  @@unique([legalEntityId, systemKey])
+  @@index([organisationId, type, active])
+}
+
+model JournalEntry {
+  id              String        @id @default(cuid())
+  organisationId  String
+  legalEntityId   String
+  fiscalYearId    String
+  fiscalPeriodId  String
+  number          String
+  status          JournalStatus @default(DRAFT)
+  entryDate       DateTime      @db.Date
+  sourceType      String
+  sourceId        String?
+  narration       String        @default("")
+  idempotencyKey  String?       @unique
+  postedAt        DateTime?
+  reversedEntryId String?       @unique
+  createdAt       DateTime      @default(now())
+
+  organisation  Organisation  @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  legalEntity   LegalEntity   @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+  fiscalYear    FiscalYear    @relation(fields: [fiscalYearId], references: [id], onDelete: Restrict)
+  fiscalPeriod  FiscalPeriod  @relation(fields: [fiscalPeriodId], references: [id], onDelete: Restrict)
+  lines         JournalLine[]
+  reversedEntry JournalEntry? @relation("JournalReversal", fields: [reversedEntryId], references: [id], onDelete: Restrict)
+  reversalEntry JournalEntry? @relation("JournalReversal")
+
+  @@unique([legalEntityId, number])
+  @@index([organisationId, entryDate, status])
+  @@index([sourceType, sourceId])
+}
+
+model JournalLine {
+  id             String   @id @default(cuid())
+  journalEntryId String
+  lineNumber     Int
+  accountId      String
+  partyId        String?
+  description    String   @default("")
+  debit          Decimal  @default(0) @db.Decimal(18, 2)
+  credit         Decimal  @default(0) @db.Decimal(18, 2)
+  dimensions     Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  journalEntry JournalEntry   @relation(fields: [journalEntryId], references: [id], onDelete: Restrict)
+  account      ChartOfAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  party        Party?         @relation(fields: [partyId], references: [id], onDelete: Restrict)
+
+  @@unique([journalEntryId, lineNumber])
+  @@index([accountId])
+  @@index([partyId])
+}
+
+model Payment {
+  id             String           @id @default(cuid())
+  organisationId String
+  partyId        String?
+  accountId      String
+  number         String
+  direction      PaymentDirection
+  method         PaymentMethod
+  status         PaymentStatus    @default(DRAFT)
+  paymentDate    DateTime         @db.Date
+  amount         Decimal          @db.Decimal(18, 2)
+  currency       String           @default("INR")
+  reference      String?
+  instrumentDate DateTime?        @db.Date
+  clearedAt      DateTime?
+  metadata       Json             @default("{}")
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organisation Organisation        @relation(fields: [organisationId], references: [id], onDelete: Restrict)
+  party        Party?              @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  account      ChartOfAccount      @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  allocations  PaymentAllocation[]
+
+  @@unique([organisationId, number])
+  @@index([partyId, paymentDate])
+}
+
+model PaymentAllocation {
+  id          String    @id @default(cuid())
+  paymentId   String
+  invoiceId   String
+  amount      Decimal   @db.Decimal(18, 2)
+  allocatedAt DateTime  @default(now())
+  reversedAt  DateTime?
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, invoiceId])
+  @@index([invoiceId])
+}
+
+model GstReturn {
+  id                String          @id @default(cuid())
+  gstRegistrationId String
+  type              GstReturnType
+  period            String
+  status            GstRecordStatus @default(DRAFT)
+  payload           Json            @default("{}")
+  summary           Json            @default("{}")
+  preparedAt        DateTime?
+  filedAt           DateTime?
+  arn               String?
+  version           Int             @default(1)
+  supersedesId      String?         @unique
+  createdAt         DateTime        @default(now())
+
+  gstRegistration GSTRegistration     @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  submissions     GstSubmission[]
+  supersedes      GstReturn?          @relation("ReturnSupersession", fields: [supersedesId], references: [id], onDelete: Restrict)
+  supersededBy    GstReturn?          @relation("ReturnSupersession")
+  reconciliations GstReconciliation[]
+
+  @@unique([gstRegistrationId, type, period, version])
+  @@index([gstRegistrationId, period, status])
+}
+
+model GstReconciliation {
+  id                 String                  @id @default(cuid())
+  gstRegistrationId  String
+  gstReturnId        String?
+  invoiceId          String?
+  externalInvoiceRef String?
+  status             GstReconciliationStatus @default(UNMATCHED)
+  bookValues         Json                    @default("{}")
+  portalValues       Json                    @default("{}")
+  differences        Json                    @default("{}")
+  resolvedAt         DateTime?
+  resolutionNotes    String?
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+
+  gstRegistration GSTRegistration @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  gstReturn       GstReturn?      @relation(fields: [gstReturnId], references: [id], onDelete: SetNull)
+  invoice         Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@index([gstRegistrationId, status])
+  @@index([gstReturnId])
+}
+
+model GstSubmission {
+  id                 String          @id @default(cuid())
+  gstReturnId        String
+  attempt            Int
+  status             GstRecordStatus
+  requestPayload     Json
+  responsePayload    Json?
+  acknowledgementRef String?
+  errorCode          String?
+  errorMessage       String?
+  submittedAt        DateTime        @default(now())
+
+  gstReturn GstReturn @relation(fields: [gstReturnId], references: [id], onDelete: Restrict)
+
+  @@unique([gstReturnId, attempt])
+}
+
+model EInvoiceRecord {
+  id                    String               @id @default(cuid())
+  gstRegistrationId     String
+  invoiceId             String
+  status                ExternalRecordStatus @default(PENDING)
+  irn                   String?              @unique
+  acknowledgementNumber String?
+  acknowledgementDate   DateTime?
+  signedInvoice         Json?
+  signedQrCode          String?
+  requestPayload        Json?
+  responsePayload       Json?
+  cancelledAt           DateTime?
+  cancellationReason    String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  gstRegistration GSTRegistration @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@index([gstRegistrationId, status])
+  @@index([invoiceId])
+}
+
+model EWayBillRecord {
+  id                 String               @id @default(cuid())
+  gstRegistrationId  String
+  invoiceId          String?
+  status             ExternalRecordStatus @default(PENDING)
+  ewayBillNumber     String?              @unique
+  generatedAt        DateTime?
+  validUntil         DateTime?
+  distanceKm         Int?
+  transporterId      String?
+  transporterName    String?
+  vehicleNumber      String?
+  transportMode      String?
+  requestPayload     Json?
+  responsePayload    Json?
+  cancelledAt        DateTime?
+  cancellationReason String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  gstRegistration GSTRegistration @relation(fields: [gstRegistrationId], references: [id], onDelete: Restrict)
+  invoice         Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  @@index([gstRegistrationId, status])
+  @@index([invoiceId])
 }

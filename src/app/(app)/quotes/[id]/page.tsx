@@ -1,5 +1,7 @@
 import { notFound } from "next/navigation";
 import { QuoteBuilder, type QuoteFormState } from "@/components/quote-builder";
+import { QuoteLifecyclePanel } from "@/components/quote-lifecycle-panel";
+import { QuoteAccountingActions } from "@/components/quote-accounting-actions";
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
@@ -34,6 +36,7 @@ export default async function EditQuotePage({ params }: Props) {
     buyerPhone: quote.buyerPhone,
     buyerState: quote.buyerState,
     buyerAddress: quote.buyerAddress,
+    buyerGstin: quote.buyerGstin,
     withGst: quote.withGst,
     gstMode: (quote.gstMode as QuoteFormState["gstMode"]) || "AUTO",
     deliveryCharge: decimalToNumber(quote.deliveryCharge),
@@ -42,7 +45,7 @@ export default async function EditQuotePage({ params }: Props) {
     otherTaxAmount: decimalToNumber(quote.otherTaxAmount),
     otherTaxLabel: quote.otherTaxLabel,
     notes: quote.notes,
-    status: quote.status === "SENT" ? "SENT" : "DRAFT",
+    status: quote.status === "DRAFT" ? "DRAFT" : "SENT",
     manualOverrides: (quote.manualOverrides as ManualOverrides) || {},
     subtotal: decimalToNumber(quote.subtotal),
     gstAmount: decimalToNumber(quote.gstAmount),
@@ -51,6 +54,7 @@ export default async function EditQuotePage({ params }: Props) {
       key: li.id,
       productId: li.productId,
       description: li.description,
+      aliasName: li.aliasName || "",
       qty: decimalToNumber(li.qty),
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),
@@ -58,15 +62,33 @@ export default async function EditQuotePage({ params }: Props) {
     })),
   };
 
+  const showLifecycle = quote.status !== "DRAFT" || Boolean(quote.sentAt);
+  const showAccounting = ["ACCEPTED", "SENT", "INVOICE_GENERATED", "UNDER_NEGOTIATION"].includes(
+    quote.status
+  );
+
   return (
-    <QuoteBuilder
-      initial={initial}
-      sellerState={company.sellerState}
-      sendContext={{
-        rfqChannel: quote.rfq?.channel ?? null,
-        customerEmail: quote.rfq?.customerEmail,
-        customerPhone: quote.rfq?.customerPhone,
-      }}
-    />
+    <div className="space-y-8">
+      <QuoteBuilder
+        initial={initial}
+        sellerState={company.sellerState}
+        company={{
+          name: company.name,
+          address: company.address,
+          gstin: company.gstin,
+          email: company.email,
+          phone: company.phone,
+        }}
+        sendContext={{
+          rfqChannel: quote.rfq?.channel ?? null,
+          customerEmail: quote.rfq?.customerEmail,
+          customerPhone: quote.rfq?.customerPhone,
+        }}
+      />
+      {showAccounting ? (
+        <QuoteAccountingActions quoteId={quote.id} status={quote.status} />
+      ) : null}
+      {showLifecycle ? <QuoteLifecyclePanel quoteId={quote.id} /> : null}
+    </div>
   );
 }

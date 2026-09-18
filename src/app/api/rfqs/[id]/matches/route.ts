@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
-import { matchProductsToRfq, extractKeywords } from "@/lib/product-match";
+import {
+  matchProductsToRfq,
+  matchProductsToRfqItems,
+  flattenRequirementMatches,
+  extractKeywords,
+} from "@/lib/product-match";
+import { extractRfqItems } from "@/lib/rfq-items";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -26,12 +32,20 @@ export async function GET(_req: NextRequest, { params }: Params) {
     rawText: rfq.rawText,
   };
 
-  const matches = matchProductsToRfq(products, input);
+  const requirements = extractRfqItems(rfq.parsedSpecs, rfq.rawText);
+  const itemMatches = matchProductsToRfqItems(
+    products,
+    { ...input, parsedSpecs: { ...(rfq.parsedSpecs as object), items: requirements } },
+  );
+  const matches =
+    itemMatches.length > 0 ? flattenRequirementMatches(itemMatches) : matchProductsToRfq(products, input);
   const keywords = extractKeywords(input);
 
   return NextResponse.json({
     keywords,
     parsedCategory: rfq.parsedCategory,
+    requirements,
+    itemMatches,
     matches,
   });
 }

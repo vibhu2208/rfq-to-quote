@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { decimalToNumber } from "@/lib/quotes";
+import { syncProductToInventory } from "@/lib/accounting/inventory";
 
 const productSchema = z.object({
   code: z.string().min(1).optional(),
@@ -13,6 +14,7 @@ const productSchema = z.object({
   offerPrice: z.coerce.number().nonnegative().optional(),
   taxRate: z.coerce.number().nonnegative().optional(),
   taxCategory: z.string().optional(),
+  productType: z.enum(["GOODS", "SERVICE"]).optional(),
   active: z.boolean().optional(),
 });
 
@@ -50,6 +52,14 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       where: { id },
       data: parsed.data,
     });
+
+    if (product.active && product.productType === "GOODS") {
+      await syncProductToInventory({
+        productId: product.id,
+        productType: product.productType,
+      });
+    }
+
     return NextResponse.json({
       ...product,
       basePrice: decimalToNumber(product.basePrice),
@@ -66,7 +76,6 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (error) return error;
 
   const { id } = await params;
-  // Soft deactivate
   const product = await prisma.product.update({
     where: { id },
     data: { active: false },
