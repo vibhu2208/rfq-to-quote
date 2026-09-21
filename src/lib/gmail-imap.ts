@@ -495,3 +495,199 @@ function formatGmailAfter(date: Date): string {
   const d = String(date.getDate()).padStart(2, "0");
   return `${y}/${m}/${d}`;
 }
+
+/**
+ * Search Gmail for vendor Recore replies for one RFQ (All Mail + INBOX).
+ * Does not create RFQs or advance the global inbox UID cursor.
+ */
+export async function checkVendorOutreachThread(rfqId: string): Promise<{
+  scanned: number;
+  matched: number;
+  newReplies: number;
+  alreadyCaptured: number;
+  results: Array<{
+    vendorId: string;
+    vendorName: string;
+    subject: string;
+    fromEmail: string;
+    quotedPrice: number | null;
+    lineCount: number;
+    alreadyCaptured?: boolean;
+  }>;
+}> {
+  const outreaches = await prisma.vendorOutreach.findMany({
+    where: {
+      rfqId,
+      status: { in: ["SENT", "REPLIED", "PENDING", "FAILED", "NEGOTIATING", "DECLINED"] },
+    },
+    include: {
+      vendor: { select: { id: true, name: true, email: true } },
+    },
+    orderBy: { sentAt: "desc" },
+  });
+
+  if (outreaches.length === 0) {
+    return {
+      scanned: 0,
+      matched: 0,
+      newReplies: 0,
+      alreadyCaptured: 0,
+      results: [],
+    };
+  }
+
+  const earliest = outreaches.reduce<Date | null>((min, row) => {
+    const t = row.sentAt || row.createdAt;
+    if (!min || t < min) return t;
+    return min;
+  }, null);
+  const since = earliest
+    ? new Date(earliest.getTime() - 24 * 60 * 60 * 1000)
+    : new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const after = formatGmailAfter(since);
+
+  const config = requireGmailConfig();
+  const client = new ImapFlow({
+    host: config.host,
+    port: config.port,
+    secure: true,
+    auth: { user: config.user, pass: config.pass },
+    logger: false,
+  });
+
+  const results: Array<{
+    vendorId: string;
+    vendorName: string;
+    subject: string;
+    fromEmail: string;
+    quotedPrice: number | null;
+    lineCount: number;
+    alreadyCaptured?: boolean;
+  }> = [];
+  let scanned = 0;
+  let matched = 0;
+  let newReplies = 0;
+  let alreadyCaptured = 0;
+
+  await client.connect();
+  try {
+    const { lock, path: mailbox } = await lockThreadMailbox(client);
+    try {
+      const uidSet = new Set<number>();
+
+      for (const outreach of outreaches) {
+        const queries: string[] = [
+          `${gmailPhrase(outreach.threadRef)} after:${after}`,
+          `subject:${gmailPhrase(outreach.threadRef)} after:${after}`,
+        ];
+        const vendorEmail = outreach.vendor.email?.trim().toLowerCase();
+        if (vendorEmail) {
+          queries.push(`from:${vendorEmail} after:${after}`);
+        }
+
+        for (const q of queries) {
+          try {
+            const found = await client.search({ gmailraw: q }, { uid: true });
+            for (const uid of found || []) uidSet.add(uid);
+          } catch {
+            // gmailraw may be unavailable
+          }
+        }
+
+        if (vendorEmail) {
+          try {
+            const fromHits = await client.search(
+              { from: vendorEmail, since },
+              { uid: true }
+            );
+            for (const uid of fromHits || []) uidSet.add(uid);
+          } catch {
+            // ignore
+          }
+        }
+
+        try {
+          const subjectHits = await client.search(
+            { subject: outreach.threadRef, since },
+            { uid: true }
+          );
+          for (const uid of subjectHits || []) uidSet.add(uid);
+        } catch {
+          // ignore
+        }
+      }
+
+      const uids = [...uidSet].sort((a, b) => a - b).slice(-60);
+
+      for (const uid of uids) {
+        const downloaded = await client.download(uid, undefined, { uid: true });
+        if (!downloaded?.content) continue;
+
+        const parsed = await simpleParser(downloaded.content);
+        scanned += 1;
+
+        const fromRaw =
+          parsed.from?.text || parsed.from?.value?.[0]?.address || "";
+        const { email: fromEmail } = parseAddress(
+          typeof fromRaw === "string" ? fromRaw : String(fromRaw)
+        );
+
+        // Skip our own outbound Recore copies (not replies).
+        const subject = parsed.subject || "";
+        const isOutboundRecore =
+          /^Quote request —/i.test(subject) &&
+          !/^re\s*:/i.test(subject) &&
+          fromEmail === config.user.trim().toLowerCase();
+        if (isOutboundRecore) continue;
+
+        const before = await prisma.vendorOutreach.findFirst({
+          where: {
+            rfqId,
+            replyMsgId: normalizeMsgId(parsed.messageId).slice(0, 240) || "__none__",
+          },
+          select: { id: true },
+        });
+
+        const reply = await handleVendorReplyEmail(parsed);
+        if (!reply.handled || reply.rfqId !== rfqId) continue;
+
+        matched += 1;
+        const wasAlready = Boolean(before);
+        if (wasAlready) {
+          alreadyCaptured += 1;
+        } else {
+          newReplies += 1;
+          if (config.markSeen && mailbox === "INBOX") {
+            await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+          }
+        }
+
+        const vendor =
+          outreaches.find((o) => o.vendorId === reply.vendorId)?.vendor ||
+          null;
+
+        results.push({
+          vendorId: reply.vendorId,
+          vendorName: vendor?.name || reply.vendorId,
+          subject,
+          fromEmail,
+          quotedPrice: reply.quotedPrice,
+          lineCount: reply.quotedLineItems.length,
+          alreadyCaptured: wasAlready,
+        });
+      }
+    } finally {
+      lock.release();
+    }
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+
+  return {
+    scanned,
+    matched,
+    newReplies,
+    alreadyCaptured,
+    results,
+  };
+}

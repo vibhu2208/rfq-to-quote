@@ -52,6 +52,8 @@ enum VendorOutreachStatus {
   PENDING
   SENT
   REPLIED
+  NEGOTIATING
+  DECLINED
   FAILED
 }
 
@@ -393,8 +395,19 @@ model VendorOutreach {
   replyText       String               @default("")
   replyMsgId      String               @default("")
   quotedPrice     Decimal?             @db.Decimal(14, 2)
+  /// RFQ lineNumbers included in the last Recore email, e.g. [1, 3]
+  requestedLineNumbers Json?
+  /// Per-line vendor quote: [{ lineNumber, description, quantity, unit, unitPrice, lineTotal }]
+  quotedLineItems Json?
+  /// Last plain-language negotiation note from the admin
+  negotiationNote String               @default("")
+  /// AI classification of latest vendor reply: ACCEPTED | DECLINED | COUNTER | UNCLEAR
+  replyIntent     String               @default("")
+  previousQuotedPrice Decimal?         @db.Decimal(14, 2)
+  previousQuotedLineItems Json?
   sentAt          DateTime?
   repliedAt       DateTime?
+  negotiatedAt    DateTime?
   errorMessage    String               @default("")
   createdAt       DateTime             @default(now())
   updatedAt       DateTime             @updatedAt

@@ -17,6 +17,8 @@ const bodySchema = z.object({
       z.object({
         productId: z.string(),
         qty: z.number().positive(),
+        /** When set, overrides catalog offerPrice (e.g. vendor quoted sell price). */
+        unitPrice: z.number().nonnegative().optional(),
       })
     )
     .optional(),
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   let productIds: string[] = [];
   let quantities: Record<string, number> = {};
-  let explicitLines: Array<{ productId: string; qty: number }> = [];
+  let explicitLines: Array<{ productId: string; qty: number; unitPrice?: number }> = [];
   try {
     const json = await req.json().catch(() => ({}));
     const parsed = bodySchema.safeParse(json);
@@ -74,9 +76,13 @@ export async function POST(req: NextRequest, { params }: Params) {
   const buildLine = (
     p: { id: string; name: string; description: string; unit: string; offerPrice: unknown; taxRate: unknown },
     qty: number,
-    sortOrder: number
+    sortOrder: number,
+    unitPriceOverride?: number
   ): LineCreate => {
-    const unitPrice = decimalToNumber(p.offerPrice);
+    const unitPrice =
+      unitPriceOverride != null && Number.isFinite(unitPriceOverride)
+        ? unitPriceOverride
+        : decimalToNumber(p.offerPrice);
     const taxRate = decimalToNumber(p.taxRate);
     return {
       productId: p.id,
@@ -90,7 +96,9 @@ export async function POST(req: NextRequest, { params }: Params) {
     };
   };
 
-  const lineRequests =
+  type LineRequest = { productId: string; qty: number; unitPrice?: number };
+
+  const lineRequests: LineRequest[] =
     explicitLines.length > 0
       ? explicitLines
       : productIds.map((pid) => ({
@@ -108,7 +116,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       .map((req, i) => {
         const p = byId.get(req.productId);
         if (!p) return null;
-        return buildLine(p, req.qty, i);
+        return buildLine(p, req.qty, i, req.unitPrice);
       })
       .filter(Boolean) as LineCreate[];
   }

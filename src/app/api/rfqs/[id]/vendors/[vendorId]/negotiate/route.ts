@@ -1,16 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
-import { sendVendorRecore } from "@/lib/vendor-outreach";
+import { sendVendorNegotiation } from "@/lib/vendor-outreach";
 
 type Params = { params: Promise<{ id: string; vendorId: string }> };
 
 const bodySchema = z.object({
-  productKey: z.string().optional(),
-  lineNumbers: z.array(z.number().int().positive()).min(1).optional(),
+  plainNote: z.string().trim().min(3, "Write a short negotiation note"),
 });
 
-/** Send a Recore quote-request email to a matched vendor. */
+/** AI-format a negotiation note and email it on the same Recore thread. */
 export async function POST(request: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
@@ -23,32 +22,20 @@ export async function POST(request: NextRequest, { params }: Params) {
   }
 
   try {
-    const outreach = await sendVendorRecore({
+    const outreach = await sendVendorNegotiation({
       rfqId: id,
       vendorId,
-      productKey: parsed.data.productKey,
-      lineNumbers: parsed.data.lineNumbers,
+      plainNote: parsed.data.plainNote,
     });
-
-    if (outreach.status === "FAILED") {
-      return NextResponse.json(
-        { error: outreach.errorMessage || "Failed to send email" },
-        { status: 502 }
-      );
-    }
 
     return NextResponse.json({
       id: outreach.id,
       status: outreach.status,
       threadRef: outreach.threadRef,
-      sentAt: outreach.sentAt?.toISOString() || null,
-      outboundMsgId: outreach.outboundMsgId,
-      requestedLineNumbers: Array.isArray(outreach.requestedLineNumbers)
-        ? outreach.requestedLineNumbers
-        : null,
+      negotiatedAt: outreach.negotiatedAt?.toISOString() || null,
     });
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Recore failed";
+    const message = e instanceof Error ? e.message : "Negotiation failed";
     return NextResponse.json({ error: message }, { status: 400 });
   }
 }

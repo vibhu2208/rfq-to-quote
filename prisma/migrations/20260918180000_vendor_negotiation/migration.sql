@@ -1,0 +1,10 @@
+-- AlterEnum
+ALTER TYPE "VendorOutreachStatus" ADD VALUE IF NOT EXISTS 'NEGOTIATING';
+ALTER TYPE "VendorOutreachStatus" ADD VALUE IF NOT EXISTS 'DECLINED';
+
+-- AlterTable
+ALTER TABLE "VendorOutreach" ADD COLUMN IF NOT EXISTS "negotiationNote" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "VendorOutreach" ADD COLUMN IF NOT EXISTS "replyIntent" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "VendorOutreach" ADD COLUMN IF NOT EXISTS "previousQuotedPrice" DECIMAL(14,2);
+ALTER TABLE "VendorOutreach" ADD COLUMN IF NOT EXISTS "previousQuotedLineItems" JSONB;
+ALTER TABLE "VendorOutreach" ADD COLUMN IF NOT EXISTS "negotiatedAt" TIMESTAMP(3);

@@ -41,6 +41,8 @@ const productSnapshotSchema = z.object({
 
 const productSelectionsSchema = z.object({
   lineSelection: z.record(z.string(), z.string()).optional().default({}),
+  /** Map of RFQ lineNumber → vendorId whose quoted unit price should be used on convert. */
+  lineVendorSelection: z.record(z.string(), z.string()).optional().default({}),
   selectedIds: z.array(z.string()).optional().default([]),
   extras: z
     .array(

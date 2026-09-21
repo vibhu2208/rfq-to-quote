@@ -41,11 +41,39 @@ export async function GET(request: NextRequest) {
     include: {
       categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
       productHistory: { orderBy: { lastQuotedAt: "desc" }, take: 1 },
+      outreaches: {
+        where: { status: "DECLINED" },
+        orderBy: { repliedAt: "desc" },
+        take: 3,
+        select: {
+          id: true,
+          rfqId: true,
+          status: true,
+          replyIntent: true,
+          repliedAt: true,
+          quotedPrice: true,
+        },
+      },
     },
     orderBy: [{ active: "desc" }, { name: "asc" }],
   });
 
-  return NextResponse.json(vendors.map(serializeVendor));
+  return NextResponse.json(
+    vendors.map((vendor) => {
+      const serialized = serializeVendor(vendor);
+      const declined = vendor.outreaches || [];
+      return {
+        ...serialized,
+        declinedOutreaches: declined.map((row) => ({
+          id: row.id,
+          rfqId: row.rfqId,
+          repliedAt: row.repliedAt?.toISOString() || null,
+          quotedPrice: row.quotedPrice ? Number(row.quotedPrice) : null,
+        })),
+        declinedCount: declined.length,
+      };
+    })
+  );
 }
 
 export async function POST(request: NextRequest) {

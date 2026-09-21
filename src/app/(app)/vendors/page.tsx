@@ -21,6 +21,7 @@ type Vendor = {
   preferredChannel: "EMAIL" | "WHATSAPP";
   active: boolean;
   categories: VendorCategory[];
+  declinedCount?: number;
 };
 
 type VendorForm = Omit<Vendor, "id">;
@@ -244,9 +245,19 @@ export default function VendorsPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3">
-                    <span className="rounded bg-light-green/25 px-2 py-0.5 text-xs">
-                      {vendor.active ? "Active" : "Inactive"}
-                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="rounded bg-light-green/25 px-2 py-0.5 text-xs">
+                        {vendor.active ? "Active" : "Inactive"}
+                      </span>
+                      {(vendor.declinedCount ?? 0) > 0 ? (
+                        <span
+                          className="rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800"
+                          title="Recently declined a price negotiation"
+                        >
+                          Declined negotiation
+                        </span>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
