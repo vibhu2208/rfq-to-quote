@@ -3,7 +3,7 @@ import { AccountingError } from "@/lib/accounting/errors";
 
 type Tx = Prisma.TransactionClient;
 
-const SYSTEM_KEYS = [
+export const SYSTEM_KEYS = [
   "CASH",
   "BANK",
   "ACCOUNTS_RECEIVABLE",

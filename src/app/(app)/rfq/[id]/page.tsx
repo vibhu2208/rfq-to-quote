@@ -1080,22 +1080,18 @@ export default function RfqDetailPage() {
   const selectionsHydrated = useRef(false);
   const skipNextSave = useRef(true);
 
-  function hasSavedSelections(saved: ProductSelections | null | undefined): boolean {
-    if (!saved) return false;
-    return (
-      (saved.selectedIds?.length ?? 0) > 0 ||
-      Object.keys(saved.lineSelection || {}).length > 0 ||
-      Object.keys(saved.lineVendorSelection || {}).length > 0 ||
-      (saved.extras?.length ?? 0) > 0
-    );
-  }
-
-  function applySavedSelections(
+  const applySavedSelections = useCallback((
     saved: ProductSelections | null | undefined,
     list: ProductMatch[],
     perItem: RequirementMatch[]
-  ) {
-    if (!hasSavedSelections(saved)) {
+  ) => {
+    const hasSaved =
+      Boolean(saved) &&
+      ((saved!.selectedIds?.length ?? 0) > 0 ||
+        Object.keys(saved!.lineSelection || {}).length > 0 ||
+        Object.keys(saved!.lineVendorSelection || {}).length > 0 ||
+        (saved!.extras?.length ?? 0) > 0);
+    if (!hasSaved) {
       const auto = new Set<string>();
       const autoLines: Record<number, string> = {};
       if (perItem.length > 0) {
@@ -1173,7 +1169,7 @@ export default function RfqDetailPage() {
     setLineSelection(lineSel);
     setLineVendorSelection(vendorSel);
     setSelected(new Set(saved!.selectedIds?.length ? saved!.selectedIds : Object.values(lineSel)));
-  }
+  }, []);
 
   const loadMatches = useCallback(async (saved?: ProductSelections | null) => {
     setMatchesLoading(true);
@@ -1194,7 +1190,7 @@ export default function RfqDetailPage() {
       selectionsHydrated.current = true;
     }
     setMatchesLoading(false);
-  }, [id]);
+  }, [id, applySavedSelections]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1514,7 +1510,8 @@ export default function RfqDetailPage() {
           next.delete(productId);
           return next;
         });
-        const { [lineNumber]: _, ...rest } = prev;
+        const rest = { ...prev };
+        delete rest[lineNumber];
         return rest;
       }
       setSelected((s) => {

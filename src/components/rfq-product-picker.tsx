@@ -1,7 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Package, Search, X } from "lucide-react";
 import { Money } from "@/components/ui";
@@ -30,6 +37,18 @@ type InventoryBalance = {
 function stockLabel(qty: number | undefined, unit?: string): string {
   if (qty == null) return "—";
   return `${qty} ${unit || "pcs"}`;
+}
+
+function subscribeNever() {
+  return () => {};
+}
+
+function clientMountedSnapshot() {
+  return true;
+}
+
+function clientMountedServerSnapshot() {
+  return false;
 }
 
 function StockBadge({
@@ -157,11 +176,11 @@ export function RfqProductSearch({
   const [hits, setHits] = useState<PickableProduct[]>([]);
   const [loading, setLoading] = useState(false);
   const [rect, setRect] = useState<DropdownRect | null>(null);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = useSyncExternalStore(
+    subscribeNever,
+    clientMountedSnapshot,
+    clientMountedServerSnapshot
+  );
 
   useEffect(() => {
     if (autoFocus) inputRef.current?.focus();
@@ -203,23 +222,31 @@ export function RfqProductSearch({
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [open, listId]);
 
+  const canSearch = open && q.trim().length >= 1;
+
   useEffect(() => {
-    if (!open || q.trim().length < 1) {
-      setHits([]);
-      setLoading(false);
-      return;
-    }
+    if (!canSearch) return;
+    let cancelled = false;
     const t = setTimeout(async () => {
       setLoading(true);
-      const res = await fetch(
-        `/api/products?q=${encodeURIComponent(q)}&active=true&take=10`
-      );
-      const data = await res.json();
-      setHits(Array.isArray(data) ? data : []);
-      setLoading(false);
+      try {
+        const res = await fetch(
+          `/api/products?q=${encodeURIComponent(q)}&active=true&take=10`
+        );
+        const data = await res.json();
+        if (!cancelled) {
+          setHits(Array.isArray(data) ? data : []);
+          setLoading(false);
+        }
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
     }, 200);
-    return () => clearTimeout(t);
-  }, [q, open]);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, open, canSearch]);
 
   function pick(product: PickableProduct) {
     onSelect(product);
@@ -251,12 +278,12 @@ export function RfqProductSearch({
           </span>
         </div>
         <div className="max-h-64 overflow-y-auto">
-          {loading ? (
+          {!canSearch ? (
+            <p className="px-3 py-4 text-sm text-mid-green">Start typing to search</p>
+          ) : loading ? (
             <p className="px-3 py-4 text-sm text-mid-green">Searching…</p>
           ) : hits.length === 0 ? (
-            <p className="px-3 py-4 text-sm text-mid-green">
-              {q.trim() ? "No products found" : "Start typing to search"}
-            </p>
+            <p className="px-3 py-4 text-sm text-mid-green">No products found</p>
           ) : (
             hits.map((h) => (
               <SearchResultRow
@@ -319,7 +346,6 @@ type InventoryPickerProps = {
 };
 
 export function RfqInventoryPicker({
-  inventoryMap,
   onSelect,
   loading = false,
 }: InventoryPickerProps) {

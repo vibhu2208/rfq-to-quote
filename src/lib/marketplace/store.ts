@@ -57,11 +57,7 @@ export async function saveMarketplacePrices(
   query: string,
   data: MarketplaceComparison
 ): Promise<void> {
-  const { cached: _cached, needsFetch: _needsFetch, ...payload } = data;
-  const normalized = normalizeMarketplaceComparison(
-    payload,
-    data.fetchedAt
-  );
+  const normalized = normalizeMarketplaceComparison(data, data.fetchedAt);
   if (!normalized) return;
 
   await prisma.rfq.update({

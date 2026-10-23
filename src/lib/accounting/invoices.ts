@@ -303,10 +303,13 @@ async function buildInvoiceFromLines(
 }
 
 export async function createTaxInvoiceFromQuote(
-  _quoteId: string,
-  _userId?: string,
-  _opts?: { warehouseId?: string; issue?: boolean }
+  quoteId: string,
+  userId?: string,
+  opts?: { warehouseId?: string; issue?: boolean }
 ): Promise<never> {
+  void quoteId;
+  void userId;
+  void opts;
   throw new AccountingError(
     "Direct tax invoices from quotes are disabled. Create and issue a proforma (dummy invoice), record payment, then convert to a tax invoice.",
     "PROFORMA_REQUIRED",

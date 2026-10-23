@@ -127,12 +127,14 @@ export function AppNav() {
   const { data } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
+  const [menuPath, setMenuPath] = useState(pathname);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  if (pathname !== menuPath) {
+    setMenuPath(pathname);
     setMobileOpen(false);
     setUserOpen(false);
-  }, [pathname]);
+  }
 
   useEffect(() => {
     function onPointer(e: MouseEvent) {

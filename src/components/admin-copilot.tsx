@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { differenceInCalendarDays, isToday, isYesterday } from "date-fns";
 import {
   ChevronRight,
@@ -60,6 +67,24 @@ const STARTERS = [
   "GST on Q-2026-0017",
   "Draft an email for the latest quote",
 ];
+
+function wallClock() {
+  return Date.now();
+}
+
+function subscribeNarrow(onStoreChange: () => void) {
+  const mq = window.matchMedia("(max-width: 767px)");
+  mq.addEventListener("change", onStoreChange);
+  return () => mq.removeEventListener("change", onStoreChange);
+}
+
+function getNarrowSnapshot() {
+  return window.matchMedia("(max-width: 767px)").matches;
+}
+
+function getNarrowServerSnapshot() {
+  return false;
+}
 
 function chatGroupLabel(iso: string): string {
   const d = new Date(iso);
@@ -217,10 +242,11 @@ function ThinkingBlock({ turn }: { turn: ChatTurn }) {
   const live = Boolean(turn.thinkingLive);
   const steps = turn.thinking ?? [];
   const [open, setOpen] = useState(live);
-
-  useEffect(() => {
+  const [prevLive, setPrevLive] = useState(live);
+  if (live !== prevLive) {
+    setPrevLive(live);
     setOpen(live);
-  }, [live]);
+  }
 
   if (!live && steps.length === 0) return null;
 
@@ -267,11 +293,13 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
   const [chatId, setChatId] = useState<string | null>(null);
   const [chatTitle, setChatTitle] = useState("New chat");
   const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-
-  useEffect(() => {
-    if (window.matchMedia("(max-width: 767px)").matches) setSidebarOpen(false);
-  }, []);
+  const isNarrow = useSyncExternalStore(
+    subscribeNarrow,
+    getNarrowSnapshot,
+    getNarrowServerSnapshot
+  );
+  const [sidebarPinned, setSidebarPinned] = useState<boolean | null>(null);
+  const sidebarOpen = sidebarPinned ?? !isNarrow;
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -296,7 +324,10 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
   }, []);
 
   useEffect(() => {
-    void refreshChats();
+    const timeout = setTimeout(() => {
+      void refreshChats();
+    }, 0);
+    return () => clearTimeout(timeout);
   }, [refreshChats]);
 
   useEffect(() => {
@@ -317,7 +348,6 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
   }
 
   async function openChat(id: string) {
-    bumpRequest();
     setBusy(true);
     setError("");
     const res = await fetch(`/api/admin/copilot/chats/${id}`);
@@ -330,7 +360,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
     setChatId(id);
     setChatTitle(typeof json.title === "string" && json.title ? json.title : "Chat");
     setMessages(Array.isArray(json.messages) ? json.messages : []);
-    if (window.matchMedia("(max-width: 767px)").matches) setSidebarOpen(false);
+    if (isNarrow) setSidebarPinned(false);
   }
 
   function newChat() {
@@ -356,7 +386,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
     if (!text || busy) return;
     const history: ChatTurn[] = [...messages, { role: "user", content: text }];
     const gen = ++requestGen.current;
-    const startedAt = Date.now();
+    const startedAt = wallClock();
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -415,7 +445,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
             id: undefined,
             content: msg,
             thinkingLive: false,
-            thinkingMs: Date.now() - startedAt,
+            thinkingMs: wallClock() - startedAt,
           }));
           setBusy(false);
           return;
@@ -434,7 +464,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
             missing: asStringList(event.missing),
             sources: asStringList(event.sources),
             thinkingLive: false,
-            thinkingMs: Date.now() - startedAt,
+            thinkingMs: wallClock() - startedAt,
           }));
           setBusy(false);
           void refreshChats();
@@ -446,7 +476,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
           id: undefined,
           content: m.content || "The copilot stopped before answering. Try again.",
           thinkingLive: false,
-          thinkingMs: Date.now() - startedAt,
+          thinkingMs: wallClock() - startedAt,
         }));
       }
     } catch (err) {
@@ -459,7 +489,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
         id: undefined,
         content: msg,
         thinkingLive: false,
-        thinkingMs: Date.now() - startedAt,
+        thinkingMs: wallClock() - startedAt,
       }));
     } finally {
       if (gen === requestGen.current) setBusy(false);
@@ -481,7 +511,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
           type="button"
           aria-label="Close sidebar"
           className="absolute inset-0 z-20 bg-dark-primary/35 md:hidden"
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => setSidebarPinned(false)}
         />
       ) : null}
 
@@ -504,7 +534,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
             <button
               type="button"
               className="rounded-lg p-2 hover:bg-mid-green/40 md:hidden"
-              onClick={() => setSidebarOpen(false)}
+              onClick={() => setSidebarPinned(false)}
               aria-label="Close chats"
             >
               <X className="h-4 w-4" />
@@ -530,7 +560,12 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
                       >
                         <button
                           type="button"
-                          onClick={() => void openChat(c.id)}
+                          onClick={() => {
+                            requestGen.current += 1;
+                            abortRef.current?.abort();
+                            abortRef.current = null;
+                            void openChat(c.id);
+                          }}
                           className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm"
                         >
                           <MessageSquare className="h-3.5 w-3.5 shrink-0 opacity-70" strokeWidth={1.5} />
@@ -558,7 +593,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
         <header className="flex shrink-0 items-center gap-2 border-b border-dark-primary/8 px-3 py-2.5">
           <button
             type="button"
-            onClick={() => setSidebarOpen((v) => !v)}
+            onClick={() => setSidebarPinned((v) => !(v ?? !isNarrow))}
             className="rounded-lg p-2 text-mid-green hover:bg-dark-primary/5"
             aria-label="Toggle chats"
           >

@@ -91,7 +91,10 @@ export function QuoteLifecyclePanel({ quoteId }: { quoteId: string }) {
   }, [quoteId]);
 
   useEffect(() => {
-    void load();
+    const timeout = setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(timeout);
   }, [load]);
 
   async function checkThread() {

@@ -24,11 +24,6 @@ describe("parseIndianWordAmount", () => {
 
 describe("parseVendorLinePrices Indian amounts", () => {
   it("extracts counter-offer for a selective RFQ line (lineNumber 4)", () => {
-    const text = `the price will be 4lakh 28 thousand
-
-On Mon, Sep 21, 2026 at 8:35 PM Your Company Name wrote:
-> Hello Display Hub,`;
-
     // strip is done by caller; simulate stripped body
     const clean = "the price will be 4lakh 28 thousand";
     const items = [

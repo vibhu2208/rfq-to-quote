@@ -1,0 +1,31 @@
+> Docs on specifying a Node.js version: https://render.com/docs/node-version
+==> Running build command 'npm install; npm run build'...
+npm error code ERESOLVE
+npm error ERESOLVE could not resolve
+npm error
+npm error While resolving: next-auth@4.24.14
+npm error Found: nodemailer@9.0.3
+npm error node_modules/nodemailer
+npm error   nodemailer@"^9.0.3" from the root project
+npm error   nodemailer@"9.0.3" from imapflow@1.4.7
+npm error   node_modules/imapflow
+npm error     imapflow@"^1.4.7" from the root project
+npm error   1 more (mailparser)
+npm error
+npm error Could not resolve dependency:
+npm error peerOptional nodemailer@"^7.0.7" from next-auth@4.24.14
+npm error node_modules/next-auth
+npm error   next-auth@"^4.24.14" from the root project
+npm error
+npm error Conflicting peer dependency: nodemailer@7.0.13
+npm error node_modules/nodemailer
+npm error   peerOptional nodemailer@"^7.0.7" from next-auth@4.24.14
+npm error   node_modules/next-auth
+npm error     next-auth@"^4.24.14" from the root project
+npm error
+npm error Fix the upstream dependency conflict, or retry this command with --force or --legacy-peer-deps to accept an incorrect (and potentially broken) dependency resolution.
+npm error
+npm error
+npm error For a full report see:
+npm error /opt/render/.cache/_logs/2026-10-23T13_26_11_893Z-eresolve-report.txt
+npm error A complete log of this

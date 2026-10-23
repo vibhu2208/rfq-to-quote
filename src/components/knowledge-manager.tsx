@@ -41,7 +41,10 @@ export function KnowledgeManager() {
   }, []);
 
   useEffect(() => {
-    void load();
+    const timeout = setTimeout(() => {
+      void load();
+    }, 0);
+    return () => clearTimeout(timeout);
   }, [load]);
 
   async function addEntry() {
