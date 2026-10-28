@@ -373,7 +373,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       discountAmount: calc.discountAmount,
       otherTaxAmount: calc.otherTaxAmount,
       otherTaxLabel: form.otherTaxLabel,
-      notes: form.notes,
+      notes: "",
       status: status || form.status,
       manualOverrides: form.manualOverrides,
       subtotal: calc.subtotal,
@@ -465,7 +465,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         discountAmount: calc.discountAmount,
         otherTaxAmount: calc.otherTaxAmount,
         otherTaxLabel: form.otherTaxLabel,
-        notes: form.notes,
+        notes: "",
         status: form.status,
         manualOverrides: form.manualOverrides,
         subtotal: calc.subtotal,
@@ -541,7 +541,6 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           gstin: form.buyerGstin,
         }}
         withGst={form.withGst}
-        notes={form.notes}
         otherTaxLabel={form.otherTaxLabel}
         lineItems={form.lineItems}
         calc={calc}
@@ -1025,7 +1024,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
 
           <section className="grid gap-4 md:grid-cols-2 lg:col-span-2">
             <div className="space-y-3 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-              <h2 className="text-sm font-medium text-mid-green">Charges & notes</h2>
+              <h2 className="text-sm font-medium text-mid-green">Charges</h2>
               <div className="grid gap-3 sm:grid-cols-2">
               <label className="block text-sm">
                 <span className="mb-1 block text-mid-green">Discount %</span>
@@ -1087,17 +1086,6 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                   onChange={(e) =>
                     setOverride("otherTaxAmount", Number(e.target.value))
                   }
-                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-                />
-              </label>
-              <label className="block text-sm sm:col-span-2">
-                <span className="mb-1 block text-mid-green">Notes</span>
-                <textarea
-                  value={form.notes}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, notes: e.target.value }))
-                  }
-                  rows={3}
                   className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
                 />
               </label>

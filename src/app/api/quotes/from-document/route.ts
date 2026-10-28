@@ -109,15 +109,7 @@ export async function POST(req: NextRequest) {
         discountAmount: calc.discountAmount,
         discountPercent: 0,
         grandTotal: calc.grandTotal,
-        notes: [
-          `Created from document: ${filename}`,
-          notes || null,
-          fields.model && !fields.lineItems.some((l) => l.model)
-            ? `Model: ${fields.model}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        notes: notes,
         lineItems: {
           create: lines.map((l, i) => ({
             description: l.description,

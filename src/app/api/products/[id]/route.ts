@@ -12,6 +12,7 @@ const productSchema = z.object({
   unit: z.string().optional(),
   basePrice: z.coerce.number().nonnegative().optional(),
   offerPrice: z.coerce.number().nonnegative().optional(),
+  lastPrice: z.coerce.number().nonnegative().optional(),
   taxRate: z.coerce.number().nonnegative().optional(),
   taxCategory: z.string().optional(),
   productType: z.enum(["GOODS", "SERVICE"]).optional(),
@@ -23,6 +24,8 @@ type Params = { params: Promise<{ id: string }> };
 function serializeProduct<T extends {
   basePrice: unknown;
   offerPrice: unknown;
+  lastPrice?: unknown;
+  lastPricedAt?: Date | null;
   taxRate: unknown;
   mrp: unknown;
   openingStock: unknown;
@@ -31,6 +34,8 @@ function serializeProduct<T extends {
     ...product,
     basePrice: decimalToNumber(product.basePrice),
     offerPrice: decimalToNumber(product.offerPrice),
+    lastPrice: product.lastPrice == null ? null : decimalToNumber(product.lastPrice),
+    lastPricedAt: product.lastPricedAt ?? null,
     taxRate: decimalToNumber(product.taxRate),
     mrp: product.mrp == null ? null : decimalToNumber(product.mrp),
     openingStock: decimalToNumber(product.openingStock),
@@ -60,9 +65,15 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   }
 
   try {
+    const { lastPrice, ...rest } = parsed.data;
     const product = await prisma.product.update({
       where: { id },
-      data: parsed.data,
+      data: {
+        ...rest,
+        ...(lastPrice != null
+          ? { lastPrice, lastPricedAt: new Date(), offerPrice: lastPrice }
+          : {}),
+      },
     });
 
     if (product.active && product.productType === "GOODS") {

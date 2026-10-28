@@ -39,6 +39,8 @@ function serializeProduct(p: {
   partNo?: string | null;
   basePrice: unknown;
   offerPrice: unknown;
+  lastPrice?: unknown;
+  lastPricedAt?: Date | null;
   taxRate: unknown;
   taxCategory: string;
   mrp?: unknown;
@@ -68,6 +70,8 @@ function serializeProduct(p: {
     updatedAt: p.updatedAt,
     basePrice: decimalToNumber(p.basePrice),
     offerPrice: decimalToNumber(p.offerPrice),
+    lastPrice: p.lastPrice == null ? null : decimalToNumber(p.lastPrice),
+    lastPricedAt: p.lastPricedAt ?? null,
     taxRate: decimalToNumber(p.taxRate),
     mrp: p.mrp == null ? null : decimalToNumber(p.mrp),
     openingStock: p.openingStock == null ? 0 : decimalToNumber(p.openingStock),
@@ -131,6 +135,8 @@ export async function GET(req: NextRequest) {
       taxCategory: true,
       basePrice: true,
       offerPrice: true,
+      lastPrice: true,
+      lastPricedAt: true,
       taxRate: true,
       mrp: true,
       openingStock: true,

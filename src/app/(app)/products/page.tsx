@@ -24,6 +24,8 @@ type Product = {
   openingStock?: number;
   basePrice: number;
   offerPrice: number;
+  lastPrice?: number | null;
+  lastPricedAt?: string | null;
   taxRate: number;
   taxCategory: string;
   masterData?: Record<string, unknown> | null;
@@ -43,6 +45,7 @@ function productMasterFallback(p: Product): Record<string, unknown> {
     UnitName: p.unit,
     Cost: p.basePrice,
     MRP: p.mrp ?? p.offerPrice,
+    LastPrice: p.lastPrice ?? p.offerPrice,
     GSTTaxName: p.gstTaxName || p.taxCategory,
     HSN_SCA: p.hsnCode,
     ProductTypeName: p.productType,
@@ -245,19 +248,20 @@ export default function ProductsPage() {
               <th className="px-4 py-3 font-medium">GST</th>
               <th className="px-4 py-3 font-medium">Unit</th>
               <th className="px-4 py-3 font-medium text-right">MRP</th>
+              <th className="px-4 py-3 font-medium text-right">Last price</th>
               <th className="px-4 py-3 font-medium"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={10} className="px-4 py-10 text-center text-mid-green">
                   Loading…
                 </td>
               </tr>
             ) : products.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={10} className="px-4 py-10 text-center text-mid-green">
                   No products found
                 </td>
               </tr>
@@ -287,6 +291,13 @@ export default function ProductsPage() {
                   <td className="px-4 py-3">{p.unit}</td>
                   <td className="px-4 py-3 text-right">
                     <Money value={p.mrp ?? p.offerPrice} />
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {p.lastPrice != null && p.lastPrice > 0 ? (
+                      <Money value={p.lastPrice} />
+                    ) : (
+                      <span className="text-mid-green">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
@@ -330,7 +341,12 @@ export default function ProductsPage() {
           subtitle={[detail.sourceProductId || detail.code, detail.category].filter(Boolean).join(" · ")}
           badge={detail.gstTaxName || (detail.taxRate != null ? `GST ${detail.taxRate}%` : null)}
           loading={detailLoading}
-          data={hasMasterFields(detail.masterData) ? detail.masterData : productMasterFallback(detail)}
+          data={{
+            ...(hasMasterFields(detail.masterData)
+              ? detail.masterData
+              : productMasterFallback(detail)),
+            LastPrice: detail.lastPrice != null ? detail.lastPrice : "",
+          }}
           onClose={() => setDetail(null)}
           actions={
             <button

@@ -113,6 +113,9 @@ model Product {
   photoPath       String?
   gstTaxName      String?
   mrp             Decimal?    @db.Decimal(12, 2)
+  /// Last selling price set while quoting (also copied to offerPrice).
+  lastPrice       Decimal?    @db.Decimal(12, 2)
+  lastPricedAt    DateTime?
   openingStock    Decimal     @default(0) @db.Decimal(18, 3)
   isStockable     Boolean     @default(true)
   sourceGender    String?

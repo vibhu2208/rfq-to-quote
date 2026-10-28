@@ -23,12 +23,20 @@ export default async function QuotesPage() {
               : ""}
           </p>
         </div>
-        <Link
-          href="/quotes/new"
-          className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
-        >
-          New quote
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/quotes/generate"
+            className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+          >
+            Generate quote
+          </Link>
+          <Link
+            href="/quotes/new"
+            className="rounded-lg border border-mid-green/40 bg-white/50 px-4 py-2 text-sm font-medium text-dark-secondary hover:bg-white/80"
+          >
+            New quote
+          </Link>
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-xl bg-white/40 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
@@ -48,8 +56,12 @@ export default async function QuotesPage() {
               <tr>
                 <td colSpan={6} className="px-4 py-10 text-center text-mid-green">
                   No quotes yet.{" "}
+                  <Link href="/quotes/generate" className="underline">
+                    Generate from a requirement
+                  </Link>{" "}
+                  or{" "}
                   <Link href="/quotes/new" className="underline">
-                    Create one
+                    start blank
                   </Link>
                 </td>
               </tr>

@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { format } from "date-fns";
 import { ChevronDown, RefreshCw, X } from "lucide-react";
 import { StatusBadge, Money } from "@/components/ui";
+import { ProductLastPriceInput } from "@/components/product-last-price-input";
 import {
   ProductStockCell,
   RfqProductSearch,
@@ -24,6 +25,7 @@ type ProductMatch = {
     description: string;
     unit: string;
     offerPrice: number;
+    lastPrice?: number | null;
     taxRate: number;
   };
 };
@@ -432,10 +434,14 @@ const MARKETPLACE_ROW_COUNT = 5;
 
 function VendorPriceDetailModal({
   match,
+  selectedByLine,
   onClose,
+  onProductPriceSaved,
 }: {
   match: VendorMatch;
+  selectedByLine: Record<number, { id: string; name: string; offerPrice: number } | undefined>;
   onClose: () => void;
+  onProductPriceSaved: (productId: string, price: number) => void;
 }) {
   const display = vendorDisplayPrice(match);
   const lines =
@@ -496,7 +502,8 @@ function VendorPriceDetailModal({
                   <th className="px-3 py-2 font-medium">#</th>
                   <th className="px-3 py-2 font-medium">Product</th>
                   <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  <th className="px-3 py-2 text-right font-medium">Unit</th>
+                  <th className="px-3 py-2 text-right font-medium">Vendor</th>
+                  <th className="px-3 py-2 text-right font-medium">Last price</th>
                   <th className="px-3 py-2 text-right font-medium">Line</th>
                 </tr>
               </thead>
@@ -520,6 +527,28 @@ function VendorPriceDetailModal({
                         "—"
                       )}
                     </td>
+                    <td className="px-3 py-2 text-right">
+                      {selectedByLine[line.lineNumber] ? (
+                        <ProductLastPriceInput
+                          productId={selectedByLine[line.lineNumber]!.id}
+                          value={
+                            selectedByLine[line.lineNumber]!.offerPrice ||
+                            line.unitPrice ||
+                            0
+                          }
+                          onSaved={(price) =>
+                            onProductPriceSaved(
+                              selectedByLine[line.lineNumber]!.id,
+                              price
+                            )
+                          }
+                        />
+                      ) : (
+                        <span className="text-xs font-normal text-mid-green">
+                          Pick a product
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right font-medium tabular-nums">
                       {line.lineTotal != null ? (
                         <Money value={line.lineTotal} />
@@ -533,7 +562,7 @@ function VendorPriceDetailModal({
               <tfoot>
                 <tr className="border-t border-dark-secondary/20 bg-mid-green/10">
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-3 py-2.5 text-right text-sm font-medium text-dark-primary"
                   >
                     Sum
@@ -1137,6 +1166,7 @@ export default function RfqDetailPage() {
           description: extra.product.description || "",
           unit: extra.product.unit || "pcs",
           offerPrice: extra.product.offerPrice,
+          lastPrice: extra.product.lastPrice ?? extra.product.offerPrice,
           taxRate: extra.product.taxRate ?? 18,
         },
       };
@@ -1168,7 +1198,15 @@ export default function RfqDetailPage() {
     setExtraMatchesByLine(extrasByLine);
     setLineSelection(lineSel);
     setLineVendorSelection(vendorSel);
-    setSelected(new Set(saved!.selectedIds?.length ? saved!.selectedIds : Object.values(lineSel)));
+    setSelected(
+      new Set(
+        perItem.length > 0
+          ? Object.values(lineSel)
+          : saved!.selectedIds?.length
+            ? saved!.selectedIds
+            : Object.values(lineSel)
+      )
+    );
   }, []);
 
   const loadMatches = useCallback(async (saved?: ProductSelections | null) => {
@@ -1400,12 +1438,15 @@ export default function RfqDetailPage() {
           ...item.matches,
           ...(extraMatchesByLine[lineNum] || []),
         ];
-        const picked =
-          (selectedPid ? allLineMatches.find((m) => m.product.id === selectedPid) : undefined) ??
-          allLineMatches.find((m) => selected.has(m.product.id));
+        const picked = selectedPid
+          ? allLineMatches.find((m) => m.product.id === selectedPid)
+          : undefined;
 
         if (picked) {
-          const unitPrice = vendorUnitPriceForLine(lineNum);
+          const vendorPrice = vendorUnitPriceForLine(lineNum);
+          const catalogPrice = picked.product.offerPrice;
+          const unitPrice =
+            vendorPrice ?? (catalogPrice > 0 ? catalogPrice : undefined);
           lines.push({
             productId: picked.product.id,
             qty: item.requirement.quantity,
@@ -1414,22 +1455,14 @@ export default function RfqDetailPage() {
           used.add(picked.product.id);
         }
       }
-    }
-
-    for (const pid of selected) {
-      if (used.has(pid)) continue;
-      const req = requirements.find((r) =>
-        itemMatches
-          .find((im) => im.lineNumber === r.lineNumber)
-          ?.matches.some((m) => m.product.id === pid)
-      );
-      const unitPrice =
-        req != null ? vendorUnitPriceForLine(req.lineNumber) : undefined;
-      lines.push({
-        productId: pid,
-        qty: req?.quantity ?? 1,
-        ...(unitPrice != null ? { unitPrice } : {}),
-      });
+    } else {
+      for (const pid of selected) {
+        if (used.has(pid)) continue;
+        lines.push({
+          productId: pid,
+          qty: 1,
+        });
+      }
     }
 
     const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
@@ -1457,6 +1490,43 @@ export default function RfqDetailPage() {
       body: JSON.stringify({ status }),
     });
     if (res.ok) setRfq(await res.json());
+  }
+
+  function applyProductPrice(productId: string, price: number) {
+    const patch = (m: ProductMatch): ProductMatch =>
+      m.product.id === productId
+        ? {
+            ...m,
+            product: { ...m.product, offerPrice: price, lastPrice: price },
+          }
+        : m;
+    setItemMatches((prev) =>
+      prev.map((item) => ({ ...item, matches: item.matches.map(patch) }))
+    );
+    setMatches((prev) => prev.map(patch));
+    setExtraMatchesByLine((prev) => {
+      const next: Record<number, ProductMatch[]> = {};
+      for (const [key, list] of Object.entries(prev)) {
+        next[Number(key)] = list.map(patch);
+      }
+      return next;
+    });
+  }
+
+  function selectedProductForLine(lineNumber: number) {
+    const productId = lineSelection[lineNumber];
+    if (!productId) return undefined;
+    const item = itemMatches.find((im) => im.lineNumber === lineNumber);
+    const match = [
+      ...(item?.matches || []),
+      ...(extraMatchesByLine[lineNumber] || []),
+    ].find((m) => m.product.id === productId);
+    if (!match) return undefined;
+    return {
+      id: match.product.id,
+      name: match.product.name,
+      offerPrice: match.product.offerPrice,
+    };
   }
 
   function toggleProduct(productId: string) {
@@ -1525,7 +1595,7 @@ export default function RfqDetailPage() {
   }
 
   function isLineProductSelected(lineNumber: number, productId: string) {
-    return lineSelection[lineNumber] === productId || selected.has(productId);
+    return lineSelection[lineNumber] === productId;
   }
 
   function lineMatches(item: RequirementMatch): ProductMatch[] {
@@ -1891,7 +1961,7 @@ export default function RfqDetailPage() {
               <h2 className="text-sm font-medium text-mid-green">Suggested products</h2>
               <p className="mt-0.5 text-xs text-mid-green">
                 {itemMatches.length > 0
-                  ? "Pick a match per line, or tap Change to search the catalog"
+                  ? "One product per line — the best match is selected. Tap Change to pick another."
                   : "Search the catalog to pick products"}
               </p>
             </div>
@@ -2006,20 +2076,30 @@ export default function RfqDetailPage() {
                         <th className="px-3 py-2 font-medium">Matched</th>
                         <th className="px-3 py-2 text-right font-medium">Stock</th>
                         <th className="px-3 py-2 text-right font-medium">Score</th>
-                        <th className="px-3 py-2 text-right font-medium">Offer</th>
+                        <th className="px-3 py-2 text-right font-medium">Last price</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {combinedMatches.map((m, i) => (
+                      {combinedMatches.map((m, i) => {
+                        const chosen = isLineProductSelected(item.lineNumber, m.product.id);
+                        return (
                         <tr
                           key={m.product.id}
-                          className={i % 2 === 1 ? "bg-light-green/10" : undefined}
+                          className={
+                            chosen
+                              ? "bg-mid-green/15"
+                              : i % 2 === 1
+                                ? "bg-light-green/10"
+                                : undefined
+                          }
                         >
                           <td className="px-3 py-2">
                             <input
-                              type="checkbox"
-                              checked={isLineProductSelected(item.lineNumber, m.product.id)}
+                              type="radio"
+                              name={`rfq-line-${item.lineNumber}`}
+                              checked={chosen}
                               onChange={() => toggleProductForLine(item.lineNumber, m.product.id)}
+                              aria-label={`Select ${m.product.code} for line ${item.lineNumber}`}
                             />
                           </td>
                           <td className="px-3 py-2">
@@ -2047,10 +2127,15 @@ export default function RfqDetailPage() {
                             {m.score > 0 ? m.score : "—"}
                           </td>
                           <td className="px-3 py-2 text-right font-semibold tabular-nums text-dark-primary">
-                            <Money value={m.product.offerPrice} />
+                            <ProductLastPriceInput
+                              productId={m.product.id}
+                              value={m.product.lastPrice ?? m.product.offerPrice}
+                              onSaved={(price) => applyProductPrice(m.product.id, price)}
+                            />
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                   </div>
@@ -2077,7 +2162,7 @@ export default function RfqDetailPage() {
                   <th className="px-3 py-2 font-medium">Matched</th>
                   <th className="px-3 py-2 text-right font-medium">Stock</th>
                   <th className="px-3 py-2 text-right font-medium">Score</th>
-                  <th className="px-3 py-2 text-right font-medium">Offer</th>
+                  <th className="px-3 py-2 text-right font-medium">Last price</th>
                 </tr>
               </thead>
               <tbody>
@@ -2117,7 +2202,11 @@ export default function RfqDetailPage() {
                       {m.score > 0 ? m.score : "—"}
                     </td>
                     <td className="px-3 py-2 text-right font-semibold tabular-nums text-dark-primary">
-                      <Money value={m.product.offerPrice} />
+                      <ProductLastPriceInput
+                        productId={m.product.id}
+                        value={m.product.lastPrice ?? m.product.offerPrice}
+                        onSaved={(price) => applyProductPrice(m.product.id, price)}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -2317,7 +2406,13 @@ export default function RfqDetailPage() {
       {priceDetailVendor ? (
         <VendorPriceDetailModal
           match={priceDetailVendor}
+          selectedByLine={Object.fromEntries(
+            (priceDetailVendor.matchedLines || priceDetailVendor.outreach?.quotedLineItems || []).map(
+              (line) => [line.lineNumber, selectedProductForLine(line.lineNumber)]
+            )
+          )}
           onClose={() => setPriceDetailVendor(null)}
+          onProductPriceSaved={applyProductPrice}
         />
       ) : null}
       {recoreVendor ? (

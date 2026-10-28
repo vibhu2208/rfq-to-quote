@@ -274,7 +274,6 @@ export type QuotePdfData = {
   buyerState: string;
   buyerAddress: string;
   buyerGstin?: string;
-  notes: string;
   paymentTerms?: string;
   subtotal: number;
   discountAmount: number;
@@ -489,7 +488,6 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
 
         <Text style={styles.termsTitle}>TERMS & CONDITIONS</Text>
         <Text style={styles.bodyText}>Payment Terms: {paymentTerms}</Text>
-        {data.notes ? <Text style={styles.bodyText}>{data.notes}</Text> : null}
 
         <Text style={styles.closing}>{QUOTE_CLOSING}</Text>
 

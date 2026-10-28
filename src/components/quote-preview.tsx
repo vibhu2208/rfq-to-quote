@@ -52,7 +52,6 @@ type Props = {
     gstin: string;
   };
   withGst: boolean;
-  notes: string;
   otherTaxLabel: string;
   lineItems: QuotePreviewLine[];
   calc: QuoteCalcResult;
@@ -78,7 +77,6 @@ export function QuotePreviewModal({
   company,
   buyer,
   withGst,
-  notes,
   otherTaxLabel,
   lineItems,
   calc,
@@ -339,9 +337,6 @@ export function QuotePreviewModal({
               TERMS & CONDITIONS
             </p>
             <p className="mt-1">Payment Terms: {paymentTerms}</p>
-            {notes.trim() ? (
-              <p className="mt-1 whitespace-pre-line text-slate-600">{notes}</p>
-            ) : null}
           </div>
 
           <p className="mt-4 text-[11px] leading-relaxed text-slate-600">{QUOTE_CLOSING}</p>

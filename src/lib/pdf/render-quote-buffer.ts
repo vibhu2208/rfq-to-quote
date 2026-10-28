@@ -33,7 +33,6 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     buyerState: quote.buyerState,
     buyerAddress: quote.buyerAddress,
     buyerGstin: quote.buyerGstin || undefined,
-    notes: quote.notes,
     paymentTerms: company.paymentTerms,
     subtotal: decimalToNumber(quote.subtotal),
     discountAmount: decimalToNumber(quote.discountAmount),

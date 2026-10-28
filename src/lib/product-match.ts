@@ -1,5 +1,6 @@
 import type { Product } from "@prisma/client";
 import { decimalToNumber } from "@/lib/quotes";
+import { catalogSellPrice } from "@/lib/product-price";
 import {
   extractRfqItems,
   requirementSearchText,
@@ -148,6 +149,7 @@ export type ProductMatch = {
     description: string;
     unit: string;
     offerPrice: number;
+    lastPrice: number | null;
     taxRate: number;
   };
   score: number;
@@ -242,7 +244,8 @@ function scorePool(
           name: p.name,
           description: p.description,
           unit: p.unit,
-          offerPrice: decimalToNumber(p.offerPrice),
+          offerPrice: catalogSellPrice(p),
+          lastPrice: decimalToNumber(p.lastPrice) || null,
           taxRate: decimalToNumber(p.taxRate),
         },
         score,

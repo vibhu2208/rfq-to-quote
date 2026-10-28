@@ -47,7 +47,7 @@ export default async function EditQuotePage({ params }: Props) {
     discountAmount: decimalToNumber(quote.discountAmount),
     otherTaxAmount: decimalToNumber(quote.otherTaxAmount),
     otherTaxLabel: quote.otherTaxLabel,
-    notes: quote.notes,
+    notes: "",
     status: quote.status === "DRAFT" ? "DRAFT" : "SENT",
     manualOverrides: (quote.manualOverrides as ManualOverrides) || {},
     subtotal: decimalToNumber(quote.subtotal),

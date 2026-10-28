@@ -92,7 +92,7 @@ const PRODUCT_GROUPS: { title: string; keys: string[] }[] = [
   },
   {
     title: "Pricing & tax",
-    keys: ["Cost", "MRP", "GSTTaxName", "HSN_SCA"],
+    keys: ["Cost", "MRP", "LastPrice", "GSTTaxName", "HSN_SCA"],
   },
   {
     title: "Stock",
@@ -109,6 +109,7 @@ export function humanizeMasterKey(key: string): string {
     GSTIN: "GSTIN",
     HSN_SCA: "HSN / SAC",
     MRP: "MRP",
+    LastPrice: "Last price",
     ClientID: "Client ID",
     ProductID: "Product ID",
     PAN: "PAN",

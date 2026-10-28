@@ -20,6 +20,7 @@ export type PickableProduct = {
   description: string;
   unit: string;
   offerPrice: number;
+  lastPrice?: number | null;
   taxRate: number;
 };
 
@@ -143,7 +144,7 @@ function SearchResultRow({
         />
       </div>
       <div className="text-right text-sm font-semibold tabular-nums text-dark-primary">
-        <Money value={product.offerPrice} />
+        <Money value={product.lastPrice ?? product.offerPrice} />
       </div>
     </button>
   );
