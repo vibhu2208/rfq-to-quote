@@ -27,6 +27,7 @@ type ProductHit = {
   offerPrice: number;
   taxRate: number;
   description: string;
+  hsnCode?: string | null;
 };
 
 type LineItem = {
@@ -38,6 +39,7 @@ type LineItem = {
   unit: string;
   unitPrice: number;
   taxRate: number;
+  hsnCode?: string;
 };
 
 export type QuoteFormState = {
@@ -138,6 +140,7 @@ const emptyQuote = (): QuoteFormState => ({
       unit: "pcs",
       unitPrice: 0,
       taxRate: 18,
+      hsnCode: "",
     },
   ],
 });
@@ -253,6 +256,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           unit: "pcs",
           unitPrice: 0,
           taxRate: 18,
+          hsnCode: "",
         },
       ],
     }));
@@ -273,6 +277,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       unit: p.unit,
       unitPrice: p.offerPrice,
       taxRate: p.taxRate,
+      hsnCode: p.hsnCode || "",
     });
     setSearchIdx(null);
     setSearchQ("");

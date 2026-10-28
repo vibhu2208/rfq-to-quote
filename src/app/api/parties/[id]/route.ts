@@ -5,6 +5,7 @@ import { requireSession } from "@/lib/api";
 import { requireUserId } from "@/lib/api/session-user";
 import { verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
 import { getStateCode } from "@/lib/accounting/states";
+import { decimalToNumber } from "@/lib/quotes";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -15,11 +16,37 @@ function serializeParty(party: {
   legalName: string;
   tradeName: string | null;
   gstin: string | null;
+  pan: string | null;
+  tin: string | null;
+  stNumber: string | null;
   email: string | null;
   phone: string | null;
+  phone2: string | null;
+  fax: string | null;
+  website: string | null;
   placeOfSupplyCode: string | null;
   gstinVerifiedAt: Date | null;
   gstinStatus: string | null;
+  creditLimit: unknown;
+  openingBalance: unknown;
+  openingDrCr: string | null;
+  clientTypeName: string | null;
+  sourceClientId: string | null;
+  ledgerGroup: string | null;
+  ledgerCode: string | null;
+  primaryGroup: string | null;
+  remarks: string | null;
+  bankName: string | null;
+  bankIfsc: string | null;
+  bankAccountNo: string | null;
+  bankAccountName: string | null;
+  bankAccountType: string | null;
+  bankBranch: string | null;
+  micrCode: string | null;
+  aadhaar: string | null;
+  managedByName: string | null;
+  isVendor: boolean;
+  masterData: unknown;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -42,7 +69,46 @@ function serializeParty(party: {
     party.addresses[0] ||
     null;
   return {
-    ...party,
+    id: party.id,
+    code: party.code,
+    type: party.type,
+    legalName: party.legalName,
+    tradeName: party.tradeName,
+    gstin: party.gstin,
+    pan: party.pan,
+    tin: party.tin,
+    stNumber: party.stNumber,
+    email: party.email,
+    phone: party.phone,
+    phone2: party.phone2,
+    fax: party.fax,
+    website: party.website,
+    placeOfSupplyCode: party.placeOfSupplyCode,
+    gstinVerifiedAt: party.gstinVerifiedAt,
+    gstinStatus: party.gstinStatus,
+    creditLimit: decimalToNumber(party.creditLimit),
+    openingBalance: decimalToNumber(party.openingBalance),
+    openingDrCr: party.openingDrCr,
+    clientTypeName: party.clientTypeName,
+    sourceClientId: party.sourceClientId,
+    ledgerGroup: party.ledgerGroup,
+    ledgerCode: party.ledgerCode,
+    primaryGroup: party.primaryGroup,
+    remarks: party.remarks,
+    bankName: party.bankName,
+    bankIfsc: party.bankIfsc,
+    bankAccountNo: party.bankAccountNo,
+    bankAccountName: party.bankAccountName,
+    bankAccountType: party.bankAccountType,
+    bankBranch: party.bankBranch,
+    micrCode: party.micrCode,
+    aadhaar: party.aadhaar,
+    managedByName: party.managedByName,
+    isVendor: party.isVendor,
+    masterData: party.masterData,
+    active: party.active,
+    createdAt: party.createdAt,
+    updatedAt: party.updatedAt,
     billingAddress: billing
       ? {
           id: billing.id,
@@ -55,6 +121,7 @@ function serializeParty(party: {
           postalCode: billing.postalCode,
         }
       : null,
+    addresses: party.addresses,
   };
 }
 

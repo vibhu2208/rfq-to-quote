@@ -8,34 +8,43 @@ import { verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
 import { getStateCode } from "@/lib/accounting/states";
 import { isAccountingError } from "@/lib/accounting/errors";
 
-function serializeParty(party: {
-  id: string;
-  code: string;
-  type: string;
-  legalName: string;
-  tradeName: string | null;
-  gstin: string | null;
-  email: string | null;
-  phone: string | null;
-  placeOfSupplyCode: string | null;
-  gstinVerifiedAt: Date | null;
-  gstinStatus: string | null;
-  active: boolean;
-  createdAt: Date;
-  updatedAt: Date;
-  addresses: Array<{
+function serializeParty(
+  party: {
     id: string;
+    code: string;
     type: string;
-    isDefault: boolean;
-    addressLine1: string;
-    addressLine2: string | null;
-    city: string;
-    district: string | null;
-    state: string;
-    stateCode: string;
-    postalCode: string;
-  }>;
-} | null) {
+    legalName: string;
+    tradeName: string | null;
+    gstin: string | null;
+    pan?: string | null;
+    email: string | null;
+    phone: string | null;
+    phone2?: string | null;
+    website?: string | null;
+    placeOfSupplyCode: string | null;
+    gstinVerifiedAt: Date | null;
+    gstinStatus: string | null;
+    clientTypeName?: string | null;
+    sourceClientId?: string | null;
+    ledgerGroup?: string | null;
+    managedByName?: string | null;
+    active: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+    addresses: Array<{
+      id: string;
+      type: string;
+      isDefault: boolean;
+      addressLine1: string;
+      addressLine2: string | null;
+      city: string;
+      district: string | null;
+      state: string;
+      stateCode: string;
+      postalCode: string;
+    }>;
+  } | null
+) {
   if (!party) return null;
   const billing =
     party.addresses.find((a) => a.type === "BILLING" && a.isDefault) ||
@@ -49,11 +58,18 @@ function serializeParty(party: {
     legalName: party.legalName,
     tradeName: party.tradeName,
     gstin: party.gstin,
+    pan: party.pan ?? null,
     email: party.email,
     phone: party.phone,
+    phone2: party.phone2 ?? null,
+    website: party.website ?? null,
     placeOfSupplyCode: party.placeOfSupplyCode,
     gstinVerifiedAt: party.gstinVerifiedAt,
     gstinStatus: party.gstinStatus,
+    clientTypeName: party.clientTypeName ?? null,
+    sourceClientId: party.sourceClientId ?? null,
+    ledgerGroup: party.ledgerGroup ?? null,
+    managedByName: party.managedByName ?? null,
     active: party.active,
     createdAt: party.createdAt,
     updatedAt: party.updatedAt,
@@ -85,7 +101,7 @@ export async function GET(req: NextRequest) {
   const parties = await prisma.party.findMany({
     where: {
       organisationId: ctx.organisationId,
-      type: { in: ["CUSTOMER", "BOTH"] },
+      type: { not: "OTHER" },
       ...(activeParam === "true"
         ? { active: true }
         : activeParam === "false"
@@ -99,13 +115,52 @@ export async function GET(req: NextRequest) {
               { gstin: { contains: q, mode: "insensitive" } },
               { code: { contains: q, mode: "insensitive" } },
               { email: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q, mode: "insensitive" } },
+              { sourceClientId: { contains: q, mode: "insensitive" } },
+              { clientTypeName: { contains: q, mode: "insensitive" } },
             ],
           }
         : {}),
     },
-    include: { addresses: true },
+    select: {
+      id: true,
+      code: true,
+      type: true,
+      legalName: true,
+      tradeName: true,
+      gstin: true,
+      pan: true,
+      email: true,
+      phone: true,
+      phone2: true,
+      website: true,
+      placeOfSupplyCode: true,
+      gstinVerifiedAt: true,
+      gstinStatus: true,
+      clientTypeName: true,
+      sourceClientId: true,
+      ledgerGroup: true,
+      managedByName: true,
+      active: true,
+      createdAt: true,
+      updatedAt: true,
+      addresses: {
+        select: {
+          id: true,
+          type: true,
+          isDefault: true,
+          addressLine1: true,
+          addressLine2: true,
+          city: true,
+          district: true,
+          state: true,
+          stateCode: true,
+          postalCode: true,
+        },
+      },
+    },
     orderBy: [{ active: "desc" }, { legalName: "asc" }],
-    take: 200,
+    take: 5000,
   });
 
   return NextResponse.json(parties.map(serializeParty));

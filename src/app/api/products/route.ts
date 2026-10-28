@@ -29,19 +29,48 @@ function serializeProduct(p: {
   description: string;
   unit: string;
   productType?: string;
+  sourceProductId?: string | null;
+  category?: string | null;
+  subCategory?: string | null;
+  brand?: string | null;
+  hsnCode?: string | null;
+  gstTaxName?: string | null;
+  modelNo?: string | null;
+  partNo?: string | null;
   basePrice: unknown;
   offerPrice: unknown;
   taxRate: unknown;
   taxCategory: string;
+  mrp?: unknown;
+  openingStock?: unknown;
   active: boolean;
   createdAt: Date;
   updatedAt: Date;
 }) {
   return {
-    ...p,
+    id: p.id,
+    code: p.code,
+    name: p.name,
+    description: p.description,
+    unit: p.unit,
+    productType: p.productType,
+    sourceProductId: p.sourceProductId ?? null,
+    category: p.category ?? null,
+    subCategory: p.subCategory ?? null,
+    brand: p.brand ?? null,
+    hsnCode: p.hsnCode ?? null,
+    gstTaxName: p.gstTaxName ?? null,
+    modelNo: p.modelNo ?? null,
+    partNo: p.partNo ?? null,
+    taxCategory: p.taxCategory,
+    active: p.active,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
     basePrice: decimalToNumber(p.basePrice),
     offerPrice: decimalToNumber(p.offerPrice),
     taxRate: decimalToNumber(p.taxRate),
+    mrp: p.mrp == null ? null : decimalToNumber(p.mrp),
+    openingStock: p.openingStock == null ? 0 : decimalToNumber(p.openingStock),
   };
 }
 
@@ -52,7 +81,7 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim() || "";
   const activeParam = searchParams.get("active");
-  const take = Math.min(Number(searchParams.get("take") || 100), 500);
+  const take = Math.min(Number(searchParams.get("take") || 100), 2000);
   const tokens = searchTokens(q);
 
   // Multi-word queries: every token must match somewhere on code/name/description
@@ -62,15 +91,20 @@ export async function GET(req: NextRequest) {
       ? tokens.map((token) => ({
           OR: [
             { code: { contains: token, mode: "insensitive" as const } },
+            { sourceProductId: { contains: token, mode: "insensitive" as const } },
             { name: { contains: token, mode: "insensitive" as const } },
             { description: { contains: token, mode: "insensitive" as const } },
+            { category: { contains: token, mode: "insensitive" as const } },
+            { brand: { contains: token, mode: "insensitive" as const } },
+            { modelNo: { contains: token, mode: "insensitive" as const } },
+            { hsnCode: { contains: token, mode: "insensitive" as const } },
           ],
         }))
       : [];
 
   // Pull a wider pool when searching so relevance ranking can surface the best name hits
   // instead of the first N alphabetically.
-  const fetchTake = q ? Math.min(Math.max(take * 5, 50), 500) : take;
+  const fetchTake = q ? Math.min(Math.max(take * 5, 50), 2000) : take;
 
   const products = await prisma.product.findMany({
     where: {
@@ -78,6 +112,31 @@ export async function GET(req: NextRequest) {
         activeParam === "true" ? { active: true } : activeParam === "false" ? { active: false } : {},
         ...tokenFilters,
       ],
+    },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      description: true,
+      unit: true,
+      productType: true,
+      sourceProductId: true,
+      category: true,
+      subCategory: true,
+      brand: true,
+      hsnCode: true,
+      gstTaxName: true,
+      modelNo: true,
+      partNo: true,
+      taxCategory: true,
+      basePrice: true,
+      offerPrice: true,
+      taxRate: true,
+      mrp: true,
+      openingStock: true,
+      active: true,
+      createdAt: true,
+      updatedAt: true,
     },
     orderBy: [{ active: "desc" }, { name: "asc" }],
     take: fetchTake,

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Building2, Plus, RefreshCw, Search, X } from "lucide-react";
+import { MasterDetailDialog } from "@/components/master-detail-dialog";
 
 type BillingAddress = {
   id?: string;
@@ -20,11 +21,19 @@ type Client = {
   legalName: string;
   tradeName: string | null;
   gstin: string | null;
+  pan?: string | null;
   email: string | null;
   phone: string | null;
+  phone2?: string | null;
+  website?: string | null;
   placeOfSupplyCode: string | null;
   gstinVerifiedAt: string | null;
   gstinStatus: string | null;
+  clientTypeName?: string | null;
+  sourceClientId?: string | null;
+  ledgerGroup?: string | null;
+  managedByName?: string | null;
+  masterData?: Record<string, unknown> | null;
   active: boolean;
   billingAddress: BillingAddress | null;
 };
@@ -42,6 +51,31 @@ type Preview = {
   postalCode: string;
   message: string;
 };
+
+function clientMasterFallback(c: Client): Record<string, unknown> {
+  return {
+    ClientID: c.sourceClientId || c.code,
+    ClientName: c.legalName,
+    ClientAccName: c.tradeName,
+    ClientTypeName: c.clientTypeName,
+    GSTIN: c.gstin,
+    ClientPAN: c.pan,
+    ClientEmail: c.email,
+    ClientPhone1: c.phone,
+    ClientPhone2: c.phone2,
+    ClientWeb: c.website,
+    CityName: c.billingAddress?.city,
+    StateName: c.billingAddress?.state,
+    ClientAddress: c.billingAddress?.addressLine1,
+    ClientPinCode: c.billingAddress?.postalCode,
+    LedgerGroupName: c.ledgerGroup,
+    ManageName: c.managedByName,
+  };
+}
+
+function hasMasterFields(data: unknown): data is Record<string, unknown> {
+  return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
+}
 
 const emptyPreview = (): Preview => ({
   legalName: "",
@@ -69,6 +103,8 @@ export default function ClientsPage() {
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [detail, setDetail] = useState<Client | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -171,6 +207,18 @@ export default function ClientsPage() {
     }
   }
 
+  async function openDetail(client: Client) {
+    setDetail(client);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/parties/${client.id}`);
+      const data = await res.json();
+      if (res.ok) setDetail(data);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
   async function reverify(client: Client) {
     if (!client.gstin) return;
     setMessage("Re-verifying…");
@@ -194,7 +242,7 @@ export default function ClientsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Clients</h1>
           <p className="mt-1 text-sm text-mid-green">
-            Onboard buyers with GSTIN — legal name and address pull from the GST portal
+            Client master from Excel — click a row for the full record
           </p>
         </div>
         <button
@@ -217,40 +265,45 @@ export default function ClientsPage() {
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search name, GSTIN, code…"
+          placeholder="Search name, GSTIN, client ID, type…"
           className="w-full rounded-lg border border-light-green/40 bg-white/50 py-2 pl-9 pr-3 text-sm outline-none focus:border-mid-green"
         />
       </div>
 
-      <div className="overflow-hidden rounded-xl bg-white/40">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-xl bg-white/40">
+        <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="bg-dark-secondary/5 text-mid-green">
             <tr>
-              <th className="px-4 py-3">Code</th>
+              <th className="px-4 py-3">Client ID</th>
               <th className="px-4 py-3">Client</th>
+              <th className="px-4 py-3">Client type</th>
               <th className="px-4 py-3">GSTIN</th>
-              <th className="px-4 py-3">Address</th>
-              <th className="px-4 py-3">Status</th>
+              <th className="px-4 py-3">City</th>
+              <th className="px-4 py-3">Phone</th>
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={7} className="px-4 py-10 text-center text-mid-green">
                   Loading…
                 </td>
               </tr>
             ) : clients.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={7} className="px-4 py-10 text-center text-mid-green">
                   No clients yet. Onboard one with their GSTIN.
                 </td>
               </tr>
             ) : (
               clients.map((c) => (
-                <tr key={c.id} className="border-t border-light-green/20">
-                  <td className="px-4 py-3 font-medium">{c.code}</td>
+                <tr
+                  key={c.id}
+                  className="cursor-pointer border-t border-light-green/20 hover:bg-light-green/15"
+                  onClick={() => openDetail(c)}
+                >
+                  <td className="px-4 py-3 font-medium">{c.sourceClientId || c.code}</td>
                   <td className="px-4 py-3">
                     <div>{c.legalName}</div>
                     {c.tradeName && c.tradeName !== c.legalName ? (
@@ -258,29 +311,24 @@ export default function ClientsPage() {
                     ) : null}
                     {c.email ? <div className="text-xs text-mid-green">{c.email}</div> : null}
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs">{c.gstin || "—"}</td>
-                  <td className="px-4 py-3 text-xs text-mid-green max-w-xs">
-                    {c.billingAddress
-                      ? [
-                          c.billingAddress.addressLine1,
-                          c.billingAddress.city,
-                          c.billingAddress.state,
-                          c.billingAddress.postalCode,
-                        ]
-                          .filter(Boolean)
-                          .join(", ")
-                      : "—"}
-                  </td>
                   <td className="px-4 py-3">
                     <span className="rounded px-2 py-0.5 text-xs bg-mid-green/20 text-mid-green">
-                      {c.gstinStatus || (c.gstinVerifiedAt ? "Verified" : "Unverified")}
+                      {c.clientTypeName || "—"}
                     </span>
                   </td>
+                  <td className="px-4 py-3 font-mono text-xs">{c.gstin || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-mid-green">
+                    {[c.billingAddress?.city, c.billingAddress?.state].filter(Boolean).join(", ") || "—"}
+                  </td>
+                  <td className="px-4 py-3 text-xs">{c.phone || "—"}</td>
                   <td className="px-4 py-3 text-right">
                     {c.gstin ? (
                       <button
                         type="button"
-                        onClick={() => reverify(c)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reverify(c);
+                        }}
                         className="inline-flex items-center gap-1 rounded p-1.5 text-mid-green hover:bg-light-green/30"
                         title="Refresh from GST portal"
                       >
@@ -294,6 +342,30 @@ export default function ClientsPage() {
           </tbody>
         </table>
       </div>
+
+      {detail ? (
+        <MasterDetailDialog
+          kind="client"
+          title={detail.legalName}
+          subtitle={[detail.sourceClientId || detail.code, detail.gstin].filter(Boolean).join(" · ")}
+          badge={detail.clientTypeName}
+          loading={detailLoading}
+          data={hasMasterFields(detail.masterData) ? detail.masterData : clientMasterFallback(detail)}
+          onClose={() => setDetail(null)}
+          actions={
+            detail.gstin ? (
+              <button
+                type="button"
+                onClick={() => reverify(detail)}
+                className="inline-flex items-center gap-1 rounded-lg border border-mid-green/40 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/10"
+              >
+                <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
+                Re-verify GSTIN
+              </button>
+            ) : null
+          }
+        />
+      ) : null}
 
       {modalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">

@@ -87,22 +87,40 @@ model User {
 }
 
 model Product {
-  id             String      @id @default(cuid())
-  code           String      @unique
-  name           String
-  description    String      @default("")
-  unit           String      @default("pcs")
-  uqc            UqcCode     @default(NOS)
-  hsnCode        String?
-  productType    ProductType @default(GOODS)
-  organisationId String?
-  basePrice      Decimal     @db.Decimal(12, 2)
-  offerPrice     Decimal     @db.Decimal(12, 2)
-  taxRate        Decimal     @default(18) @db.Decimal(5, 2)
-  taxCategory    String      @default("GST18")
-  active         Boolean     @default(true)
-  createdAt      DateTime    @default(now())
-  updatedAt      DateTime    @updatedAt
+  id              String      @id @default(cuid())
+  /// Excel ProductMaster.ProductID — used as catalog code
+  sourceProductId String?     @unique
+  code            String      @unique
+  name            String
+  description     String      @default("")
+  unit            String      @default("pcs")
+  uqc             UqcCode     @default(NOS)
+  hsnCode         String?
+  productType     ProductType @default(GOODS)
+  organisationId  String?
+  basePrice       Decimal     @db.Decimal(12, 2)
+  offerPrice      Decimal     @db.Decimal(12, 2)
+  taxRate         Decimal     @default(18) @db.Decimal(5, 2)
+  taxCategory     String      @default("GST18")
+  modelNo         String?
+  partNo          String?
+  commCode        String?
+  category        String?
+  subCategory     String?
+  brand           String?
+  batchNo         String?
+  popularCode     String?
+  photoPath       String?
+  gstTaxName      String?
+  mrp             Decimal?    @db.Decimal(12, 2)
+  openingStock    Decimal     @default(0) @db.Decimal(18, 3)
+  isStockable     Boolean     @default(true)
+  sourceGender    String?
+  /// Full ProductMaster row
+  masterData      Json        @default("{}")
+  active          Boolean     @default(true)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   lineItems             QuoteLineItem[]
   organisation          Organisation?             @relation(fields: [organisationId], references: [id], onDelete: SetNull)
@@ -118,6 +136,8 @@ model Product {
   @@index([active])
   @@index([organisationId])
   @@index([hsnCode])
+  @@index([category])
+  @@index([brand])
 }
 
 model Rfq {
@@ -954,20 +974,46 @@ model Party {
   id                String    @id @default(cuid())
   organisationId    String
   gstRegistrationId String?
+  /// Excel ClientMaster.ClientID
+  sourceClientId    String?   @unique
   code              String
   type              PartyType
   legalName         String
   tradeName         String?
   gstin             String?
   pan               String?
+  tin               String?
+  stNumber          String?
   email             String?
   phone             String?
+  phone2            String?
+  fax               String?
+  website           String?
   placeOfSupplyCode String?
   gstinVerifiedAt   DateTime?
   gstinLegalName    String?
   gstinStatus       String?
   gstinRawResponse  Json?
   creditLimit       Decimal   @default(0) @db.Decimal(18, 2)
+  openingBalance    Decimal   @default(0) @db.Decimal(18, 2)
+  openingDrCr       String?
+  clientTypeName    String?
+  ledgerGroup       String?
+  ledgerCode        String?
+  primaryGroup      String?
+  remarks           String?   @db.Text
+  bankName          String?
+  bankIfsc          String?
+  bankAccountNo     String?
+  bankAccountName   String?
+  bankAccountType   String?
+  bankBranch        String?
+  micrCode          String?
+  aadhaar           String?
+  managedByName     String?
+  isVendor          Boolean   @default(false)
+  /// Full ClientMaster row
+  masterData        Json      @default("{}")
   active            Boolean   @default(true)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
@@ -985,6 +1031,7 @@ model Party {
   @@unique([organisationId, code])
   @@index([organisationId, legalName])
   @@index([gstin])
+  @@index([ledgerGroup])
 }
 
 model Address {

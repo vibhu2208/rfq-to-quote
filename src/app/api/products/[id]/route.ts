@@ -20,6 +20,23 @@ const productSchema = z.object({
 
 type Params = { params: Promise<{ id: string }> };
 
+function serializeProduct<T extends {
+  basePrice: unknown;
+  offerPrice: unknown;
+  taxRate: unknown;
+  mrp: unknown;
+  openingStock: unknown;
+}>(product: T) {
+  return {
+    ...product,
+    basePrice: decimalToNumber(product.basePrice),
+    offerPrice: decimalToNumber(product.offerPrice),
+    taxRate: decimalToNumber(product.taxRate),
+    mrp: product.mrp == null ? null : decimalToNumber(product.mrp),
+    openingStock: decimalToNumber(product.openingStock),
+  };
+}
+
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
@@ -28,12 +45,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const product = await prisma.product.findUnique({ where: { id } });
   if (!product) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json({
-    ...product,
-    basePrice: decimalToNumber(product.basePrice),
-    offerPrice: decimalToNumber(product.offerPrice),
-    taxRate: decimalToNumber(product.taxRate),
-  });
+  return NextResponse.json(serializeProduct(product));
 }
 
 export async function PATCH(req: NextRequest, { params }: Params) {
@@ -60,12 +72,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       });
     }
 
-    return NextResponse.json({
-      ...product,
-      basePrice: decimalToNumber(product.basePrice),
-      offerPrice: decimalToNumber(product.offerPrice),
-      taxRate: decimalToNumber(product.taxRate),
-    });
+    return NextResponse.json(serializeProduct(product));
   } catch {
     return NextResponse.json({ error: "Update failed" }, { status: 400 });
   }
@@ -80,10 +87,5 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
     where: { id },
     data: { active: false },
   });
-  return NextResponse.json({
-    ...product,
-    basePrice: decimalToNumber(product.basePrice),
-    offerPrice: decimalToNumber(product.offerPrice),
-    taxRate: decimalToNumber(product.taxRate),
-  });
+  return NextResponse.json(serializeProduct(product));
 }

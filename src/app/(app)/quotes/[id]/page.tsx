@@ -14,7 +14,10 @@ export default async function EditQuotePage({ params }: Props) {
   const quote = await prisma.quote.findUnique({
     where: { id },
     include: {
-      lineItems: { orderBy: { sortOrder: "asc" } },
+      lineItems: {
+        orderBy: { sortOrder: "asc" },
+        include: { product: { select: { hsnCode: true } } },
+      },
       rfq: {
         select: {
           channel: true,
@@ -59,6 +62,7 @@ export default async function EditQuotePage({ params }: Props) {
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),
       taxRate: decimalToNumber(li.taxRate),
+      hsnCode: li.product?.hsnCode || "",
     })),
   };
 
@@ -72,13 +76,7 @@ export default async function EditQuotePage({ params }: Props) {
       <QuoteBuilder
         initial={initial}
         sellerState={company.sellerState}
-        company={{
-          name: company.name,
-          address: company.address,
-          gstin: company.gstin,
-          email: company.email,
-          phone: company.phone,
-        }}
+        company={company}
         sendContext={{
           rfqChannel: quote.rfq?.channel ?? null,
           customerEmail: quote.rfq?.customerEmail,

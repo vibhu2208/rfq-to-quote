@@ -1,7 +1,12 @@
 "use client";
 
-import { formatMoney } from "@/lib/tax";
 import type { QuoteCalcResult } from "@/lib/tax";
+import { amountInWords } from "@/lib/accounting/money";
+import {
+  QUOTE_CLOSING,
+  formatQuoteAmount,
+  formatQuoteQty,
+} from "@/lib/quote-format";
 import { X } from "lucide-react";
 
 export type QuotePreviewCompany = {
@@ -10,6 +15,17 @@ export type QuotePreviewCompany = {
   gstin: string;
   email: string;
   phone: string;
+  mobile?: string;
+  website?: string;
+  signatory?: string;
+  tagline?: string;
+  services?: string;
+  paymentTerms?: string;
+  bankName?: string;
+  bankBranch?: string;
+  bankIfsc?: string;
+  bankAccount?: string;
+  bankAccountType?: string;
 };
 
 export type QuotePreviewLine = {
@@ -20,6 +36,7 @@ export type QuotePreviewLine = {
   unit: string;
   unitPrice: number;
   taxRate: number;
+  hsnCode?: string | null;
 };
 
 type Props = {
@@ -80,6 +97,19 @@ export function QuotePreviewModal({
     (l) => displayName(l) || l.unitPrice > 0 || l.qty > 0
   );
   const displayLines = filledLines.length > 0 ? filledLines : lineItems.slice(0, 1);
+  const totalQty = displayLines.reduce((s, l) => s + l.qty, 0);
+  const totalTax = displayLines.reduce((s, l) => s + lineTax(l, withGst), 0);
+  const gstBuckets = new Map<number, number>();
+  if (withGst) {
+    for (const line of displayLines) {
+      const tax = lineTax(line, true);
+      if (line.taxRate <= 0 || tax <= 0) continue;
+      gstBuckets.set(line.taxRate, Math.round(((gstBuckets.get(line.taxRate) || 0) + tax) * 100) / 100);
+    }
+  }
+  const signatory = company.signatory || company.name;
+  const signPhone = (company.mobile || company.phone || "").replace(/^\+91\s*/, "");
+  const paymentTerms = company.paymentTerms || "Against Delivery";
 
   return (
     <div
@@ -90,93 +120,94 @@ export function QuotePreviewModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="quote-preview-title"
-        className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-background shadow-xl"
+        className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-light-green/30 bg-light-green/10 px-4 py-3">
+        <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div>
-            <h2 id="quote-preview-title" className="text-sm font-medium text-mid-green">
+            <h2 id="quote-preview-title" className="text-sm font-medium text-[#1F3A5F]">
               Quote preview
             </h2>
-            <p className="text-[11px] text-mid-green/70">Live view of the quotation</p>
+            <p className="text-[11px] text-slate-500">Matches the Transoft quotation format</p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 hover:bg-light-green/30"
+            className="rounded-lg p-1.5 hover:bg-slate-200"
             aria-label="Close preview"
           >
-            <X className="h-5 w-5 text-mid-green" />
+            <X className="h-5 w-5 text-[#1F3A5F]" />
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto bg-white p-5 text-[12px] leading-relaxed text-dark-primary sm:p-7">
-          <div className="border-b-[1.5px] border-dark-primary pb-3 text-center">
-            <p className="font-serif text-lg font-bold tracking-tight sm:text-xl">
-              {company.name || "Your Company"}
-            </p>
-            {company.address ? (
-              <p className="mt-1 text-[11px] text-dark-secondary/80">{company.address}</p>
-            ) : null}
-            <p className="mt-0.5 text-[11px] text-dark-secondary/80">
-              {[
-                company.phone ? `PH: ${company.phone}` : null,
-                company.email ? `Email: ${company.email}` : null,
-              ]
-                .filter(Boolean)
-                .join("  ·  ")}
-            </p>
-            {company.gstin ? (
-              <p className="mt-0.5 text-[11px] text-dark-secondary/80">
-                GSTIN: {company.gstin}
+        <div className="min-h-0 flex-1 overflow-y-auto bg-white p-6 text-[12px] leading-relaxed text-slate-800 sm:p-8">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <p className="text-lg font-bold tracking-[0.12em] text-[#1F3A5F] sm:text-xl">
+                {(company.name || "Your Company").toUpperCase()}
               </p>
-            ) : null}
+              {company.tagline ? (
+                <p className="mt-0.5 text-[11px] font-semibold tracking-wider text-[#1F3A5F]">
+                  {company.tagline}
+                </p>
+              ) : null}
+            </div>
+            <div className="text-right">
+              <p className="text-lg font-bold tracking-[0.18em] text-[#1F3A5F]">QUOTATION</p>
+              {company.gstin ? (
+                <p className="mt-0.5 text-[11px] text-slate-500">GSTIN: {company.gstin}</p>
+              ) : null}
+            </div>
           </div>
+          {company.services ? (
+            <p className="mt-3 text-[10px] leading-snug text-slate-500">{company.services}</p>
+          ) : null}
 
-          <p className="mt-4 text-center font-serif text-base font-bold underline underline-offset-4">
-            Quotation
-          </p>
-
-          <div className="mt-4 flex justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold">To,</p>
-              <p className="font-semibold">{buyerTitle}</p>
-              {buyer.name && buyer.company ? <p>{buyer.name}</p> : null}
+          <div className="mt-4 grid gap-4 bg-[#F3F5F7] p-4 sm:grid-cols-[1.6fr_1fr]">
+            <div>
+              <p className="text-[10px] font-semibold tracking-[0.14em] text-slate-500">TO</p>
+              <p className="mt-1 font-semibold text-[#1F3A5F]">{buyerTitle}</p>
+              {buyer.name && buyer.company && buyer.name !== buyer.company ? (
+                <p>{buyer.name}</p>
+              ) : null}
               {buyer.address ? (
-                <p className="whitespace-pre-line text-dark-secondary/90">{buyer.address}</p>
-              ) : null}
+                <p className="whitespace-pre-line text-slate-600">{buyer.address}</p>
+              ) : (
+                <p className="italic text-slate-400">Add buyer details…</p>
+              )}
               {buyer.state ? <p>{buyer.state}</p> : null}
-              {buyer.gstin ? <p>GSTIN: {buyer.gstin}</p> : null}
-              {!buyer.company && !buyer.name && !buyer.address ? (
-                <p className="italic text-mid-green/60">Add buyer details…</p>
-              ) : null}
+              <p>M: {buyer.phone || "."}</p>
+              <p>GSTIN: {buyer.gstin || ""}</p>
+              {buyer.email ? <p>Email: {buyer.email}</p> : null}
             </div>
-            <div className="shrink-0 text-right">
-              <p>Date:</p>
-              <p>{today}</p>
+            <div>
+              <p className="text-[10px] font-semibold tracking-[0.14em] text-slate-500">DETAILS</p>
+              <p className="mt-1 text-slate-500">Ref No: {quoteNumber || "DRAFT"}</p>
+              <p className="text-slate-500">Date: {today}</p>
+              <p className="text-slate-500">Subject: Quotation</p>
+              <p className="mt-3 text-[11px] text-slate-600">
+                Dear Sir, at the outset we thank you for your interest in buying the products from{" "}
+                {company.name}. We are pleased to quote our best prices as:
+              </p>
             </div>
           </div>
 
-          <p className="mt-4">
-            <span className="font-semibold">Subject:</span> Quotation
-          </p>
-          <p className="mt-2 text-dark-secondary/90">
-            Dear Sir, we are pleased to quote our best prices as:
-          </p>
-          <p className="mt-2 font-semibold">Ref No: {quoteNumber || "DRAFT"}</p>
-
-          <div className="mt-4 overflow-x-auto rounded border border-dark-primary/80">
-            <table className="w-full min-w-[480px] border-collapse text-left">
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full min-w-[640px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-dark-primary/80 bg-neutral-100">
-                  <th className="px-2 py-2 font-semibold">#</th>
-                  <th className="px-2 py-2 font-semibold">Description</th>
-                  <th className="px-2 py-2 text-right font-semibold">Qty</th>
-                  <th className="px-2 py-2 text-right font-semibold">Rate</th>
+                <tr className="bg-[#1F3A5F] text-white">
+                  <th className="px-2 py-2 text-center text-[11px] font-semibold">SN</th>
+                  <th className="px-2 py-2 text-[11px] font-semibold">Description of Goods</th>
+                  <th className="px-2 py-2 text-center text-[11px] font-semibold">HSN</th>
+                  <th className="px-2 py-2 text-center text-[11px] font-semibold">Qty</th>
+                  <th className="px-2 py-2 text-right text-[11px] font-semibold">Unit Rate</th>
                   {withGst ? (
-                    <th className="px-2 py-2 text-right font-semibold">GST%</th>
+                    <>
+                      <th className="px-2 py-2 text-center text-[11px] font-semibold">GST</th>
+                      <th className="px-2 py-2 text-right text-[11px] font-semibold">Tax</th>
+                    </>
                   ) : null}
-                  <th className="px-2 py-2 text-right font-semibold">Amount</th>
+                  <th className="px-2 py-2 text-right text-[11px] font-semibold">Amount</th>
                 </tr>
               </thead>
               <tbody>
@@ -190,103 +221,172 @@ export function QuotePreviewModal({
                     Boolean(line.description.trim()) &&
                     line.aliasName!.trim() !== line.description.trim();
                   return (
-                    <tr
-                      key={line.key}
-                      className="border-b border-dark-primary/40 last:border-b-0"
-                    >
-                      <td className="px-2 py-2 align-top tabular-nums">{i + 1}</td>
+                    <tr key={line.key} className="border-b border-slate-200">
+                      <td className="px-2 py-2 text-center align-top tabular-nums">{i + 1}</td>
                       <td className="min-w-0 px-2 py-2 align-top">
                         {name ? (
-                          <span className="font-medium">{name}</span>
+                          <span className="font-semibold">{name}</span>
                         ) : (
-                          <span className="italic text-mid-green/50">Item…</span>
+                          <span className="italic text-slate-400">Item…</span>
                         )}
                         {showCatalog ? (
-                          <span className="mt-0.5 block text-[10px] text-dark-secondary/70">
+                          <span className="mt-0.5 block text-[10px] text-slate-500">
                             {line.description}
                           </span>
                         ) : null}
                       </td>
-                      <td className="px-2 py-2 text-right align-top tabular-nums">
-                        {line.qty} {line.unit}
+                      <td className="px-2 py-2 text-center align-top tabular-nums">
+                        {line.hsnCode || ""}
+                      </td>
+                      <td className="px-2 py-2 text-center align-top tabular-nums">
+                        {formatQuoteQty(line.qty, line.unit)}
                       </td>
                       <td className="px-2 py-2 text-right align-top tabular-nums">
-                        {formatMoney(line.unitPrice)}
+                        {formatQuoteAmount(line.unitPrice)}
                       </td>
                       {withGst ? (
-                        <td className="px-2 py-2 text-right align-top tabular-nums">
-                          {line.taxRate}%
-                        </td>
+                        <>
+                          <td className="px-2 py-2 text-center align-top tabular-nums">
+                            {line.taxRate}%
+                          </td>
+                          <td className="px-2 py-2 text-right align-top tabular-nums">
+                            {formatQuoteAmount(tax)}
+                          </td>
+                        </>
                       ) : null}
-                      <td className="px-2 py-2 text-right align-top tabular-nums">
-                        {formatMoney(amount)}
+                      <td className="px-2 py-2 text-right align-top font-semibold tabular-nums">
+                        {formatQuoteAmount(amount)}
                       </td>
                     </tr>
                   );
                 })}
+                <tr className="border-y border-[#1F3A5F] bg-[#F3F5F7] font-semibold">
+                  <td className="px-2 py-2" />
+                  <td className="px-2 py-2" />
+                  <td className="px-2 py-2" />
+                  <td className="px-2 py-2 text-center tabular-nums">{totalQty}</td>
+                  <td className="px-2 py-2" />
+                  {withGst ? (
+                    <>
+                      <td className="px-2 py-2 text-center">Total</td>
+                      <td className="px-2 py-2 text-right tabular-nums">{formatQuoteAmount(totalTax)}</td>
+                    </>
+                  ) : (
+                    <td className="px-2 py-2 text-right">Total</td>
+                  )}
+                  <td className="px-2 py-2 text-right tabular-nums">
+                    {formatQuoteAmount(calc.grandTotal)}
+                  </td>
+                </tr>
               </tbody>
             </table>
           </div>
 
-          <div className="mt-4 ml-auto w-full max-w-[16rem] space-y-1">
-            <div className="flex justify-between gap-4">
-              <span>Subtotal</span>
-              <span className="tabular-nums">{formatMoney(calc.subtotal)}</span>
+          <div className="mt-5 grid gap-6 sm:grid-cols-[1.2fr_1fr]">
+            <div>
+              <p className="text-[10px] font-semibold tracking-[0.14em] text-slate-500">
+                AMOUNT IN WORDS
+              </p>
+              <p className="mt-1 text-[12px]">{amountInWords(calc.grandTotal, "").trim()}</p>
             </div>
-            {calc.discountAmount > 0 ? (
-              <div className="flex justify-between gap-4">
-                <span>Discount</span>
-                <span className="tabular-nums">-{formatMoney(calc.discountAmount)}</span>
-              </div>
-            ) : null}
-            {withGst && calc.gstSplit === "CGST_SGST" ? (
-              <>
-                <div className="flex justify-between gap-4">
-                  <span>CGST</span>
-                  <span className="tabular-nums">{formatMoney(calc.cgstAmount)}</span>
+            <div>
+              <p className="text-[10px] font-semibold tracking-[0.14em] text-slate-500">TAX ANALYSIS</p>
+              <div className="mt-1 space-y-1">
+                <div className="flex justify-between border-b border-slate-200 py-1">
+                  <span className="text-slate-500">Taxable Amount</span>
+                  <span className="font-semibold tabular-nums">{formatQuoteAmount(calc.subtotal)}</span>
                 </div>
-                <div className="flex justify-between gap-4">
-                  <span>SGST</span>
-                  <span className="tabular-nums">{formatMoney(calc.sgstAmount)}</span>
+                {Array.from(gstBuckets.entries()).map(([rate, tax]) => (
+                  <div key={rate} className="flex justify-between border-b border-slate-200 py-1">
+                    <span className="text-slate-500">GST@{rate}%</span>
+                    <span className="font-semibold tabular-nums">{formatQuoteAmount(tax)}</span>
+                  </div>
+                ))}
+                {calc.discountAmount > 0 ? (
+                  <div className="flex justify-between border-b border-slate-200 py-1">
+                    <span className="text-slate-500">Discount</span>
+                    <span className="font-semibold tabular-nums">
+                      -{formatQuoteAmount(calc.discountAmount)}
+                    </span>
+                  </div>
+                ) : null}
+                {calc.deliveryCharge > 0 ? (
+                  <div className="flex justify-between border-b border-slate-200 py-1">
+                    <span className="text-slate-500">Delivery</span>
+                    <span className="font-semibold tabular-nums">
+                      {formatQuoteAmount(calc.deliveryCharge)}
+                    </span>
+                  </div>
+                ) : null}
+                {calc.otherTaxAmount > 0 ? (
+                  <div className="flex justify-between border-b border-slate-200 py-1">
+                    <span className="text-slate-500">{otherTaxLabel || "Other tax"}</span>
+                    <span className="font-semibold tabular-nums">
+                      {formatQuoteAmount(calc.otherTaxAmount)}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="flex justify-between bg-[#1F3A5F] px-2 py-2 font-bold text-white">
+                  <span>Grand Total</span>
+                  <span className="tabular-nums">{formatQuoteAmount(calc.grandTotal)}</span>
                 </div>
-              </>
-            ) : null}
-            {withGst && calc.gstSplit === "IGST" ? (
-              <div className="flex justify-between gap-4">
-                <span>IGST</span>
-                <span className="tabular-nums">{formatMoney(calc.igstAmount)}</span>
               </div>
-            ) : null}
-            {withGst && calc.gstAmount > 0 && calc.gstSplit === "NONE" ? (
-              <div className="flex justify-between gap-4">
-                <span>GST</span>
-                <span className="tabular-nums">{formatMoney(calc.gstAmount)}</span>
-              </div>
-            ) : null}
-            {calc.otherTaxAmount > 0 ? (
-              <div className="flex justify-between gap-4">
-                <span>{otherTaxLabel || "Other tax"}</span>
-                <span className="tabular-nums">{formatMoney(calc.otherTaxAmount)}</span>
-              </div>
-            ) : null}
-            {calc.deliveryCharge > 0 ? (
-              <div className="flex justify-between gap-4">
-                <span>Delivery</span>
-                <span className="tabular-nums">{formatMoney(calc.deliveryCharge)}</span>
-              </div>
-            ) : null}
-            <div className="mt-1 flex justify-between gap-4 border border-dark-primary px-2 py-1.5 font-bold">
-              <span>Grand total</span>
-              <span className="tabular-nums">{formatMoney(calc.grandTotal)}</span>
             </div>
           </div>
 
-          {notes.trim() ? (
-            <div className="mt-5 border-t border-light-green/40 pt-3">
-              <p className="font-semibold">Notes</p>
-              <p className="mt-1 whitespace-pre-line text-dark-secondary/90">{notes}</p>
-            </div>
-          ) : null}
+          <div className="mt-5">
+            <p className="text-[10px] font-semibold tracking-[0.14em] text-[#1F3A5F]">
+              TERMS & CONDITIONS
+            </p>
+            <p className="mt-1">Payment Terms: {paymentTerms}</p>
+            {notes.trim() ? (
+              <p className="mt-1 whitespace-pre-line text-slate-600">{notes}</p>
+            ) : null}
+          </div>
+
+          <p className="mt-4 text-[11px] leading-relaxed text-slate-600">{QUOTE_CLOSING}</p>
+
+          <div className="mt-6 text-right text-[12px] text-slate-500">
+            <p>With thanks and best regards,</p>
+            <p>Yours Sincerely</p>
+            <p className="mt-4 font-semibold text-[#1F3A5F]">
+              {signatory}
+              {signPhone ? ` (${signPhone})` : ""}
+            </p>
+          </div>
+
+          <div className="mt-8 border-t border-[#1F3A5F] pt-3 text-center text-[10px] leading-relaxed text-slate-500">
+            {company.bankName || company.bankAccount ? (
+              <p className="text-[#1F3A5F]">
+                {`Bank Details: ${[
+                  company.bankName,
+                  company.bankBranch ? `Branch: ${company.bankBranch}` : null,
+                  company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
+                  company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
+                  company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
+                ]
+                  .filter(Boolean)
+                  .join("   |   ")}`}
+              </p>
+            ) : null}
+            <p className="mt-1">
+              {[
+                company.address ? `Address: ${company.address}` : null,
+                company.phone ? `PH: ${company.phone}` : null,
+                company.mobile ? `Mobile: ${company.mobile}` : null,
+              ]
+                .filter(Boolean)
+                .join("   |   ")}
+            </p>
+            <p>
+              {[
+                company.email ? `Email: ${company.email}` : null,
+                company.website ? `Website: ${company.website}` : null,
+              ]
+                .filter(Boolean)
+                .join("   |   ")}
+            </p>
+          </div>
         </div>
       </div>
     </div>

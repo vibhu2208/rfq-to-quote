@@ -1,10 +1,13 @@
 import { getStateCode, getStateName } from "@/lib/accounting/states";
+import { DEFAULT_QUOTE_SERVICES, DEFAULT_QUOTE_TAGLINE } from "@/lib/quote-format";
 
 export function getCompanyConfig() {
   const sellerState = process.env.SELLER_STATE || "Maharashtra";
 
   return {
     name: process.env.COMPANY_NAME || "Your Company",
+    tagline: process.env.COMPANY_TAGLINE || DEFAULT_QUOTE_TAGLINE,
+    services: process.env.COMPANY_SERVICES || DEFAULT_QUOTE_SERVICES,
     address: process.env.COMPANY_ADDRESS || "",
     gstin: process.env.COMPANY_GSTIN || "",
     email: process.env.COMPANY_EMAIL || "",

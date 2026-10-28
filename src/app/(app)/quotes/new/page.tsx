@@ -3,16 +3,5 @@ import { getCompanyConfig } from "@/lib/company";
 
 export default function NewQuotePage() {
   const company = getCompanyConfig();
-  return (
-    <QuoteBuilder
-      sellerState={company.sellerState}
-      company={{
-        name: company.name,
-        address: company.address,
-        gstin: company.gstin,
-        email: company.email,
-        phone: company.phone,
-      }}
-    />
-  );
+  return <QuoteBuilder sellerState={company.sellerState} company={company} />;
 }

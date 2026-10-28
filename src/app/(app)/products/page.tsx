@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { Money } from "@/components/ui";
+import { MasterDetailDialog } from "@/components/master-detail-dialog";
 
 type Product = {
   id: string;
@@ -11,12 +12,47 @@ type Product = {
   description: string;
   unit: string;
   productType?: "GOODS" | "SERVICE";
+  sourceProductId?: string | null;
+  category?: string | null;
+  subCategory?: string | null;
+  brand?: string | null;
+  hsnCode?: string | null;
+  gstTaxName?: string | null;
+  modelNo?: string | null;
+  partNo?: string | null;
+  mrp?: number | null;
+  openingStock?: number;
   basePrice: number;
   offerPrice: number;
   taxRate: number;
   taxCategory: string;
+  masterData?: Record<string, unknown> | null;
   active: boolean;
 };
+
+function productMasterFallback(p: Product): Record<string, unknown> {
+  return {
+    ProductID: p.sourceProductId || p.code,
+    ProductName: p.name,
+    Specs: p.description,
+    LeadCatName: p.category,
+    SubCatName: p.subCategory,
+    Brand: p.brand,
+    ModelNo: p.modelNo,
+    PartNo: p.partNo,
+    UnitName: p.unit,
+    Cost: p.basePrice,
+    MRP: p.mrp ?? p.offerPrice,
+    GSTTaxName: p.gstTaxName || p.taxCategory,
+    HSN_SCA: p.hsnCode,
+    ProductTypeName: p.productType,
+    OpStock: p.openingStock,
+  };
+}
+
+function hasMasterFields(data: unknown): data is Record<string, unknown> {
+  return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
+}
 
 const emptyForm = {
   code: "",
@@ -43,13 +79,15 @@ export default function ProductsPage() {
   const [form, setForm] = useState(emptyForm);
   const [importMsg, setImportMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [detail, setDetail] = useState<Product | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (activeFilter !== "all") params.set("active", activeFilter);
-    const res = await fetch(`/api/products?${params}`);
+    const res = await fetch(`/api/products?${params}&take=2000`);
     const data = await res.json();
     setProducts(Array.isArray(data) ? data : []);
     setLoading(false);
@@ -59,6 +97,18 @@ export default function ProductsPage() {
     const t = setTimeout(load, 200);
     return () => clearTimeout(t);
   }, [load]);
+
+  async function openDetail(p: Product) {
+    setDetail(p);
+    setDetailLoading(true);
+    try {
+      const res = await fetch(`/api/products/${p.id}`);
+      const data = await res.json();
+      if (res.ok) setDetail(data);
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   function openCreate() {
     setEditing(null);
@@ -131,7 +181,7 @@ export default function ProductsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Product catalog</h1>
           <p className="mt-1 text-sm text-mid-green">
-            Catalog syncs to inventory for goods · services are not stocked
+            Product master from Excel — click a row for the full record
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -168,7 +218,7 @@ export default function ProductsPage() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search code or name…"
+            placeholder="Search ID, name, category, brand, HSN…"
             className="w-full rounded-lg border border-light-green/40 bg-white/50 py-2 pl-9 pr-3 text-sm outline-none focus:border-mid-green"
           />
         </div>
@@ -183,65 +233,69 @@ export default function ProductsPage() {
         </select>
       </div>
 
-      <div className="overflow-hidden rounded-xl bg-white/40 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-        <table className="w-full text-left text-sm">
+      <div className="overflow-x-auto rounded-xl bg-white/40 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+        <table className="w-full min-w-[860px] text-left text-sm">
           <thead className="bg-dark-secondary/5 text-mid-green">
             <tr>
-              <th className="px-4 py-3 font-medium">Code</th>
+              <th className="px-4 py-3 font-medium">Product ID</th>
               <th className="px-4 py-3 font-medium">Name</th>
+              <th className="px-4 py-3 font-medium">Category</th>
+              <th className="px-4 py-3 font-medium">Brand</th>
+              <th className="px-4 py-3 font-medium">HSN</th>
+              <th className="px-4 py-3 font-medium">GST</th>
               <th className="px-4 py-3 font-medium">Unit</th>
-              <th className="px-4 py-3 font-medium text-right">Base</th>
-              <th className="px-4 py-3 font-medium text-right">Offer</th>
-              <th className="px-4 py-3 font-medium text-right">Tax %</th>
-              <th className="px-4 py-3 font-medium">Status</th>
+              <th className="px-4 py-3 font-medium text-right">MRP</th>
               <th className="px-4 py-3 font-medium"></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={9} className="px-4 py-10 text-center text-mid-green">
                   Loading…
                 </td>
               </tr>
             ) : products.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={9} className="px-4 py-10 text-center text-mid-green">
                   No products found
                 </td>
               </tr>
             ) : (
               products.map((p, i) => (
-                <tr key={p.id} className={i % 2 === 1 ? "bg-light-green/10" : undefined}>
-                  <td className="px-4 py-3 font-medium">{p.code}</td>
+                <tr
+                  key={p.id}
+                  className={`cursor-pointer hover:bg-light-green/15 ${i % 2 === 1 ? "bg-light-green/10" : ""}`}
+                  onClick={() => openDetail(p)}
+                >
+                  <td className="px-4 py-3 font-medium">{p.sourceProductId || p.code}</td>
                   <td className="px-4 py-3">
                     <div>{p.name}</div>
-                    {p.description ? (
+                    {p.modelNo ? (
+                      <div className="text-xs text-mid-green">Model {p.modelNo}</div>
+                    ) : p.description ? (
                       <div className="text-xs text-mid-green line-clamp-1">{p.description}</div>
                     ) : null}
                   </td>
+                  <td className="px-4 py-3 text-xs text-mid-green">
+                    <div>{p.category || "—"}</div>
+                    {p.subCategory ? <div className="text-[11px] opacity-80">{p.subCategory}</div> : null}
+                  </td>
+                  <td className="px-4 py-3 text-xs">{p.brand || "—"}</td>
+                  <td className="px-4 py-3 font-mono text-xs">{p.hsnCode || "—"}</td>
+                  <td className="px-4 py-3 text-xs">{p.gstTaxName || `${p.taxRate}%`}</td>
                   <td className="px-4 py-3">{p.unit}</td>
                   <td className="px-4 py-3 text-right">
-                    <Money value={p.basePrice} />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Money value={p.offerPrice} />
-                  </td>
-                  <td className="px-4 py-3 text-right">{p.taxRate}</td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        p.active ? "bg-mid-green/20 text-mid-green" : "bg-dark-primary/10 text-dark-primary"
-                      }`}
-                    >
-                      {p.active ? "Active" : "Inactive"}
-                    </span>
+                    <Money value={p.mrp ?? p.offerPrice} />
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
-                        onClick={() => openEdit(p)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openEdit(p);
+                        }}
                         className="rounded p-1.5 text-mid-green hover:bg-light-green/30"
                         title="Edit"
                       >
@@ -250,7 +304,10 @@ export default function ProductsPage() {
                       {p.active ? (
                         <button
                           type="button"
-                          onClick={() => deactivate(p.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deactivate(p.id);
+                          }}
                           className="rounded p-1.5 text-dark-primary/60 hover:bg-light-green/30"
                           title="Deactivate"
                         >
@@ -265,6 +322,31 @@ export default function ProductsPage() {
           </tbody>
         </table>
       </div>
+
+      {detail ? (
+        <MasterDetailDialog
+          kind="product"
+          title={detail.name}
+          subtitle={[detail.sourceProductId || detail.code, detail.category].filter(Boolean).join(" · ")}
+          badge={detail.gstTaxName || (detail.taxRate != null ? `GST ${detail.taxRate}%` : null)}
+          loading={detailLoading}
+          data={hasMasterFields(detail.masterData) ? detail.masterData : productMasterFallback(detail)}
+          onClose={() => setDetail(null)}
+          actions={
+            <button
+              type="button"
+              onClick={() => {
+                setDetail(null);
+                openEdit(detail);
+              }}
+              className="inline-flex items-center gap-1 rounded-lg border border-mid-green/40 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/10"
+            >
+              <Pencil className="h-3.5 w-3.5" strokeWidth={1.5} />
+              Edit
+            </button>
+          }
+        />
+      ) : null}
 
       {modalOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">

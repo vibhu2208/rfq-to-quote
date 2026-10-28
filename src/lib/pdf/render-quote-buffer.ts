@@ -47,6 +47,8 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     grandTotal: decimalToNumber(quote.grandTotal),
     company: {
       name: company.name,
+      tagline: company.tagline,
+      services: company.services,
       address: company.address,
       gstin: company.gstin,
       email: company.email,
