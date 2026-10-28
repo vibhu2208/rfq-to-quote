@@ -10,11 +10,26 @@ export type GenerateQuoteInput = {
   email?: string;
   phone?: string;
   filename?: string;
+  partyId?: string;
 };
 
-async function matchClient(name: string) {
-  const q = name.trim();
-  if (q.length < 3) return null;
+const partyWithBilling = {
+  addresses: {
+    where: { type: "BILLING" as const },
+    orderBy: { isDefault: "desc" as const },
+    take: 1,
+  },
+};
+
+async function loadClient(partyId?: string, name?: string) {
+  if (partyId?.trim()) {
+    return prisma.party.findFirst({
+      where: { id: partyId.trim(), active: true, type: { not: "OTHER" } },
+      include: partyWithBilling,
+    });
+  }
+  const q = name?.trim() || "";
+  if (q.length < 2) return null;
   return prisma.party.findFirst({
     where: {
       active: true,
@@ -24,13 +39,7 @@ async function matchClient(name: string) {
         { tradeName: { contains: q, mode: "insensitive" } },
       ],
     },
-    include: {
-      addresses: {
-        where: { type: "BILLING" },
-        orderBy: { isDefault: "desc" },
-        take: 1,
-      },
-    },
+    include: partyWithBilling,
   });
 }
 
@@ -44,7 +53,7 @@ export async function generateQuoteFromRequirement(input: GenerateQuoteInput) {
       ? `Document RFQ: ${input.filename}${input.company ? ` — ${input.company}` : ""}`
       : `Team RFQ: ${rawText.slice(0, 80)}${input.company ? ` — ${input.company}` : ""}`);
 
-  let rfq = await createRfqWithMessage({
+  const rfq = await createRfqWithMessage({
     channel: "MANUAL",
     sourceRef: `quote-gen-${Date.now()}`,
     subject,
@@ -57,11 +66,11 @@ export async function generateQuoteFromRequirement(input: GenerateQuoteInput) {
   });
 
   const lookupName = input.company || rfq.customerCompany || rfq.customerName;
-  const party = lookupName ? await matchClient(lookupName) : null;
+  const party = await loadClient(input.partyId, lookupName);
   const billing = party?.addresses[0];
 
   if (party) {
-    rfq = await prisma.rfq.update({
+    await prisma.rfq.update({
       where: { id: rfq.id },
       data: {
         customerCompany: rfq.customerCompany || party.legalName,

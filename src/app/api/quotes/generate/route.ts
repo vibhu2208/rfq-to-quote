@@ -50,6 +50,7 @@ export async function POST(req: NextRequest) {
     let contactName = "";
     let email = "";
     let phone = "";
+    let partyId = "";
     let filename = "";
 
     if (contentType.includes("multipart/form-data")) {
@@ -58,6 +59,7 @@ export async function POST(req: NextRequest) {
       contactName = formString(form, "contactName");
       email = formString(form, "email");
       phone = formString(form, "phone");
+      partyId = formString(form, "partyId");
       subject = formString(form, "subject");
       const pasted = formString(form, "text") || formString(form, "productNeeded");
       const file = form.get("file");
@@ -128,6 +130,7 @@ export async function POST(req: NextRequest) {
       contactName = String(body.contactName || "").trim();
       email = String(body.email || "").trim();
       phone = String(body.phone || "").trim();
+      partyId = String(body.partyId || "").trim();
     }
 
     if (!rawText.trim()) {
@@ -144,6 +147,7 @@ export async function POST(req: NextRequest) {
       contactName,
       email,
       phone,
+      partyId: partyId || undefined,
       filename: filename || undefined,
     });
 

@@ -11,6 +11,22 @@ export type OrgContext = {
   organisationName: string;
 };
 
+let cachedOrgId: { id: string; at: number } | null = null;
+
+/** Fast org id lookup for autocomplete and other hot paths. */
+export async function getDefaultOrganisationId(): Promise<string> {
+  if (cachedOrgId && Date.now() - cachedOrgId.at < 60_000) return cachedOrgId.id;
+  const organisation = await prisma.organisation.findUnique({
+    where: { code: "DEFAULT" },
+    select: { id: true },
+  });
+  if (!organisation) {
+    throw new Error("DEFAULT organisation not seeded. Run npm run db:seed");
+  }
+  cachedOrgId = { id: organisation.id, at: Date.now() };
+  return organisation.id;
+}
+
 /** Loads the seeded DEFAULT organisation and primary GST / warehouse. */
 export async function getDefaultOrgContext(): Promise<OrgContext> {
   const organisation = await prisma.organisation.findUnique({

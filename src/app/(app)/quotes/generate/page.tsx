@@ -3,6 +3,10 @@
 import Link from "next/link";
 import { ClipboardEvent, FormEvent, useCallback, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import {
+  ClientCompanyField,
+  type ClientHit,
+} from "@/components/client-company-field";
 
 const ACCEPT =
   ".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.heic,.gif,.bmp,.doc,.docx,.txt,.rtf,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -22,11 +26,15 @@ function pickClipboardFile(files: FileList | File[]): File | null {
 export default function GenerateQuotePage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const cameraInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [company, setCompany] = useState("");
+  const [contactName, setContactName] = useState("");
+  const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [partyId, setPartyId] = useState("");
 
   const assignFile = useCallback((next: File | null) => {
     setFile(next);
@@ -67,10 +75,11 @@ export default function GenerateQuotePage() {
 
     const body = new FormData();
     body.append("text", pasted);
-    body.append("company", String(form.get("company") || ""));
-    body.append("contactName", String(form.get("contactName") || ""));
-    body.append("email", String(form.get("email") || ""));
-    body.append("phone", String(form.get("phone") || ""));
+    body.append("company", company);
+    body.append("contactName", contactName);
+    body.append("email", email);
+    body.append("phone", phone);
+    body.append("partyId", partyId);
     body.append("subject", String(form.get("subject") || ""));
     if (file) body.append("file", file);
 
@@ -158,14 +167,6 @@ export default function GenerateQuotePage() {
               className="sr-only"
               onChange={(e) => assignFile(e.target.files?.[0] || null)}
             />
-            <input
-              ref={cameraInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="sr-only"
-              onChange={(e) => assignFile(e.target.files?.[0] || null)}
-            />
             {file ? (
               <span className="text-sm text-dark-primary">
                 {file.name || "Attached file"} ({Math.max(1, Math.round(file.size / 1024))} KB)
@@ -187,20 +188,12 @@ export default function GenerateQuotePage() {
             >
               Choose file
             </button>
-            <button
-              type="button"
-              onClick={() => cameraInputRef.current?.click()}
-              className="rounded-md border border-light-green/40 bg-white/70 px-3 py-1.5 text-sm text-dark-secondary hover:bg-white"
-            >
-              Take photo
-            </button>
             {file ? (
               <button
                 type="button"
                 onClick={() => {
                   assignFile(null);
                   if (fileInputRef.current) fileInputRef.current.value = "";
-                  if (cameraInputRef.current) cameraInputRef.current.value = "";
                 }}
                 className="rounded-md px-3 py-1.5 text-sm text-dark-primary hover:underline"
               >
@@ -213,16 +206,34 @@ export default function GenerateQuotePage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block text-sm">
             <span className="mb-1.5 block text-dark-secondary">Company (optional)</span>
-            <input
-              name="company"
-              className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
-              placeholder="Client company — used to match master"
+            <ClientCompanyField
+              value={company}
+              email={email}
+              phone={phone}
+              placeholder="Type client name or initials"
+              onChange={(next) => {
+                setCompany(next);
+                if (!next.trim()) setPartyId("");
+              }}
+              onSelectClient={(client: ClientHit | null) => {
+                if (!client) {
+                  setPartyId("");
+                  return;
+                }
+                setPartyId(client.id);
+                setCompany(client.legalName);
+                if (client.managedByName) setContactName(client.managedByName);
+                if (client.email) setEmail(client.email);
+                if (client.phone) setPhone(client.phone);
+              }}
             />
           </label>
           <label className="block text-sm">
             <span className="mb-1.5 block text-dark-secondary">Contact (optional)</span>
             <input
               name="contactName"
+              value={contactName}
+              onChange={(e) => setContactName(e.target.value)}
               className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
               placeholder="Who you are speaking with"
             />
@@ -232,6 +243,8 @@ export default function GenerateQuotePage() {
             <input
               name="email"
               type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
               className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
             />
           </label>
@@ -239,6 +252,8 @@ export default function GenerateQuotePage() {
             <span className="mb-1.5 block text-dark-secondary">Phone</span>
             <input
               name="phone"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
               className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
             />
           </label>

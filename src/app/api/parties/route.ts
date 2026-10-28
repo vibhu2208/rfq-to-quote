@@ -3,10 +3,11 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { requireUserId } from "@/lib/api/session-user";
-import { getDefaultOrgContext } from "@/lib/accounting/context";
+import { getDefaultOrgContext, getDefaultOrganisationId } from "@/lib/accounting/context";
 import { verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
 import { getStateCode } from "@/lib/accounting/states";
 import { isAccountingError } from "@/lib/accounting/errors";
+import { rankPartiesByQuery } from "@/lib/party-search";
 
 function serializeParty(
   party: {
@@ -96,32 +97,102 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const q = url.searchParams.get("q")?.trim() || "";
   const activeParam = url.searchParams.get("active");
+  const takeParam = url.searchParams.get("take");
+  const take = takeParam
+    ? Math.min(Math.max(Number(takeParam) || 12, 1), 5000)
+    : 5000;
+
+  const autocomplete = Boolean(takeParam) && take <= 50;
+
+  if (autocomplete) {
+    const organisationId = await getDefaultOrganisationId();
+    const parties = await prisma.party.findMany({
+      where: {
+        organisationId,
+        type: { not: "OTHER" },
+        ...(activeParam === "true"
+          ? { active: true }
+          : activeParam === "false"
+            ? { active: false }
+            : {}),
+        ...(q
+          ? {
+              OR: [
+                { legalName: { startsWith: q, mode: "insensitive" } },
+                { tradeName: { startsWith: q, mode: "insensitive" } },
+                { code: { startsWith: q, mode: "insensitive" } },
+                { gstin: { startsWith: q, mode: "insensitive" } },
+                { sourceClientId: { startsWith: q, mode: "insensitive" } },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        code: true,
+        legalName: true,
+        tradeName: true,
+        gstin: true,
+        email: true,
+        phone: true,
+        managedByName: true,
+        clientTypeName: true,
+        sourceClientId: true,
+      },
+      orderBy: { legalName: "asc" },
+      take,
+    });
+    const ranked = q ? rankPartiesByQuery(parties, q) : parties;
+    return NextResponse.json(
+      ranked.map((p) => ({
+        ...p,
+        billingAddress: null,
+      }))
+    );
+  }
 
   const ctx = await getDefaultOrgContext();
-  const parties = await prisma.party.findMany({
-    where: {
-      organisationId: ctx.organisationId,
-      type: { not: "OTHER" },
-      ...(activeParam === "true"
-        ? { active: true }
-        : activeParam === "false"
-          ? { active: false }
-          : {}),
-      ...(q
-        ? {
-            OR: [
-              { legalName: { contains: q, mode: "insensitive" } },
-              { tradeName: { contains: q, mode: "insensitive" } },
-              { gstin: { contains: q, mode: "insensitive" } },
-              { code: { contains: q, mode: "insensitive" } },
-              { email: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q, mode: "insensitive" } },
-              { sourceClientId: { contains: q, mode: "insensitive" } },
-              { clientTypeName: { contains: q, mode: "insensitive" } },
-            ],
-          }
+  const baseWhere = {
+    organisationId: ctx.organisationId,
+    type: { not: "OTHER" as const },
+    ...(activeParam === "true"
+      ? { active: true }
+      : activeParam === "false"
+        ? { active: false }
         : {}),
-    },
+  };
+
+  const nameFilter = q
+    ? {
+        OR: [
+          { legalName: { startsWith: q, mode: "insensitive" as const } },
+          { tradeName: { startsWith: q, mode: "insensitive" as const } },
+          { code: { startsWith: q, mode: "insensitive" as const } },
+          { gstin: { startsWith: q, mode: "insensitive" as const } },
+          { sourceClientId: { startsWith: q, mode: "insensitive" as const } },
+          ...(q.length >= 3
+            ? [
+                { legalName: { contains: q, mode: "insensitive" as const } },
+                { tradeName: { contains: q, mode: "insensitive" as const } },
+              ]
+            : []),
+        ],
+      }
+    : {};
+
+  const listFilter = q
+    ? {
+        OR: [
+          ...(nameFilter.OR || []),
+          { email: { contains: q, mode: "insensitive" as const } },
+          { phone: { contains: q, mode: "insensitive" as const } },
+          { clientTypeName: { contains: q, mode: "insensitive" as const } },
+        ],
+      }
+    : {};
+
+  const parties = await prisma.party.findMany({
+    where: { ...baseWhere, ...listFilter },
     select: {
       id: true,
       code: true,
@@ -160,10 +231,11 @@ export async function GET(req: NextRequest) {
       },
     },
     orderBy: [{ active: "desc" }, { legalName: "asc" }],
-    take: 5000,
+    take,
   });
 
-  return NextResponse.json(parties.map(serializeParty));
+  const ranked = q ? rankPartiesByQuery(parties, q) : parties;
+  return NextResponse.json(ranked.map(serializeParty));
 }
 
 const onboardSchema = z.object({

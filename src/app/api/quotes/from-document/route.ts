@@ -15,6 +15,25 @@ function formString(form: FormData, key: string): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+function filenameFromFile(file: File): string {
+  const name = (file.name || "").trim();
+  if (name && name.includes(".")) return name;
+  const type = file.type || "";
+  const byType: Record<string, string> = {
+    "image/png": "pasted-screenshot.png",
+    "image/jpeg": "pasted-screenshot.jpg",
+    "image/jpg": "pasted-screenshot.jpg",
+    "image/webp": "pasted-screenshot.webp",
+    "image/gif": "pasted-screenshot.gif",
+    "image/heic": "pasted-screenshot.heic",
+    "image/heif": "pasted-screenshot.heic",
+    "image/tiff": "pasted-screenshot.tiff",
+    "image/bmp": "pasted-screenshot.bmp",
+    "application/pdf": "document.pdf",
+  };
+  return byType[type] || name || "pasted-screenshot.png";
+}
+
 /**
  * Upload a document/photo → Reducto extract (product, model, company, qty, price)
  * → create a draft quote immediately (skips RFQ inbox flow).
@@ -30,7 +49,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "file is required" }, { status: 400 });
     }
 
-    const filename = file.name || "document.pdf";
+    const filename = filenameFromFile(file);
     if (file.size > REDUCTO_MAX_BYTES) {
       return NextResponse.json(
         { error: `File is too large (max ${REDUCTO_MAX_BYTES / (1024 * 1024)}MB)` },
@@ -49,7 +68,40 @@ export async function POST(req: NextRequest) {
     const overrideContact = formString(form, "contactName");
     const overrideEmail = formString(form, "email");
     const overridePhone = formString(form, "phone");
+    const partyId = formString(form, "partyId");
     const notes = formString(form, "notes");
+
+    const party = partyId
+      ? await prisma.party.findFirst({
+          where: { id: partyId, active: true, type: { not: "OTHER" } },
+          include: {
+            addresses: {
+              where: { type: "BILLING" },
+              orderBy: { isDefault: "desc" },
+              take: 1,
+            },
+          },
+        })
+      : overrideCompany
+        ? await prisma.party.findFirst({
+            where: {
+              active: true,
+              type: { not: "OTHER" },
+              OR: [
+                { legalName: { contains: overrideCompany, mode: "insensitive" } },
+                { tradeName: { contains: overrideCompany, mode: "insensitive" } },
+              ],
+            },
+            include: {
+              addresses: {
+                where: { type: "BILLING" },
+                orderBy: { isDefault: "desc" },
+                take: 1,
+              },
+            },
+          })
+        : null;
+    const billing = party?.addresses[0];
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const { fields } = await extractQuoteFieldsFromDocument(buffer, filename);
@@ -75,7 +127,7 @@ export async function POST(req: NextRequest) {
         taxRate: l.taxRate,
       })),
       withGst: true,
-      buyerState: "",
+      buyerState: billing?.state || "",
       sellerState: company.sellerState,
       gstMode: "AUTO",
       deliveryCharge: 0,
@@ -86,8 +138,16 @@ export async function POST(req: NextRequest) {
     });
 
     const quoteNumber = await nextQuoteNumber();
-    const buyerCompany = overrideCompany || fields.company || "";
-    const buyerName = overrideContact || fields.contactName || "";
+    const buyerCompany = overrideCompany || party?.legalName || fields.company || "";
+    const buyerName =
+      overrideContact || party?.managedByName || party?.tradeName || fields.contactName || "";
+    const buyerEmail = overrideEmail || party?.email || "";
+    const buyerPhone = overridePhone || party?.phone || "";
+    const buyerAddress = billing
+      ? [billing.addressLine1, billing.city, billing.state, billing.postalCode]
+          .filter(Boolean)
+          .join(", ")
+      : "";
 
     const quote = await prisma.quote.create({
       data: {
@@ -95,8 +155,11 @@ export async function POST(req: NextRequest) {
         status: "DRAFT",
         buyerName,
         buyerCompany,
-        buyerEmail: overrideEmail,
-        buyerPhone: overridePhone,
+        buyerEmail,
+        buyerPhone,
+        buyerGstin: party?.gstin || "",
+        buyerAddress,
+        buyerState: billing?.state || "",
         withGst: true,
         gstMode: "AUTO",
         subtotal: calc.subtotal,
