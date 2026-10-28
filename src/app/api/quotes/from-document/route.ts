@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals } from "@/lib/tax";
 import { nextQuoteNumber, decimalToNumber } from "@/lib/quotes";
+import { catalogLinesFromExtractedItems } from "@/lib/quote-from-rfq";
 import {
   assertAllowedDocument,
   extractQuoteFieldsFromDocument,
@@ -107,18 +108,21 @@ export async function POST(req: NextRequest) {
     const { fields } = await extractQuoteFieldsFromDocument(buffer, filename);
 
     const company = getCompanyConfig();
-    const lines = fields.lineItems.map((l) => {
-      const desc = [l.productName, l.model ? `Model: ${l.model}` : null]
-        .filter(Boolean)
-        .join(" — ");
-      return {
-        description: desc || "From document",
-        qty: l.quantity > 0 ? l.quantity : 1,
-        unit: l.unit || "pcs",
-        unitPrice: l.unitPrice,
-        taxRate: 18,
-      };
-    });
+    const matched = await catalogLinesFromExtractedItems(fields.lineItems);
+    const lines =
+      matched.length > 0
+        ? matched
+        : fields.lineItems.map((l) => ({
+            productId: null as string | null,
+            description:
+              [l.productName, l.model ? `Model: ${l.model}` : null]
+                .filter(Boolean)
+                .join(" — ") || "From document",
+            qty: l.quantity > 0 ? l.quantity : 1,
+            unit: l.unit || "pcs",
+            unitPrice: l.unitPrice,
+            taxRate: 18,
+          }));
 
     const calc = calculateQuoteTotals({
       lines: lines.map((l) => ({
@@ -175,6 +179,7 @@ export async function POST(req: NextRequest) {
         notes: notes,
         lineItems: {
           create: lines.map((l, i) => ({
+            productId: l.productId,
             description: l.description,
             qty: l.qty,
             unit: l.unit,

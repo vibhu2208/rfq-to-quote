@@ -116,7 +116,7 @@ export default function CaptureRequirementPage() {
       body.append("partyId", partyId);
       body.append("notes", String(form.get("notes") || ""));
 
-      const res = await fetch("/api/quotes/from-document", {
+      const res = await fetch("/api/rfqs/from-document", {
         method: "POST",
         body,
       });
@@ -125,12 +125,14 @@ export default function CaptureRequirementPage() {
 
       if (!res.ok) {
         setError(
-          typeof data.error === "string" ? data.error : "Could not create quote from document"
+          typeof data.error === "string"
+            ? data.error
+            : "Could not extract the requirement from this screenshot"
         );
         return;
       }
 
-      router.push(`/quotes/${data.id}`);
+      router.push(`/rfq/${data.id}`);
       return;
     }
 
@@ -179,8 +181,8 @@ export default function CaptureRequirementPage() {
         </p>
         <h1 className="mt-2 text-2xl font-semibold text-dark-primary">Capture requirement</h1>
         <p className="mt-1 text-sm text-mid-green">
-          Type a requirement for the RFQ inbox, or upload a document/photo to extract product,
-          model, company, quantity, and price into a draft quote right away.
+          Type a requirement, or paste a screenshot. Both go to suggested products and vendors
+          next — then you convert to a quote.
         </p>
       </div>
 
@@ -323,8 +325,8 @@ export default function CaptureRequirementPage() {
                   </span>
                 )}
                 <span className="mt-1 text-xs text-mid-green">
-                  Screenshot from clipboard, photo, PDF, or Word — max 20MB. AI reads the
-                  requirement and drafts the quote.
+                  Screenshot from clipboard, photo, PDF, or Word — max 20MB. We extract the
+                  items, then open suggested products and vendors.
                 </span>
               </div>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -406,10 +408,10 @@ export default function CaptureRequirementPage() {
         >
           {loading
             ? mode === "document"
-              ? "Extracting & creating quote…"
+              ? "Extracting requirement…"
               : "Analysing…"
             : mode === "document"
-              ? "Create quote from document"
+              ? "Extract & continue"
               : "Capture & analyse"}
         </button>
       </form>

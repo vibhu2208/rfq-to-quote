@@ -1,264 +1,240 @@
 import React from "react";
-import { Document, Page, Text, View, StyleSheet, pdf } from "@react-pdf/renderer";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { Document, Page, Text, View, StyleSheet, Image, pdf } from "@react-pdf/renderer";
 import { amountInWords, round2 } from "@/lib/accounting/money";
 import {
   QUOTE_CLOSING,
-  QUOTE_GRAY,
-  QUOTE_LINE,
-  QUOTE_MUTED_BG,
-  QUOTE_NAVY,
+  QUOTE_TEMPLATE_BLUE,
+  QUOTE_TEMPLATE_BORDER,
+  QUOTE_TEMPLATE_HEADER,
   formatQuoteAmount,
   formatQuoteQty,
+  formatTaxAnalysis,
+  quoteIntro,
 } from "@/lib/quote-format";
+
+function loadJpeg(filename: string) {
+  return {
+    data: readFileSync(path.join(process.cwd(), "public", filename)),
+    format: "jpg" as const,
+  };
+}
+
+function letterheadSrc() {
+  return loadJpeg("quote-letterhead.jpeg");
+}
+
+function stampSrc() {
+  return loadJpeg("quote-stamp.jpeg");
+}
+
+const BORDER = QUOTE_TEMPLATE_BORDER;
 
 const styles = StyleSheet.create({
   page: {
     fontFamily: "Helvetica",
-    fontSize: 9.5,
-    paddingTop: 28,
-    paddingBottom: 72,
-    paddingHorizontal: 32,
+    fontSize: 9,
+    paddingTop: 10,
+    paddingBottom: 18,
+    paddingHorizontal: 16,
     backgroundColor: "#FFFFFF",
-    color: "#222222",
+    color: "#000000",
   },
-  headerRow: {
+  letterhead: {
+    width: "100%",
+    height: 58,
+    objectFit: "contain",
+    marginBottom: 8,
+  },
+  metaRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "flex-end",
-    marginBottom: 4,
-  },
-  companyName: {
-    fontSize: 16,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    letterSpacing: 1.2,
-  },
-  tagline: {
-    fontSize: 8,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    marginTop: 2,
-    letterSpacing: 0.6,
-  },
-  quoteTitle: {
-    fontSize: 16,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    textAlign: "right",
-    letterSpacing: 2,
-  },
-  gstinLine: {
-    fontSize: 8,
-    color: QUOTE_GRAY,
-    textAlign: "right",
-    marginTop: 2,
-  },
-  services: {
-    fontSize: 7,
-    color: QUOTE_GRAY,
-    marginTop: 8,
-    marginBottom: 12,
-    lineHeight: 1.35,
-  },
-  metaBox: {
-    flexDirection: "row",
-    backgroundColor: QUOTE_MUTED_BG,
-    padding: 10,
-    marginBottom: 12,
+    marginBottom: 6,
   },
   toCol: {
-    width: "62%",
-    paddingRight: 10,
+    width: "58%",
+    paddingRight: 12,
   },
   detailsCol: {
-    width: "38%",
-    paddingLeft: 8,
+    width: "40%",
   },
-  sectionKicker: {
-    fontSize: 7,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_GRAY,
-    letterSpacing: 1.2,
-    marginBottom: 4,
+  toLabel: {
+    fontSize: 9,
+    marginBottom: 2,
   },
   buyerName: {
     fontSize: 10,
     fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    marginBottom: 3,
+    color: QUOTE_TEMPLATE_BLUE,
+    marginBottom: 2,
   },
-  bodyText: {
-    fontSize: 8.5,
-    color: "#333333",
-    marginBottom: 1.5,
-    lineHeight: 1.35,
+  buyerText: {
+    fontSize: 9,
+    color: QUOTE_TEMPLATE_BLUE,
+    lineHeight: 1.3,
+    marginBottom: 1,
   },
-  detailsLabel: {
-    fontSize: 8,
-    color: QUOTE_GRAY,
+  quoteTitle: {
+    fontSize: 11,
+    fontFamily: "Helvetica-Bold",
+    marginBottom: 4,
+  },
+  detailsText: {
+    fontSize: 9,
+    marginBottom: 2,
+  },
+  dear: {
+    fontSize: 9,
+    marginTop: 4,
     marginBottom: 2,
   },
   intro: {
-    fontSize: 8,
-    color: "#333333",
+    fontSize: 9,
     marginTop: 8,
-    lineHeight: 1.4,
+    marginBottom: 8,
+    lineHeight: 1.35,
   },
   table: {
-    marginBottom: 10,
+    width: "100%",
+    borderWidth: 0.6,
+    borderColor: BORDER,
   },
   tableHeader: {
     flexDirection: "row",
-    backgroundColor: QUOTE_NAVY,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
+    backgroundColor: QUOTE_TEMPLATE_HEADER,
+    borderBottomWidth: 0.6,
+    borderBottomColor: BORDER,
   },
   tableRow: {
     flexDirection: "row",
     borderBottomWidth: 0.6,
-    borderBottomColor: QUOTE_LINE,
-    paddingVertical: 7,
-    paddingHorizontal: 4,
-  },
-  totalRow: {
-    flexDirection: "row",
-    backgroundColor: QUOTE_MUTED_BG,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: QUOTE_NAVY,
-    paddingVertical: 6,
-    paddingHorizontal: 4,
+    borderBottomColor: BORDER,
+    minHeight: 22,
   },
   th: {
     fontFamily: "Helvetica-Bold",
     fontSize: 8,
-    color: "#FFFFFF",
+    paddingVertical: 4,
+    paddingHorizontal: 3,
+    borderRightWidth: 0.6,
+    borderRightColor: BORDER,
   },
   td: {
-    fontSize: 8.5,
-    color: "#222222",
+    fontSize: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    borderRightWidth: 0.6,
+    borderRightColor: BORDER,
   },
   tdBold: {
-    fontSize: 8.5,
+    fontSize: 8,
     fontFamily: "Helvetica-Bold",
-    color: "#222222",
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    borderRightWidth: 0.6,
+    borderRightColor: BORDER,
   },
-  colSn: { width: "6%", textAlign: "center" },
+  lastCell: {
+    borderRightWidth: 0,
+  },
+  colSn: { width: "5%" },
   colDesc: { width: "32%" },
-  colHsn: { width: "11%", textAlign: "center" },
-  colQty: { width: "10%", textAlign: "center" },
-  colRate: { width: "11%", textAlign: "right" },
-  colGst: { width: "7%", textAlign: "center" },
-  colTax: { width: "11%", textAlign: "right" },
-  colAmt: { width: "12%", textAlign: "right" },
-  summaryRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 4,
-    marginBottom: 8,
-  },
-  wordsCol: {
-    width: "54%",
-    paddingRight: 12,
-  },
-  taxCol: {
-    width: "44%",
-  },
-  kicker: {
+  colHsn: { width: "10%" },
+  colQty: { width: "10%" },
+  colRate: { width: "11%" },
+  colGst: { width: "7%" },
+  colTax: { width: "10%" },
+  colAmt: { width: "15%" },
+  colDescWide: { width: "49%" },
+  colAmtWide: { width: "15%" },
+  center: { textAlign: "center" },
+  right: { textAlign: "right" },
+  catalog: {
     fontSize: 7,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_GRAY,
-    letterSpacing: 1.2,
-    marginBottom: 4,
+    color: "#555555",
+    marginTop: 1,
   },
-  words: {
-    fontSize: 8.5,
-    lineHeight: 1.35,
-  },
-  taxRow: {
+  wordsRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     borderBottomWidth: 0.6,
-    borderBottomColor: QUOTE_LINE,
-    paddingVertical: 4,
+    borderBottomColor: BORDER,
   },
-  taxLabel: {
-    fontSize: 8.5,
-    color: QUOTE_GRAY,
-  },
-  taxValue: {
-    fontSize: 8.5,
+  wordsCell: {
+    width: "68%",
+    fontSize: 8,
     fontFamily: "Helvetica-Bold",
-  },
-  grandRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    backgroundColor: QUOTE_NAVY,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    marginTop: 2,
+    paddingVertical: 5,
+    paddingHorizontal: 4,
+    borderRightWidth: 0.6,
+    borderRightColor: BORDER,
   },
   grandLabel: {
+    width: "17%",
+    fontSize: 8,
     fontFamily: "Helvetica-Bold",
-    fontSize: 9,
-    color: "#FFFFFF",
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    borderRightWidth: 0.6,
+    borderRightColor: BORDER,
+    textAlign: "center",
   },
   grandValue: {
+    width: "15%",
+    fontSize: 8,
     fontFamily: "Helvetica-Bold",
-    fontSize: 10,
-    color: "#FFFFFF",
+    paddingVertical: 5,
+    paddingHorizontal: 3,
+    textAlign: "right",
+  },
+  taxAnalysis: {
+    fontSize: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 4,
   },
   termsTitle: {
+    fontSize: 9,
+    marginTop: 10,
+    marginBottom: 2,
+  },
+  termsLine: {
     fontSize: 8,
-    fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    letterSpacing: 1,
-    marginTop: 8,
-    marginBottom: 3,
+    marginBottom: 2,
   },
   closing: {
-    marginTop: 8,
     fontSize: 8,
-    lineHeight: 1.45,
-    color: "#333333",
+    lineHeight: 1.4,
+    marginBottom: 10,
   },
-  signBlock: {
-    marginTop: 14,
-    alignItems: "flex-end",
+  regards: {
+    fontSize: 9,
+    marginBottom: 4,
+  },
+  signRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 2,
+  },
+  stamp: {
+    width: 62,
+    height: 55,
+    objectFit: "contain",
+    marginRight: 10,
   },
   signText: {
-    fontSize: 8.5,
-    marginBottom: 2,
-    textAlign: "right",
-    color: QUOTE_GRAY,
-  },
-  signName: {
     fontSize: 10,
     fontFamily: "Helvetica-Bold",
-    color: QUOTE_NAVY,
-    textAlign: "right",
-    marginTop: 14,
+    marginBottom: 10,
+  },
+  signName: {
+    fontSize: 9,
   },
   footer: {
-    position: "absolute",
-    bottom: 18,
-    left: 32,
-    right: 32,
-    borderTopWidth: 0.8,
-    borderTopColor: QUOTE_NAVY,
-    paddingTop: 6,
+    marginTop: 36,
   },
   footerLine: {
-    fontSize: 7,
-    color: QUOTE_NAVY,
-    textAlign: "center",
-    marginBottom: 1.5,
-  },
-  footerMuted: {
-    fontSize: 7,
-    color: QUOTE_GRAY,
-    textAlign: "center",
-    marginBottom: 1.5,
+    fontSize: 8,
+    marginBottom: 2,
   },
 });
 
@@ -275,6 +251,9 @@ export type QuotePdfData = {
   buyerAddress: string;
   buyerGstin?: string;
   paymentTerms?: string;
+  introText?: string;
+  termsText?: string;
+  closingText?: string;
   subtotal: number;
   discountAmount: number;
   gstAmount: number;
@@ -322,71 +301,86 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   const contactPhone = data.company.mobile || data.company.phone;
   const signatory = data.company.signatory || data.company.name;
   const paymentTerms = data.paymentTerms || "Against Delivery";
+  const intro = data.introText?.trim() || quoteIntro(data.company.name);
+  const terms = data.termsText?.trim() || `Payment Terms: ${paymentTerms}`;
+  const closing = data.closingText?.trim() || QUOTE_CLOSING;
   const totalTax = data.lineItems.reduce((sum, l) => sum + l.taxAmount, 0);
   const totalQty = data.lineItems.reduce((sum, l) => sum + l.qty, 0);
   const taxableAmount = Math.max(0, round2(data.subtotal - data.discountAmount));
+  const withGst = data.withGst;
 
   const gstBuckets = new Map<number, number>();
   for (const line of data.lineItems) {
-    if (!data.withGst || line.taxRate <= 0) continue;
+    if (!withGst || line.taxRate <= 0) continue;
     gstBuckets.set(line.taxRate, round2((gstBuckets.get(line.taxRate) || 0) + line.taxAmount));
   }
 
   const signPhone = contactPhone ? contactPhone.replace(/^\+91\s*/, "") : "";
+  const words = amountInWords(data.grandTotal, "").replace(/\s+/g, " ").trim();
+  const taxAnalysis = formatTaxAnalysis({
+    taxable: taxableAmount,
+    withGst,
+    gstBuckets: Array.from(gstBuckets.entries()),
+    gstAmount: data.gstAmount,
+    discountAmount: data.discountAmount,
+    deliveryCharge: data.deliveryCharge,
+    otherTaxAmount: data.otherTaxAmount,
+    otherTaxLabel: data.otherTaxLabel,
+  });
+
+  const descCol = withGst ? styles.colDesc : styles.colDescWide;
+  const amtCol = withGst ? styles.colAmt : styles.colAmtWide;
 
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.companyName}>{(data.company.name || "").toUpperCase()}</Text>
-            {data.company.tagline ? <Text style={styles.tagline}>{data.company.tagline}</Text> : null}
-          </View>
-          <View>
-            <Text style={styles.quoteTitle}>QUOTATION</Text>
-            {data.company.gstin ? (
-              <Text style={styles.gstinLine}>GSTIN: {data.company.gstin}</Text>
-            ) : null}
-          </View>
-        </View>
-        {data.company.services ? <Text style={styles.services}>{data.company.services}</Text> : null}
+        <Image src={letterheadSrc()} style={styles.letterhead} />
 
-        <View style={styles.metaBox}>
+        <View style={styles.metaRow}>
           <View style={styles.toCol}>
-            <Text style={styles.sectionKicker}>TO</Text>
+            <Text style={styles.toLabel}>To,</Text>
             <Text style={styles.buyerName}>{buyerTitle}</Text>
             {data.buyerName && data.buyerCompany && data.buyerName !== data.buyerCompany ? (
-              <Text style={styles.bodyText}>{data.buyerName}</Text>
+              <Text style={styles.buyerText}>{data.buyerName}</Text>
             ) : null}
-            {data.buyerAddress ? <Text style={styles.bodyText}>{data.buyerAddress}</Text> : null}
-            {data.buyerState ? <Text style={styles.bodyText}>{data.buyerState}</Text> : null}
-            <Text style={styles.bodyText}>M: {data.buyerPhone || "."}</Text>
-            <Text style={styles.bodyText}>GSTIN: {data.buyerGstin || ""}</Text>
-            {data.buyerEmail ? <Text style={styles.bodyText}>Email: {data.buyerEmail}</Text> : null}
+            {data.buyerAddress ? <Text style={styles.buyerText}>{data.buyerAddress}</Text> : null}
+            <Text style={styles.buyerText}>
+              {[data.buyerState, data.buyerPhone ? `M: ${data.buyerPhone}` : "M: ."]
+                .filter(Boolean)
+                .join("  ")}{" "}
+              GSTIN: {data.buyerGstin || ""}
+            </Text>
+            {data.buyerEmail ? <Text style={styles.buyerText}>Email: {data.buyerEmail}</Text> : null}
           </View>
           <View style={styles.detailsCol}>
-            <Text style={styles.sectionKicker}>DETAILS</Text>
-            <Text style={styles.detailsLabel}>Ref No:  {data.quoteNumber}</Text>
-            <Text style={styles.detailsLabel}>Date:  {data.createdAt}</Text>
-            <Text style={styles.detailsLabel}>Subject: Quotation</Text>
-            <Text style={styles.intro}>
-              Dear Sir,{"\n"}
-              At the outset we thank you for your interest in buying the products from {data.company.name}.
-              We are pleased to quote our best prices as:
-            </Text>
+            <Text style={styles.quoteTitle}>Quotation</Text>
+            {data.company.gstin ? (
+              <Text style={styles.detailsText}>GSTIN: {data.company.gstin}</Text>
+            ) : null}
+            <Text style={styles.detailsText}>Ref No: {data.quoteNumber}</Text>
+            <Text style={styles.detailsText}>Subject: Quotation</Text>
+            <Text style={styles.detailsText}>Date:</Text>
+            <Text style={styles.detailsText}>{data.createdAt}</Text>
           </View>
         </View>
+
+        <Text style={styles.dear}>Dear Sir,</Text>
+        <Text style={styles.intro}>{intro}</Text>
 
         <View style={styles.table}>
           <View style={styles.tableHeader}>
-            <Text style={[styles.th, styles.colSn]}>SN</Text>
-            <Text style={[styles.th, styles.colDesc]}>Description of Goods</Text>
-            <Text style={[styles.th, styles.colHsn]}>HSN</Text>
-            <Text style={[styles.th, styles.colQty]}>Qty</Text>
-            <Text style={[styles.th, styles.colRate]}>Unit Rate</Text>
-            <Text style={[styles.th, styles.colGst]}>GST</Text>
-            <Text style={[styles.th, styles.colTax]}>Tax</Text>
-            <Text style={[styles.th, styles.colAmt]}>Amount</Text>
+            <Text style={[styles.th, styles.colSn, styles.center]}>SN</Text>
+            <Text style={[styles.th, descCol]}>Description of Goods</Text>
+            <Text style={[styles.th, styles.colHsn, styles.center]}>HSN</Text>
+            <Text style={[styles.th, styles.colQty, styles.center]}>Qty</Text>
+            <Text style={[styles.th, styles.colRate, styles.right]}>Unit Rate</Text>
+            {withGst ? (
+              <>
+                <Text style={[styles.th, styles.colGst, styles.center]}>GST</Text>
+                <Text style={[styles.th, styles.colTax, styles.right]}>Tax</Text>
+              </>
+            ) : null}
+            <Text style={[styles.th, amtCol, styles.right, styles.lastCell]}>Amount</Text>
           </View>
 
           {data.lineItems.map((line, i) => {
@@ -397,110 +391,89 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
               line.aliasName!.trim() !== line.description.trim();
             return (
               <View key={i} style={styles.tableRow} wrap={false}>
-                <Text style={[styles.td, styles.colSn]}>{i + 1}</Text>
-                <View style={styles.colDesc}>
-                  <Text style={styles.tdBold}>{displayName || "—"}</Text>
-                  {showCatalog ? (
-                    <Text style={[styles.td, { fontSize: 7.5, color: QUOTE_GRAY, marginTop: 1 }]}>
-                      {line.description}
-                    </Text>
-                  ) : null}
+                <Text style={[styles.td, styles.colSn, styles.center]}>{i + 1}</Text>
+                <View style={[styles.td, descCol]}>
+                  <Text style={{ fontFamily: "Helvetica-Bold", fontSize: 8 }}>
+                    {displayName || "—"}
+                  </Text>
+                  {showCatalog ? <Text style={styles.catalog}>{line.description}</Text> : null}
                 </View>
-                <Text style={[styles.td, styles.colHsn]}>{line.hsnCode || ""}</Text>
-                <Text style={[styles.td, styles.colQty]}>{formatQuoteQty(line.qty, line.unit)}</Text>
-                <Text style={[styles.td, styles.colRate]}>{formatQuoteAmount(line.unitPrice)}</Text>
-                <Text style={[styles.td, styles.colGst]}>
-                  {data.withGst ? `${line.taxRate}%` : "—"}
+                <Text style={[styles.td, styles.colHsn, styles.center]}>{line.hsnCode || ""}</Text>
+                <Text style={[styles.td, styles.colQty, styles.center]}>
+                  {formatQuoteQty(line.qty, line.unit)}
                 </Text>
-                <Text style={[styles.td, styles.colTax]}>
-                  {data.withGst ? formatQuoteAmount(line.taxAmount) : "—"}
+                <Text style={[styles.td, styles.colRate, styles.right]}>
+                  {formatQuoteAmount(line.unitPrice)}
                 </Text>
-                <Text style={[styles.tdBold, styles.colAmt]}>{formatQuoteAmount(line.amount)}</Text>
+                {withGst ? (
+                  <>
+                    <Text style={[styles.td, styles.colGst, styles.center]}>{line.taxRate}%</Text>
+                    <Text style={[styles.td, styles.colTax, styles.right]}>
+                      {formatQuoteAmount(line.taxAmount)}
+                    </Text>
+                  </>
+                ) : null}
+                <Text style={[styles.tdBold, amtCol, styles.right, styles.lastCell]}>
+                  {formatQuoteAmount(line.amount)}
+                </Text>
               </View>
             );
           })}
 
-          <View style={styles.totalRow}>
+          <View style={styles.tableRow}>
             <Text style={[styles.td, styles.colSn]} />
-            <Text style={[styles.td, styles.colDesc]} />
+            <Text style={[styles.td, descCol]} />
             <Text style={[styles.td, styles.colHsn]} />
-            <Text style={[styles.tdBold, styles.colQty]}>
-              {Number.isInteger(totalQty) ? String(totalQty) : totalQty}
+            <Text style={[styles.tdBold, styles.colQty, styles.center]}>
+              {Number.isInteger(totalQty) ? String(totalQty) : String(totalQty)}
             </Text>
-            <Text style={[styles.td, styles.colRate]} />
-            <Text style={[styles.tdBold, styles.colGst]}>Total</Text>
-            <Text style={[styles.tdBold, styles.colTax]}>
-              {data.withGst ? formatQuoteAmount(totalTax || data.gstAmount) : "—"}
+            {withGst ? (
+              <>
+                <Text style={[styles.td, styles.colRate]} />
+                <Text style={[styles.tdBold, styles.colGst, styles.center]}>Total</Text>
+                <Text style={[styles.tdBold, styles.colTax, styles.right]}>
+                  {formatQuoteAmount(totalTax || data.gstAmount)}
+                </Text>
+              </>
+            ) : (
+              <Text style={[styles.tdBold, styles.colRate, styles.right]}>Total</Text>
+            )}
+            <Text style={[styles.tdBold, amtCol, styles.right, styles.lastCell]}>
+              {formatQuoteAmount(data.grandTotal)}
             </Text>
-            <Text style={[styles.tdBold, styles.colAmt]}>{formatQuoteAmount(data.grandTotal)}</Text>
+          </View>
+
+          <View style={styles.wordsRow}>
+            <Text style={styles.wordsCell}>Amount in Words: {words}</Text>
+            <Text style={styles.grandLabel}>Grand Total</Text>
+            <Text style={styles.grandValue}>{formatQuoteAmount(data.grandTotal)}</Text>
+          </View>
+          <View>
+            <Text style={styles.taxAnalysis}>{taxAnalysis}</Text>
           </View>
         </View>
 
-        <View style={styles.summaryRow}>
-          <View style={styles.wordsCol}>
-            <Text style={styles.kicker}>AMOUNT IN WORDS</Text>
-            <Text style={styles.words}>{amountInWords(data.grandTotal, "").trim()}</Text>
-          </View>
-          <View style={styles.taxCol}>
-            <Text style={styles.kicker}>TAX ANALYSIS</Text>
-            <View style={styles.taxRow}>
-              <Text style={styles.taxLabel}>Taxable Amount</Text>
-              <Text style={styles.taxValue}>{formatQuoteAmount(taxableAmount)}</Text>
-            </View>
-            {data.withGst
-              ? Array.from(gstBuckets.entries()).map(([rate, tax]) => (
-                  <View key={rate} style={styles.taxRow}>
-                    <Text style={styles.taxLabel}>GST@{rate}%</Text>
-                    <Text style={styles.taxValue}>{formatQuoteAmount(tax)}</Text>
-                  </View>
-                ))
-              : null}
-            {data.withGst && gstBuckets.size === 0 && data.gstAmount > 0 ? (
-              <View style={styles.taxRow}>
-                <Text style={styles.taxLabel}>GST</Text>
-                <Text style={styles.taxValue}>{formatQuoteAmount(data.gstAmount)}</Text>
-              </View>
-            ) : null}
-            {data.discountAmount > 0 ? (
-              <View style={styles.taxRow}>
-                <Text style={styles.taxLabel}>Discount</Text>
-                <Text style={styles.taxValue}>-{formatQuoteAmount(data.discountAmount)}</Text>
-              </View>
-            ) : null}
-            {data.deliveryCharge > 0 ? (
-              <View style={styles.taxRow}>
-                <Text style={styles.taxLabel}>Delivery</Text>
-                <Text style={styles.taxValue}>{formatQuoteAmount(data.deliveryCharge)}</Text>
-              </View>
-            ) : null}
-            {data.otherTaxAmount > 0 ? (
-              <View style={styles.taxRow}>
-                <Text style={styles.taxLabel}>{data.otherTaxLabel || "Other tax"}</Text>
-                <Text style={styles.taxValue}>{formatQuoteAmount(data.otherTaxAmount)}</Text>
-              </View>
-            ) : null}
-            <View style={styles.grandRow}>
-              <Text style={styles.grandLabel}>Grand Total</Text>
-              <Text style={styles.grandValue}>{formatQuoteAmount(data.grandTotal)}</Text>
-            </View>
-          </View>
-        </View>
-
-        <Text style={styles.termsTitle}>TERMS & CONDITIONS</Text>
-        <Text style={styles.bodyText}>Payment Terms: {paymentTerms}</Text>
-
-        <Text style={styles.closing}>{QUOTE_CLOSING}</Text>
-
-        <View style={styles.signBlock}>
-          <Text style={styles.signText}>With thanks and best regards,</Text>
-          <Text style={styles.signText}>Yours Sincerely</Text>
-          <Text style={styles.signName}>
-            {signatory}
-            {signPhone ? ` (${signPhone})` : ""}
+        <Text style={styles.termsTitle}>Terms & Conditions:</Text>
+        {terms.split("\n").map((line, i) => (
+          <Text key={`term-${i}`} style={styles.termsLine}>
+            {line || " "}
           </Text>
+        ))}
+        <Text style={styles.closing}>{closing}</Text>
+
+        <Text style={styles.regards}>With thanks and best regards,</Text>
+        <View style={styles.signRow}>
+          <Image src={stampSrc()} style={styles.stamp} />
+          <View>
+            <Text style={styles.signText}>Yours Sincerely</Text>
+            <Text style={styles.signName}>
+              {signatory}
+              {signPhone ? `(${signPhone})` : ""}
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.footer} fixed>
+        <View style={styles.footer} wrap={false}>
           {data.company.bankName || data.company.bankAccount ? (
             <Text style={styles.footerLine}>
               {`Bank Details: ${[
@@ -511,28 +484,22 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                 data.company.bankAccountType ? `A/C Type: ${data.company.bankAccountType}` : null,
               ]
                 .filter(Boolean)
-                .join("   |   ")}`}
+                .join("  ")}`}
             </Text>
           ) : null}
-          <Text style={styles.footerMuted}>
-            {[
-              data.company.address ? `Address: ${data.company.address}` : null,
-              data.company.phone ? `PH: ${data.company.phone}` : null,
-              data.company.mobile ? `Mobile: ${data.company.mobile}` : null,
-            ]
-              .filter(Boolean)
-              .join("   |   ")}
-          </Text>
           <Text
-            style={styles.footerMuted}
+            style={styles.footerLine}
             render={({ pageNumber, totalPages }) =>
               [
+                data.company.address ? `Address: ${data.company.address}` : null,
+                data.company.phone ? `PH: ${data.company.phone}` : null,
+                data.company.mobile ? `Mobile: ${data.company.mobile}` : null,
                 data.company.email ? `Email: ${data.company.email}` : null,
                 data.company.website ? `Website: ${data.company.website}` : null,
                 `Page: ${pageNumber} of ${totalPages}`,
               ]
                 .filter(Boolean)
-                .join("   |   ")
+                .join(" | ")
             }
           />
         </View>

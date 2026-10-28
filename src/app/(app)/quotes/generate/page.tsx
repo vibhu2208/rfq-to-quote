@@ -73,31 +73,51 @@ export default function GenerateQuotePage() {
       return;
     }
 
-    const body = new FormData();
-    body.append("text", pasted);
-    body.append("company", company);
-    body.append("contactName", contactName);
-    body.append("email", email);
-    body.append("phone", phone);
-    body.append("partyId", partyId);
-    body.append("subject", String(form.get("subject") || ""));
-    if (file) body.append("file", file);
-
-    const res = await fetch("/api/quotes/generate", {
-      method: "POST",
-      body,
-    });
+    let res: Response;
+    if (file) {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("text", pasted);
+      body.append("company", company);
+      body.append("contactName", contactName);
+      body.append("email", email);
+      body.append("phone", phone);
+      body.append("partyId", partyId);
+      body.append("subject", String(form.get("subject") || ""));
+      res = await fetch("/api/rfqs/from-document", { method: "POST", body });
+    } else {
+      res = await fetch("/api/rfqs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          company,
+          contactName: contactName || company || "From paste",
+          email,
+          phone,
+          productNeeded: pasted,
+          quantity: "",
+          notes: "",
+          subject: String(form.get("subject") || ""),
+        }),
+      });
+    }
     const data = await res.json().catch(() => ({}));
     setLoading(false);
 
     if (!res.ok) {
       setError(
-        typeof data.error === "string" ? data.error : "Could not generate quote from this requirement"
+        typeof data.error === "string"
+          ? data.error
+          : data.error?.fieldErrors
+            ? Object.values(data.error.fieldErrors as Record<string, string[]>)
+                .flat()
+                .join(", ")
+            : "Could not capture this requirement"
       );
       return;
     }
 
-    router.push(`/quotes/${data.id}`);
+    router.push(`/rfq/${data.id}`);
   }
 
   return (
@@ -110,8 +130,8 @@ export default function GenerateQuotePage() {
         </p>
         <h1 className="mt-2 text-2xl font-semibold text-dark-primary">Generate quote</h1>
         <p className="mt-1 text-sm text-mid-green">
-          Paste the requirement, or drop a photo / PDF / document. We create the requirement and a
-          draft quote from it.
+          Paste text or a screenshot. We extract the requirement, then open suggested products and
+          vendors — same as typing it in.
         </p>
       </div>
 
@@ -277,9 +297,9 @@ export default function GenerateQuotePage() {
         >
           {loading
             ? file
-              ? "Reading document & generating quote…"
-              : "Creating requirement & quote…"
-            : "Generate quote"}
+              ? "Extracting requirement from screenshot…"
+              : "Creating requirement…"
+            : "Extract & continue"}
         </button>
       </form>
     </div>

@@ -7,13 +7,13 @@ type Params = { params: Promise<{ id: string }> };
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).optional(),
-  quantities: z.record(z.string(), z.number().positive()).optional(),
+  quantities: z.record(z.string(), z.coerce.number()).optional(),
   lines: z
     .array(
       z.object({
-        productId: z.string(),
-        qty: z.number().positive(),
-        unitPrice: z.number().nonnegative().optional(),
+        productId: z.string().min(1),
+        qty: z.coerce.number().optional(),
+        unitPrice: z.coerce.number().optional(),
       })
     )
     .optional(),

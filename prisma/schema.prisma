@@ -229,6 +229,12 @@ model Quote {
   validUntil DateTime?
   sentAt     DateTime?
 
+  /// Editable quotation copy shown on preview/PDF
+  introText   String    @default("")
+  termsText   String    @default("")
+  closingText String    @default("")
+  issuedAt    DateTime?
+
   /// Outbound Message-ID of the quote email (for In-Reply-To matching)
   outboundMsgId String @default("")
   /// Synthetic ref embedded in quote emails, e.g. QREF-Q-2026-0001

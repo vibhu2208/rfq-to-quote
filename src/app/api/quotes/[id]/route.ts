@@ -5,6 +5,7 @@ import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { decimalToNumber } from "@/lib/quotes";
+import { parseQuoteDate } from "@/lib/quote-format";
 
 const lineSchema = z.object({
   id: z.string().optional(),
@@ -34,6 +35,11 @@ const quoteSchema = z.object({
   otherTaxAmount: z.coerce.number().nonnegative().optional(),
   otherTaxLabel: z.string().optional(),
   notes: z.string().optional(),
+  quoteNumber: z.string().optional(),
+  introText: z.string().optional(),
+  termsText: z.string().optional(),
+  closingText: z.string().optional(),
+  quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED"]).optional(),
   manualOverrides: z.record(z.string(), z.boolean()).optional(),
   subtotal: z.coerce.number().optional(),
@@ -148,6 +154,23 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const company = getCompanyConfig();
   const lineItems = data.lineItems ?? [];
   const overrides = (data.manualOverrides ?? existing.manualOverrides ?? {}) as ManualOverrides;
+  const nextNumber = data.quoteNumber?.trim() || existing.quoteNumber;
+  if (nextNumber !== existing.quoteNumber) {
+    const taken = await prisma.quote.findUnique({
+      where: { quoteNumber: nextNumber },
+      select: { id: true },
+    });
+    if (taken) {
+      return NextResponse.json(
+        { error: "That ref no is already used by another quote" },
+        { status: 400 }
+      );
+    }
+  }
+  const issuedAt =
+    data.quoteDate !== undefined
+      ? parseQuoteDate(data.quoteDate) ?? existing.issuedAt
+      : existing.issuedAt;
 
   const calc = calculateQuoteTotals({
     lines: lineItems.map((l) => ({
@@ -211,6 +234,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
         grandTotal: calc.grandTotal,
         manualOverrides: overrides,
         notes: data.notes ?? existing.notes,
+        quoteNumber: nextNumber,
+        introText: data.introText ?? existing.introText,
+        termsText: data.termsText ?? existing.termsText,
+        closingText: data.closingText ?? existing.closingText,
+        issuedAt,
         status,
         sentAt: becameSent ? new Date() : existing.sentAt,
         lineItems: {

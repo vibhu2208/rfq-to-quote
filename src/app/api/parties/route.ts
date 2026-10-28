@@ -151,9 +151,18 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const ctx = await getDefaultOrgContext();
+  const organisationId = await getDefaultOrganisationId();
+  const pageParam = url.searchParams.get("page");
+  const pageSizeParam = url.searchParams.get("pageSize");
+  const paginated = Boolean(pageParam) || Boolean(pageSizeParam);
+  const pageSize = paginated
+    ? Math.min(Math.max(Number(pageSizeParam) || 50, 1), 100)
+    : Math.min(take, 5000);
+  const page = paginated ? Math.max(Number(pageParam) || 1, 1) : 1;
+  const skip = paginated ? (page - 1) * pageSize : 0;
+
   const baseWhere = {
-    organisationId: ctx.organisationId,
+    organisationId,
     type: { not: "OTHER" as const },
     ...(activeParam === "true"
       ? { active: true }
@@ -191,48 +200,66 @@ export async function GET(req: NextRequest) {
       }
     : {};
 
-  const parties = await prisma.party.findMany({
-    where: { ...baseWhere, ...listFilter },
-    select: {
-      id: true,
-      code: true,
-      type: true,
-      legalName: true,
-      tradeName: true,
-      gstin: true,
-      pan: true,
-      email: true,
-      phone: true,
-      phone2: true,
-      website: true,
-      placeOfSupplyCode: true,
-      gstinVerifiedAt: true,
-      gstinStatus: true,
-      clientTypeName: true,
-      sourceClientId: true,
-      ledgerGroup: true,
-      managedByName: true,
-      active: true,
-      createdAt: true,
-      updatedAt: true,
-      addresses: {
-        select: {
-          id: true,
-          type: true,
-          isDefault: true,
-          addressLine1: true,
-          addressLine2: true,
-          city: true,
-          district: true,
-          state: true,
-          stateCode: true,
-          postalCode: true,
-        },
+  const where = { ...baseWhere, ...listFilter };
+  const listSelect = {
+    id: true,
+    code: true,
+    type: true,
+    legalName: true,
+    tradeName: true,
+    gstin: true,
+    pan: true,
+    email: true,
+    phone: true,
+    phone2: true,
+    website: true,
+    placeOfSupplyCode: true,
+    gstinVerifiedAt: true,
+    gstinStatus: true,
+    clientTypeName: true,
+    sourceClientId: true,
+    ledgerGroup: true,
+    managedByName: true,
+    active: true,
+    createdAt: true,
+    updatedAt: true,
+    addresses: {
+      where: { type: "BILLING" as const },
+      orderBy: { isDefault: "desc" as const },
+      take: 1,
+      select: {
+        id: true,
+        type: true,
+        isDefault: true,
+        addressLine1: true,
+        addressLine2: true,
+        city: true,
+        district: true,
+        state: true,
+        stateCode: true,
+        postalCode: true,
       },
     },
-    orderBy: [{ active: "desc" }, { legalName: "asc" }],
-    take,
-  });
+  };
+
+  const [parties, total] = await Promise.all([
+    prisma.party.findMany({
+      where,
+      select: listSelect,
+      orderBy:
+        activeParam === "true" || activeParam === "false"
+          ? [{ legalName: "asc" }]
+          : [{ active: "desc" }, { legalName: "asc" }],
+      skip,
+      take: pageSize,
+    }),
+    paginated ? prisma.party.count({ where }) : Promise.resolve(0),
+  ]);
+
+  const items = parties.map(serializeParty);
+  if (paginated) {
+    return NextResponse.json({ items, total, page, pageSize });
+  }
 
   const ranked = q ? rankPartiesByQuery(parties, q) : parties;
   return NextResponse.json(ranked.map(serializeParty));

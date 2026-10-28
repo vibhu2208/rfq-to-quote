@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/api";
 import { generateQuoteFromRequirement } from "@/lib/quote-generate";
+import type { ExtractedQuoteItem } from "@/lib/quote-from-rfq";
 import {
   assertAllowedDocument,
   extractQuoteFieldsFromDocument,
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
     let phone = "";
     let partyId = "";
     let filename = "";
+    let extractedItems: ExtractedQuoteItem[] = [];
 
     if (contentType.includes("multipart/form-data")) {
       const form = await req.formData();
@@ -92,6 +94,13 @@ export async function POST(req: NextRequest) {
           company = company || fields.company;
           contactName = contactName || fields.contactName;
           if (fields.lineItems.length > 0) {
+            extractedItems = fields.lineItems.map((l) => ({
+              productName: l.productName,
+              model: l.model,
+              quantity: l.quantity,
+              unit: l.unit,
+              unitPrice: l.unitPrice,
+            }));
             extractedSummary = [
               "Extracted items:",
               ...fields.lineItems.map((l) =>
@@ -99,7 +108,6 @@ export async function POST(req: NextRequest) {
                   l.productName,
                   l.model ? `model ${l.model}` : null,
                   l.quantity ? `qty ${l.quantity} ${l.unit || "pcs"}` : null,
-                  l.unitPrice ? `@ ${l.unitPrice}` : null,
                 ]
                   .filter(Boolean)
                   .join(" — ")
@@ -149,6 +157,7 @@ export async function POST(req: NextRequest) {
       phone,
       partyId: partyId || undefined,
       filename: filename || undefined,
+      extractedItems: extractedItems.length > 0 ? extractedItems : undefined,
     });
 
     return NextResponse.json(

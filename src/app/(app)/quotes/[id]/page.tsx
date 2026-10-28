@@ -5,6 +5,7 @@ import { QuoteAccountingActions } from "@/components/quote-accounting-actions";
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
+import { format } from "date-fns";
 import type { ManualOverrides } from "@/lib/tax";
 
 type Props = { params: Promise<{ id: string }> };
@@ -48,6 +49,10 @@ export default async function EditQuotePage({ params }: Props) {
     otherTaxAmount: decimalToNumber(quote.otherTaxAmount),
     otherTaxLabel: quote.otherTaxLabel,
     notes: "",
+    quoteDate: format(quote.issuedAt ?? quote.createdAt, "yyyy-MM-dd"),
+    introText: quote.introText || "",
+    termsText: quote.termsText || "",
+    closingText: quote.closingText || "",
     status: quote.status === "DRAFT" ? "DRAFT" : "SENT",
     manualOverrides: (quote.manualOverrides as ManualOverrides) || {},
     subtotal: decimalToNumber(quote.subtotal),

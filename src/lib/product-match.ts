@@ -342,7 +342,7 @@ export function matchProductsToRfqItems(
   },
   limitPerItem = 4
 ): RequirementMatch[] {
-  const items = extractRfqItems(input.parsedSpecs);
+  const items = extractRfqItems(input.parsedSpecs, input.rawText);
   if (items.length === 0) return [];
 
   return items.map((requirement) => {

@@ -1407,13 +1407,14 @@ export default function RfqDetailPage() {
       if (!match?.outreach) return undefined;
       const quotedLines = match.outreach.quotedLineItems || [];
       const line = quotedLines.find((l) => l.lineNumber === lineNum);
-      if (line != null && Number.isFinite(line.unitPrice)) {
+      if (line != null && Number.isFinite(line.unitPrice) && line.unitPrice > 0) {
         return line.unitPrice;
       }
       if (
         quotedLines.length === 0 &&
         match.outreach.quotedPrice != null &&
-        Number.isFinite(match.outreach.quotedPrice)
+        Number.isFinite(match.outreach.quotedPrice) &&
+        match.outreach.quotedPrice > 0
       ) {
         const requested = match.outreach.requestedLineNumbers;
         const singleRequested =
@@ -1442,17 +1443,19 @@ export default function RfqDetailPage() {
           ? allLineMatches.find((m) => m.product.id === selectedPid)
           : undefined;
 
-        if (picked) {
+        if (selectedPid) {
           const vendorPrice = vendorUnitPriceForLine(lineNum);
-          const catalogPrice = picked.product.offerPrice;
-          const unitPrice =
-            vendorPrice ?? (catalogPrice > 0 ? catalogPrice : undefined);
+          const last = picked?.product.lastPrice;
+          const offer = picked?.product.offerPrice;
+          const catalogPrice =
+            last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
+          const unitPrice = vendorPrice ?? catalogPrice;
           lines.push({
-            productId: picked.product.id,
-            qty: item.requirement.quantity,
-            ...(unitPrice != null ? { unitPrice } : {}),
+            productId: selectedPid,
+            qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
+            ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
           });
-          used.add(picked.product.id);
+          used.add(selectedPid);
         }
       }
     } else {
@@ -1522,10 +1525,12 @@ export default function RfqDetailPage() {
       ...(extraMatchesByLine[lineNumber] || []),
     ].find((m) => m.product.id === productId);
     if (!match) return undefined;
+    const last = match.product.lastPrice;
+    const offer = match.product.offerPrice;
     return {
       id: match.product.id,
       name: match.product.name,
-      offerPrice: match.product.offerPrice,
+      offerPrice: last != null && last > 0 ? last : offer,
     };
   }
 

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { nextQuoteNumber, decimalToNumber } from "@/lib/quotes";
-import { catalogSellPrice } from "@/lib/product-price";
+import { catalogSellPrice, resolveQuoteUnitPrice } from "@/lib/product-price";
 import { extractRfqItems } from "@/lib/rfq-items";
 import {
   matchProductsToRfq,
@@ -66,10 +66,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     sortOrder: number,
     unitPriceOverride?: number
   ): LineCreate => {
-    const unitPrice =
-      unitPriceOverride != null && Number.isFinite(unitPriceOverride)
-        ? unitPriceOverride
-        : catalogSellPrice(p);
+    const unitPrice = resolveQuoteUnitPrice(unitPriceOverride, p);
     const taxRate = decimalToNumber(p.taxRate);
     return {
       productId: p.id,
@@ -93,15 +90,22 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
 
   if (lineRequests.length > 0) {
     const ids = lineRequests.map((l) => l.productId);
-    const products = await prisma.product.findMany({
+    let products = await prisma.product.findMany({
       where: { id: { in: ids }, active: true },
     });
+    if (products.length < ids.length) {
+      const found = new Set(products.map((p) => p.id));
+      const missing = ids.filter((id) => !found.has(id));
+      const extra = await prisma.product.findMany({ where: { id: { in: missing } } });
+      products = [...products, ...extra];
+    }
     const byId = new Map(products.map((p) => [p.id, p]));
     lines = lineRequests
       .map((req, i) => {
         const p = byId.get(req.productId);
         if (!p) return null;
-        return buildLine(p, req.qty, i, req.unitPrice);
+        const qty = req.qty > 0 ? req.qty : 1;
+        return buildLine(p, qty, i, req.unitPrice);
       })
       .filter(Boolean) as LineCreate[];
   }
@@ -196,7 +200,7 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
 
   for (const item of itemMatches) {
     const top = item.matches[0];
-    if (!top || top.score < 10 || used.has(top.product.id)) continue;
+    if (!top || top.score < 6 || used.has(top.product.id)) continue;
     used.add(top.product.id);
     lines.push({
       productId: top.product.id,
@@ -215,4 +219,66 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
   }
 
   return lines;
+}
+
+export type ExtractedQuoteItem = {
+  productName: string;
+  model?: string;
+  quantity: number;
+  unit: string;
+  unitPrice?: number;
+};
+
+/** Match extracted screenshot/document lines to catalog products and use last/offer price. */
+export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]) {
+  if (items.length === 0) return [];
+
+  const products = await prisma.product.findMany({ where: { active: true } });
+  const parsedSpecs = {
+    items: items.map((item) => ({
+      description: [item.productName, item.model].filter(Boolean).join(" "),
+      productName: item.productName,
+      model: item.model,
+      quantity: item.quantity,
+      unit: item.unit,
+    })),
+  };
+  const rawText = items
+    .map(
+      (item) =>
+        `• ${[item.productName, item.model].filter(Boolean).join(" ")} – ${
+          item.quantity > 0 ? item.quantity : 1
+        } ${item.unit || "pcs"}`
+    )
+    .join("\n");
+
+  const itemMatches = matchProductsToRfqItems(products, { parsedSpecs, rawText });
+
+  return items.map((item, i) => {
+    const top = itemMatches[i]?.matches[0];
+    const qty = item.quantity > 0 ? item.quantity : 1;
+    const extractedName = [item.productName, item.model].filter(Boolean).join(" — ") || "From document";
+
+    if (top && top.score >= 6) {
+      const full = products.find((p) => p.id === top.product.id);
+      const unitPrice = full ? catalogSellPrice(full) : top.product.offerPrice;
+      return {
+        productId: top.product.id,
+        description: top.product.name,
+        qty,
+        unit: (full?.unit || top.product.unit || item.unit || "pcs") as string,
+        unitPrice,
+        taxRate: top.product.taxRate || 18,
+      };
+    }
+
+    return {
+      productId: null,
+      description: extractedName,
+      qty,
+      unit: item.unit || "pcs",
+      unitPrice: item.unitPrice && item.unitPrice > 0 ? item.unitPrice : 0,
+      taxRate: 18,
+    };
+  });
 }

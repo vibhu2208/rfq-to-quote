@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Building2, Plus, RefreshCw, Search, X } from "lucide-react";
+import { Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Search, X } from "lucide-react";
 import { MasterDetailDialog } from "@/components/master-detail-dialog";
 
 type BillingAddress = {
@@ -77,6 +77,8 @@ function hasMasterFields(data: unknown): data is Record<string, unknown> {
   return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
 }
 
+const PAGE_SIZE = 50;
+
 const emptyPreview = (): Preview => ({
   legalName: "",
   tradeName: "",
@@ -94,6 +96,8 @@ const emptyPreview = (): Preview => ({
 export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [gstin, setGstin] = useState("");
@@ -108,18 +112,28 @@ export default function ClientsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const params = new URLSearchParams({ active: "true" });
+    const params = new URLSearchParams({
+      active: "true",
+      page: String(page),
+      pageSize: String(PAGE_SIZE),
+    });
     if (q) params.set("q", q);
     const res = await fetch(`/api/parties?${params}`);
     const data = await res.json();
-    setClients(Array.isArray(data) ? data : []);
+    if (Array.isArray(data)) {
+      setClients(data);
+      setTotal(data.length);
+    } else {
+      setClients(Array.isArray(data.items) ? data.items : []);
+      setTotal(typeof data.total === "number" ? data.total : 0);
+    }
     setLoading(false);
-  }, [q]);
+  }, [q, page]);
 
   useEffect(() => {
-    const t = setTimeout(load, 200);
+    const t = setTimeout(load, q ? 200 : 0);
     return () => clearTimeout(t);
-  }, [load]);
+  }, [load, q]);
 
   function openOnboard() {
     setGstin("");
@@ -236,6 +250,10 @@ export default function ClientsPage() {
     load();
   }
 
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -264,7 +282,10 @@ export default function ClientsPage() {
         />
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setPage(1);
+          }}
           placeholder="Search name, GSTIN, client ID, type…"
           className="w-full rounded-lg border border-light-green/40 bg-white/50 py-2 pl-9 pr-3 text-sm outline-none focus:border-mid-green"
         />
@@ -284,7 +305,7 @@ export default function ClientsPage() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && clients.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-10 text-center text-mid-green">
                   Loading…
@@ -342,6 +363,37 @@ export default function ClientsPage() {
           </tbody>
         </table>
       </div>
+
+      {total > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-mid-green">
+          <p>
+            {loading ? "Loading…" : `Showing ${from}–${to} of ${total}`}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1 || loading}
+              className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-light-green/20 disabled:opacity-40"
+            >
+              <ChevronLeft className="h-4 w-4" strokeWidth={1.5} />
+              Previous
+            </button>
+            <span className="tabular-nums">
+              Page {page} of {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || loading}
+              className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-light-green/20 disabled:opacity-40"
+            >
+              Next
+              <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {detail ? (
         <MasterDetailDialog

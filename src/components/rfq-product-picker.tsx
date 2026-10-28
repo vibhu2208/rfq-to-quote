@@ -236,7 +236,18 @@ export function RfqProductSearch({
         );
         const data = await res.json();
         if (!cancelled) {
-          setHits(Array.isArray(data) ? data : []);
+          const rows = Array.isArray(data) ? data : [];
+          setHits(
+            rows.map((p: PickableProduct & { sellPrice?: number; mrp?: number | null }) => ({
+              ...p,
+              offerPrice:
+                (p.sellPrice && p.sellPrice > 0
+                  ? p.sellPrice
+                  : p.lastPrice && p.lastPrice > 0
+                    ? p.lastPrice
+                    : p.offerPrice) || 0,
+            }))
+          );
           setLoading(false);
         }
       } catch {

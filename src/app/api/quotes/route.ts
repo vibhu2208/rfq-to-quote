@@ -5,6 +5,7 @@ import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { decimalToNumber, nextQuoteNumber } from "@/lib/quotes";
+import { parseQuoteDate } from "@/lib/quote-format";
 
 const lineSchema = z.object({
   id: z.string().optional(),
@@ -34,6 +35,10 @@ const quoteSchema = z.object({
   otherTaxAmount: z.coerce.number().nonnegative().optional().default(0),
   otherTaxLabel: z.string().optional().default(""),
   notes: z.string().optional().default(""),
+  introText: z.string().optional().default(""),
+  termsText: z.string().optional().default(""),
+  closingText: z.string().optional().default(""),
+  quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT"]).optional().default("DRAFT"),
   manualOverrides: z.record(z.string(), z.boolean()).optional().default({}),
   // Manual total overrides (when flagged)
@@ -197,6 +202,10 @@ export async function POST(req: NextRequest) {
       grandTotal: calc.grandTotal,
       manualOverrides: overrides,
       notes: data.notes,
+      introText: data.introText,
+      termsText: data.termsText,
+      closingText: data.closingText,
+      issuedAt: parseQuoteDate(data.quoteDate),
       sentAt: data.status === "SENT" ? new Date() : null,
       lineItems: {
         create: data.lineItems.map((l, i) => ({

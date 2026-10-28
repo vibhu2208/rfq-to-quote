@@ -1,6 +1,11 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { createRfqWithMessage } from "@/lib/rfq";
-import { autoMatchQuoteLines, createQuoteFromRfq } from "@/lib/quote-from-rfq";
+import {
+  autoMatchQuoteLines,
+  createQuoteFromRfq,
+  type ExtractedQuoteItem,
+} from "@/lib/quote-from-rfq";
 
 export type GenerateQuoteInput = {
   rawText: string;
@@ -11,6 +16,7 @@ export type GenerateQuoteInput = {
   phone?: string;
   filename?: string;
   partyId?: string;
+  extractedItems?: ExtractedQuoteItem[];
 };
 
 const partyWithBilling = {
@@ -69,14 +75,36 @@ export async function generateQuoteFromRequirement(input: GenerateQuoteInput) {
   const party = await loadClient(input.partyId, lookupName);
   const billing = party?.addresses[0];
 
-  if (party) {
+  if (party || (input.extractedItems && input.extractedItems.length > 0)) {
+    const existingSpecs =
+      rfq.parsedSpecs && typeof rfq.parsedSpecs === "object"
+        ? (rfq.parsedSpecs as Record<string, unknown>)
+        : {};
     await prisma.rfq.update({
       where: { id: rfq.id },
       data: {
-        customerCompany: rfq.customerCompany || party.legalName,
-        customerName: rfq.customerName || party.legalName,
-        customerEmail: rfq.customerEmail || party.email || "",
-        customerPhone: rfq.customerPhone || party.phone || "",
+        ...(party
+          ? {
+              customerCompany: rfq.customerCompany || party.legalName,
+              customerName: rfq.customerName || party.legalName,
+              customerEmail: rfq.customerEmail || party.email || "",
+              customerPhone: rfq.customerPhone || party.phone || "",
+            }
+          : {}),
+        ...(input.extractedItems && input.extractedItems.length > 0
+          ? {
+              parsedSpecs: {
+                ...existingSpecs,
+                items: input.extractedItems.map((item) => ({
+                  description: [item.productName, item.model].filter(Boolean).join(" "),
+                  productName: item.productName,
+                  model: item.model,
+                  quantity: item.quantity,
+                  unit: item.unit,
+                })),
+              } as Prisma.InputJsonValue,
+            }
+          : {}),
       },
     });
   }

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { decimalToNumber } from "@/lib/quotes";
+import { catalogSellPrice } from "@/lib/product-price";
 import { getDefaultOrgContext } from "@/lib/accounting/context";
 import { syncProductToInventory } from "@/lib/accounting/inventory";
 import { rankProductsByQuery, searchTokens } from "@/lib/product-search";
@@ -74,6 +75,7 @@ function serializeProduct(p: {
     lastPricedAt: p.lastPricedAt ?? null,
     taxRate: decimalToNumber(p.taxRate),
     mrp: p.mrp == null ? null : decimalToNumber(p.mrp),
+    sellPrice: catalogSellPrice(p),
     openingStock: p.openingStock == null ? 0 : decimalToNumber(p.openingStock),
   };
 }

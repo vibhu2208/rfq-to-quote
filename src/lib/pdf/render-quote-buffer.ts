@@ -4,6 +4,7 @@ import { getCompanyConfig } from "@/lib/company";
 import { round2 } from "@/lib/accounting/money";
 import { decimalToNumber } from "@/lib/quotes";
 import { renderQuotePdf } from "@/lib/pdf/quote-document";
+import { defaultQuoteTerms, quoteIntro, QUOTE_CLOSING } from "@/lib/quote-format";
 
 type QuoteForPdf = Quote & {
   lineItems: Array<
@@ -23,7 +24,10 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
 
   const buffer = await renderQuotePdf({
     quoteNumber: quote.quoteNumber,
-    createdAt: format(quote.createdAt, "dd/MM/yyyy"),
+    createdAt: format(quote.issuedAt ?? quote.createdAt, "dd/MM/yyyy"),
+    introText: quote.introText?.trim() || quoteIntro(company.name),
+    termsText: quote.termsText?.trim() || defaultQuoteTerms(company.paymentTerms),
+    closingText: quote.closingText?.trim() || QUOTE_CLOSING,
     status: quote.status,
     withGst,
     buyerName: quote.buyerName,
