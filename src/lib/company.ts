@@ -14,7 +14,7 @@ export function getCompanyConfig() {
     phone: process.env.COMPANY_PHONE || "",
     mobile: process.env.COMPANY_MOBILE || process.env.COMPANY_PHONE || "",
     website: process.env.COMPANY_WEBSITE || "",
-    signatory: process.env.COMPANY_SIGNATORY || "",
+    signatory: process.env.COMPANY_SIGNATORY || "Gopal Agrawal",
     paymentTerms: process.env.COMPANY_PAYMENT_TERMS || "Against Delivery",
     bankName: process.env.COMPANY_BANK_NAME || "",
     bankBranch: process.env.COMPANY_BANK_BRANCH || "",

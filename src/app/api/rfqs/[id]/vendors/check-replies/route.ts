@@ -5,6 +5,8 @@ import { reparseStoredVendorReplies } from "@/lib/vendor-outreach";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 /** Search Gmail for vendor Recore replies and AI-extract prices onto this RFQ. */
 export async function POST(_request: Request, { params }: Params) {
   const { error } = await requireSession();

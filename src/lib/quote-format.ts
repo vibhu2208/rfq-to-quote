@@ -58,6 +58,12 @@ export function defaultQuoteTerms(paymentTerms?: string): string {
   return `Payment Terms: ${paymentTerms?.trim() || "Against Delivery"}`;
 }
 
+export function quoteSignatoryName(signatory?: string): string {
+  const name = signatory?.trim();
+  if (!name || /^authorized signatory$/i.test(name)) return "Gopal Agrawal";
+  return name;
+}
+
 export function todayQuoteDateIso(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -94,6 +100,43 @@ export function formatQuoteQty(qty: number, unit: string): string {
 export const DEFAULT_QUOTE_TAGLINE = "ENABLING IT   |   ISO 9001:2015";
 export const DEFAULT_QUOTE_SERVICES =
   "Computer Hardware & Software, Electrical & Electronic Kits, Networking, Corporate Training. Customized Software Solutions, Mobile App Development, E-Commerce Solutions, Plagiarism Checker";
+
+export function quoteBankDetailsLine(company: {
+  bankName?: string;
+  bankBranch?: string;
+  bankIfsc?: string;
+  bankAccount?: string;
+  bankAccountType?: string;
+}): string | null {
+  if (!company.bankName && !company.bankAccount) return null;
+  return `Bank Details: ${[
+    company.bankName,
+    company.bankBranch ? `Branch: ${company.bankBranch}` : null,
+    company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
+    company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
+    company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
+  ]
+    .filter(Boolean)
+    .join("  ")}`;
+}
+
+export function quoteContactFooterLine(company: {
+  address?: string;
+  phone?: string;
+  mobile?: string;
+  email?: string;
+  website?: string;
+}): string {
+  return [
+    company.address ? `Address: ${company.address}` : null,
+    company.phone ? `PH: ${company.phone}` : null,
+    company.mobile ? `Mobile: ${company.mobile}` : null,
+    company.email ? `Email: ${company.email}` : null,
+    company.website ? `Website: ${company.website}` : null,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+}
 
 export const QUOTE_CLOSING =
   "We look forward to your favorable response to our proposal. We trust that you will find our offer competitive and would be pleased to receive your valued order. Should you require any further information or clarification, please feel free to contact us. We are committed to delivering the best products and services to your organization and assure you of our highest level of service at all times.";

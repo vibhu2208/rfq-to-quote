@@ -8,6 +8,8 @@ import { getQuoteLifecycle, sendQuoteFollowUpEmail } from "@/lib/quote-thread";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;

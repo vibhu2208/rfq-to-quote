@@ -12,7 +12,10 @@ import {
   formatQuoteDateDisplay,
   formatQuoteQty,
   formatTaxAnalysis,
+  quoteBankDetailsLine,
+  quoteContactFooterLine,
   quoteIntro,
+  quoteSignatoryName,
 } from "@/lib/quote-format";
 import { X } from "lucide-react";
 
@@ -165,8 +168,10 @@ export function QuotePreviewModal({
       );
     }
   }
-  const signatory = company.signatory || company.name;
-  const signPhone = (company.mobile || company.phone || "").replace(/^\+91\s*/, "");
+  const signatory = quoteSignatoryName(company.signatory);
+  const signPhone = (company.mobile || company.phone || "").replace(/^\+91\s*/, "").trim();
+  const bankLine = quoteBankDetailsLine(company);
+  const contactLine = quoteContactFooterLine(company);
   const words = amountInWords(calc.grandTotal, "").replace(/\s+/g, " ").trim();
   const taxAnalysis = formatTaxAnalysis({
     taxable: calc.taxable,
@@ -218,21 +223,22 @@ export function QuotePreviewModal({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto bg-white p-5 text-[12px] leading-relaxed text-black sm:p-7">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-white text-[12px] leading-relaxed text-black">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={QUOTE_LETTERHEAD_SRC}
             alt="Company letterhead"
-            className="mb-4 h-auto w-full max-h-[72px] object-contain object-left"
+            className="mb-3 w-full h-auto"
           />
 
-          <div className="flex flex-col justify-between gap-4 sm:flex-row">
+          <div className="flex flex-1 flex-col px-5 sm:px-7">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-x-3">
             <EditableBlock
               section="buyer"
               activeSection={activeSection}
               onSelectSection={onSelectSection}
               label="buyer details"
-              className="min-w-0 px-1.5 py-1 sm:w-[58%]"
+              className="min-w-0 px-1.5 py-1"
             >
               <p>To,</p>
               <p className="font-bold text-[#0000FF]">{buyerTitle}</p>
@@ -245,28 +251,35 @@ export function QuotePreviewModal({
                 <p className="italic text-slate-400">Add buyer details…</p>
               )}
               <p className="text-[#0000FF]">
-                {[buyer.state, `M: ${buyer.phone || "."}`].filter(Boolean).join("  ")} GSTIN:{" "}
-                {buyer.gstin || ""}
+                {[buyer.state, `M: ${buyer.phone || "."}`].filter(Boolean).join("  ")}{" "}
+                <span className="font-bold">GSTIN: {buyer.gstin || ""}</span>
               </p>
               {buyer.email ? <p className="text-[#0000FF]">Email: {buyer.email}</p> : null}
             </EditableBlock>
+            <p className="pt-1 text-center text-[15px] font-bold leading-5 underline">Quotation</p>
             <EditableBlock
               section="details"
               activeSection={activeSection}
               onSelectSection={onSelectSection}
               label="date and ref no"
-              className="px-1.5 py-1 sm:w-[38%]"
+              className="mt-2 w-[13rem] justify-self-end px-1.5 py-1 text-left leading-6"
             >
-              <p className="font-bold">Quotation</p>
-              {company.gstin ? <p>GSTIN: {company.gstin}</p> : null}
-              <p>Ref No: {quoteNumber || "DRAFT"}</p>
-              <p>Subject: Quotation</p>
-              <p>Date:</p>
-              <p>{displayDate}</p>
+              {company.gstin ? (
+                <p className="mb-2 font-bold">GSTIN: {company.gstin}</p>
+              ) : (
+                <p className="mb-2 h-5">&nbsp;</p>
+              )}
+              <div className="grid grid-cols-[4.75rem_1fr] gap-x-2 gap-y-2">
+                <span>Ref No:</span>
+                <span>{quoteNumber || "DRAFT"}</span>
+                <span>Date:</span>
+                <span>{displayDate}</span>
+              </div>
             </EditableBlock>
           </div>
 
-          <p className="mt-3">Dear Sir,</p>
+          <p className="mt-3 font-bold underline">Subject: Quotation</p>
+          <p className="mt-2">Dear Sir,</p>
           <EditableBlock
             section="intro"
             activeSection={activeSection}
@@ -388,7 +401,7 @@ export function QuotePreviewModal({
                 <tr>
                   <td
                     colSpan={withGst ? 5 : 4}
-                    className="border border-black px-1.5 py-1.5 font-bold"
+                    className="border border-black px-1.5 py-1.5 text-[13px] font-bold"
                   >
                     Amount in Words: {words}
                   </td>
@@ -403,7 +416,10 @@ export function QuotePreviewModal({
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={withGst ? 8 : 6} className="border border-black px-1.5 py-1.5">
+                  <td
+                    colSpan={withGst ? 8 : 6}
+                    className="border border-black px-1.5 py-1.5 text-[13px] font-bold"
+                  >
                     {taxAnalysis}
                   </td>
                 </tr>
@@ -418,51 +434,30 @@ export function QuotePreviewModal({
             label="terms and conditions"
             className="mt-4 w-full px-1.5 py-1"
           >
-            <p>Terms & Conditions:</p>
-            <p className="whitespace-pre-line">{displayTerms}</p>
-            <p className="mt-3 whitespace-pre-line text-[11px] leading-relaxed">
+            <p className="text-[14px] font-bold underline">Terms & Conditions:</p>
+            <p className="whitespace-pre-line text-[13px]">{displayTerms}</p>
+            <p className="mt-5 whitespace-pre-line text-[12px] leading-relaxed">
               {displayClosing}
             </p>
           </EditableBlock>
 
-          <p className="mt-4">With thanks and best regards,</p>
-          <div className="mt-2 flex items-center gap-3">
+          <p className="mt-4 font-bold">With thanks and best regards,</p>
+          <p className="mt-1">Yours sincerely</p>
+          <div className="mt-2">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={QUOTE_STAMP_SRC} alt="Company stamp" className="h-14 w-16 object-contain" />
-            <div>
-              <p className="font-bold">Yours Sincerely</p>
-              <p className="mt-2">
-                {signatory}
-                {signPhone ? `(${signPhone})` : ""}
-              </p>
-            </div>
+            <p className="mt-1">
+              {signatory}
+              {signPhone ? ` (${signPhone})` : ""}
+            </p>
           </div>
 
-          <div className="mt-8 text-[11px] leading-relaxed">
-            {company.bankName || company.bankAccount ? (
-              <p>
-                {`Bank Details: ${[
-                  company.bankName,
-                  company.bankBranch ? `Branch: ${company.bankBranch}` : null,
-                  company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
-                  company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
-                  company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
-                ]
-                  .filter(Boolean)
-                  .join("  ")}`}
-              </p>
-            ) : null}
-            <p className="mt-1">
-              {[
-                company.address ? `Address: ${company.address}` : null,
-                company.phone ? `PH: ${company.phone}` : null,
-                company.mobile ? `Mobile: ${company.mobile}` : null,
-                company.email ? `Email: ${company.email}` : null,
-                company.website ? `Website: ${company.website}` : null,
-              ]
-                .filter(Boolean)
-                .join(" | ")}
-            </p>
+          </div>
+
+          <div className="mt-auto border-t border-black px-5 py-3 text-[12px] leading-relaxed sm:px-7">
+            {bankLine ? <p>{bankLine}</p> : null}
+            {contactLine ? <p className="mt-1">{contactLine}</p> : null}
+            <p className="mt-1 text-right">Page 1 of 1</p>
           </div>
         </div>
         </div>

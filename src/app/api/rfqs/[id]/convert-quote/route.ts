@@ -5,6 +5,8 @@ import { createQuoteFromRfq } from "@/lib/quote-from-rfq";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z.object({
   productIds: z.array(z.string()).optional(),
   quantities: z.record(z.string(), z.coerce.number()).optional(),

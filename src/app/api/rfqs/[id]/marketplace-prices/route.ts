@@ -10,6 +10,8 @@ import type { MarketplaceComparison } from "@/lib/marketplace/types";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 export const maxDuration = 120;
 
 function emptyComparison(query: string, rfq: {

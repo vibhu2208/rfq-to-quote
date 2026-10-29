@@ -5,6 +5,8 @@ import { recordProductLastPrice } from "@/lib/product-price";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 const bodySchema = z.object({
   price: z.coerce.number().nonnegative(),
 });

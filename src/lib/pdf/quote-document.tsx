@@ -11,7 +11,10 @@ import {
   formatQuoteAmount,
   formatQuoteQty,
   formatTaxAnalysis,
+  quoteBankDetailsLine,
+  quoteContactFooterLine,
   quoteIntro,
+  quoteSignatoryName,
 } from "@/lib/quote-format";
 
 function loadJpeg(filename: string) {
@@ -35,33 +38,71 @@ const styles = StyleSheet.create({
   page: {
     fontFamily: "Helvetica",
     fontSize: 9,
-    paddingTop: 10,
-    paddingBottom: 18,
+    paddingTop: 88,
+    paddingBottom: 72,
     paddingHorizontal: 16,
     backgroundColor: "#FFFFFF",
     color: "#000000",
   },
+  letterheadWrap: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+  },
   letterhead: {
-    width: "100%",
-    height: 58,
-    objectFit: "contain",
+    width: 595.28,
+    height: 80.2,
+    objectFit: "fill",
+  },
+  headerRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
     marginBottom: 8,
   },
-  metaRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 6,
-  },
   toCol: {
-    width: "58%",
-    paddingRight: 12,
-  },
-  detailsCol: {
-    width: "40%",
+    flex: 1,
+    paddingRight: 8,
   },
   toLabel: {
     fontSize: 9,
     marginBottom: 2,
+  },
+  quoteTitle: {
+    fontSize: 13,
+    fontFamily: "Helvetica-Bold",
+    textAlign: "center",
+    textDecoration: "underline",
+    paddingHorizontal: 10,
+  },
+  detailsCol: {
+    flex: 1,
+    paddingLeft: 8,
+    alignItems: "flex-end",
+  },
+  detailsInner: {
+    width: 158,
+    marginTop: 8,
+  },
+  gstinBold: {
+    fontSize: 9,
+    fontFamily: "Helvetica-Bold",
+    marginBottom: 8,
+    textAlign: "left",
+    lineHeight: 1.5,
+  },
+  detailRow: {
+    flexDirection: "row",
+    marginBottom: 6,
+  },
+  detailLabel: {
+    width: 42,
+    fontSize: 9,
+    lineHeight: 1.5,
+  },
+  detailValue: {
+    fontSize: 9,
+    lineHeight: 1.5,
   },
   buyerName: {
     fontSize: 10,
@@ -75,18 +116,19 @@ const styles = StyleSheet.create({
     lineHeight: 1.3,
     marginBottom: 1,
   },
-  quoteTitle: {
-    fontSize: 11,
+  gstinInline: {
     fontFamily: "Helvetica-Bold",
-    marginBottom: 4,
+    color: QUOTE_TEMPLATE_BLUE,
   },
-  detailsText: {
+  subject: {
     fontSize: 9,
-    marginBottom: 2,
+    fontFamily: "Helvetica-Bold",
+    textDecoration: "underline",
+    marginTop: 4,
+    marginBottom: 6,
   },
   dear: {
     fontSize: 9,
-    marginTop: 4,
     marginBottom: 2,
   },
   intro: {
@@ -162,7 +204,7 @@ const styles = StyleSheet.create({
   },
   wordsCell: {
     width: "68%",
-    fontSize: 8,
+    fontSize: 10,
     fontFamily: "Helvetica-Bold",
     paddingVertical: 5,
     paddingHorizontal: 4,
@@ -188,53 +230,67 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   taxAnalysis: {
-    fontSize: 8,
+    fontSize: 10,
+    fontFamily: "Helvetica-Bold",
     paddingVertical: 5,
     paddingHorizontal: 4,
   },
   termsTitle: {
-    fontSize: 9,
+    fontSize: 11,
+    fontFamily: "Helvetica-Bold",
+    textDecoration: "underline",
     marginTop: 10,
-    marginBottom: 2,
+    marginBottom: 4,
   },
   termsLine: {
-    fontSize: 8,
+    fontSize: 10,
     marginBottom: 2,
   },
   closing: {
-    fontSize: 8,
+    fontSize: 9,
     lineHeight: 1.4,
+    marginTop: 10,
     marginBottom: 10,
   },
   regards: {
-    fontSize: 9,
-    marginBottom: 4,
+    fontSize: 10,
+    fontFamily: "Helvetica-Bold",
+    marginBottom: 2,
   },
-  signRow: {
-    flexDirection: "row",
-    alignItems: "center",
+  yours: {
+    fontSize: 9,
+    marginBottom: 6,
+  },
+  signBlock: {
     marginTop: 2,
+    alignItems: "flex-start",
   },
   stamp: {
     width: 62,
     height: 55,
     objectFit: "contain",
-    marginRight: 10,
-  },
-  signText: {
-    fontSize: 10,
-    fontFamily: "Helvetica-Bold",
-    marginBottom: 10,
+    marginBottom: 4,
   },
   signName: {
     fontSize: 9,
   },
   footer: {
-    marginTop: 36,
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 10,
+    borderTopWidth: 0.5,
+    borderTopColor: BORDER,
+    paddingTop: 5,
   },
   footerLine: {
     fontSize: 8,
     marginBottom: 2,
+  },
+  pageNumber: {
+    fontSize: 9,
+    textAlign: "right",
+    marginTop: 2,
   },
 });
 
@@ -299,7 +355,7 @@ export type QuotePdfData = {
 function QuoteDocument({ data }: { data: QuotePdfData }) {
   const buyerTitle = data.buyerCompany || data.buyerName || "—";
   const contactPhone = data.company.mobile || data.company.phone;
-  const signatory = data.company.signatory || data.company.name;
+  const signatory = quoteSignatoryName(data.company.signatory);
   const paymentTerms = data.paymentTerms || "Against Delivery";
   const intro = data.introText?.trim() || quoteIntro(data.company.name);
   const terms = data.termsText?.trim() || `Payment Terms: ${paymentTerms}`;
@@ -308,6 +364,8 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   const totalQty = data.lineItems.reduce((sum, l) => sum + l.qty, 0);
   const taxableAmount = Math.max(0, round2(data.subtotal - data.discountAmount));
   const withGst = data.withGst;
+  const bankLine = quoteBankDetailsLine(data.company);
+  const contactLine = quoteContactFooterLine(data.company);
 
   const gstBuckets = new Map<number, number>();
   for (const line of data.lineItems) {
@@ -315,7 +373,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
     gstBuckets.set(line.taxRate, round2((gstBuckets.get(line.taxRate) || 0) + line.taxAmount));
   }
 
-  const signPhone = contactPhone ? contactPhone.replace(/^\+91\s*/, "") : "";
+  const signPhone = contactPhone ? contactPhone.replace(/^\+91\s*/, "").trim() : "";
   const words = amountInWords(data.grandTotal, "").replace(/\s+/g, " ").trim();
   const taxAnalysis = formatTaxAnalysis({
     taxable: taxableAmount,
@@ -334,9 +392,11 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        <Image src={letterheadSrc()} style={styles.letterhead} />
+        <View style={styles.letterheadWrap} fixed>
+          <Image src={letterheadSrc()} style={styles.letterhead} />
+        </View>
 
-        <View style={styles.metaRow}>
+        <View style={styles.headerRow}>
           <View style={styles.toCol}>
             <Text style={styles.toLabel}>To,</Text>
             <Text style={styles.buyerName}>{buyerTitle}</Text>
@@ -348,22 +408,31 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
               {[data.buyerState, data.buyerPhone ? `M: ${data.buyerPhone}` : "M: ."]
                 .filter(Boolean)
                 .join("  ")}{" "}
-              GSTIN: {data.buyerGstin || ""}
+              <Text style={styles.gstinInline}>GSTIN: {data.buyerGstin || ""}</Text>
             </Text>
             {data.buyerEmail ? <Text style={styles.buyerText}>Email: {data.buyerEmail}</Text> : null}
           </View>
+          <Text style={styles.quoteTitle}>Quotation</Text>
           <View style={styles.detailsCol}>
-            <Text style={styles.quoteTitle}>Quotation</Text>
-            {data.company.gstin ? (
-              <Text style={styles.detailsText}>GSTIN: {data.company.gstin}</Text>
-            ) : null}
-            <Text style={styles.detailsText}>Ref No: {data.quoteNumber}</Text>
-            <Text style={styles.detailsText}>Subject: Quotation</Text>
-            <Text style={styles.detailsText}>Date:</Text>
-            <Text style={styles.detailsText}>{data.createdAt}</Text>
+            <View style={styles.detailsInner}>
+              {data.company.gstin ? (
+                <Text style={styles.gstinBold}>GSTIN: {data.company.gstin}</Text>
+              ) : (
+                <Text style={styles.gstinBold} />
+              )}
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Ref No:</Text>
+                <Text style={styles.detailValue}>{data.quoteNumber}</Text>
+              </View>
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Date:</Text>
+                <Text style={styles.detailValue}>{data.createdAt}</Text>
+              </View>
+            </View>
           </View>
         </View>
 
+        <Text style={styles.subject}>Subject: Quotation</Text>
         <Text style={styles.dear}>Dear Sir,</Text>
         <Text style={styles.intro}>{intro}</Text>
 
@@ -462,45 +531,21 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
         <Text style={styles.closing}>{closing}</Text>
 
         <Text style={styles.regards}>With thanks and best regards,</Text>
-        <View style={styles.signRow}>
+        <Text style={styles.yours}>Yours sincerely</Text>
+        <View style={styles.signBlock} wrap={false}>
           <Image src={stampSrc()} style={styles.stamp} />
-          <View>
-            <Text style={styles.signText}>Yours Sincerely</Text>
-            <Text style={styles.signName}>
-              {signatory}
-              {signPhone ? `(${signPhone})` : ""}
-            </Text>
-          </View>
+          <Text style={styles.signName}>
+            {signatory}
+            {signPhone ? ` (${signPhone})` : ""}
+          </Text>
         </View>
 
-        <View style={styles.footer} wrap={false}>
-          {data.company.bankName || data.company.bankAccount ? (
-            <Text style={styles.footerLine}>
-              {`Bank Details: ${[
-                data.company.bankName,
-                data.company.bankBranch ? `Branch: ${data.company.bankBranch}` : null,
-                data.company.bankIfsc ? `IFSC Code: ${data.company.bankIfsc}` : null,
-                data.company.bankAccount ? `A/C No: ${data.company.bankAccount}` : null,
-                data.company.bankAccountType ? `A/C Type: ${data.company.bankAccountType}` : null,
-              ]
-                .filter(Boolean)
-                .join("  ")}`}
-            </Text>
-          ) : null}
+        <View style={styles.footer} fixed wrap={false}>
+          {bankLine ? <Text style={styles.footerLine}>{bankLine}</Text> : null}
+          {contactLine ? <Text style={styles.footerLine}>{contactLine}</Text> : null}
           <Text
-            style={styles.footerLine}
-            render={({ pageNumber, totalPages }) =>
-              [
-                data.company.address ? `Address: ${data.company.address}` : null,
-                data.company.phone ? `PH: ${data.company.phone}` : null,
-                data.company.mobile ? `Mobile: ${data.company.mobile}` : null,
-                data.company.email ? `Email: ${data.company.email}` : null,
-                data.company.website ? `Website: ${data.company.website}` : null,
-                `Page: ${pageNumber} of ${totalPages}`,
-              ]
-                .filter(Boolean)
-                .join(" | ")
-            }
+            style={styles.pageNumber}
+            render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}
           />
         </View>
       </Page>

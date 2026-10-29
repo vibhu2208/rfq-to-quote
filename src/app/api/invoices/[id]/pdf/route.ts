@@ -7,6 +7,8 @@ import { buildInvoicePdfBuffer } from "@/lib/pdf/render-invoice-buffer";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;

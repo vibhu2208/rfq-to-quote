@@ -7,6 +7,8 @@ import { sendQuoteToBuyer } from "@/lib/quote-send";
 
 type Params = { params: Promise<{ id: string }> };
 
+export const dynamic = "force-dynamic";
+
 const sendSchema = z.object({
   channel: z.enum(["EMAIL", "WHATSAPP"]),
   to: z.string().min(1, "Destination is required"),
