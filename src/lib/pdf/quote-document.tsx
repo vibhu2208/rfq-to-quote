@@ -9,7 +9,9 @@ import {
   QUOTE_TEMPLATE_BORDER,
   QUOTE_TEMPLATE_HEADER,
   formatQuoteAmount,
+  formatQuoteHsn,
   formatQuoteQty,
+  quoteLineDetails,
   formatTaxAnalysis,
   quoteBankDetailsLine,
   quoteContactFooterLine,
@@ -40,7 +42,8 @@ const styles = StyleSheet.create({
     fontSize: 9,
     paddingTop: 88,
     paddingBottom: 72,
-    paddingHorizontal: 16,
+    paddingLeft: 36,
+    paddingRight: 18,
     backgroundColor: "#FFFFFF",
     color: "#000000",
   },
@@ -189,13 +192,16 @@ const styles = StyleSheet.create({
   colTax: { width: "10%" },
   colAmt: { width: "15%" },
   colDescWide: { width: "49%" },
+  colDescNoHsn: { width: "42%" },
+  colDescNoGstNoHsn: { width: "59%" },
   colAmtWide: { width: "15%" },
   center: { textAlign: "center" },
   right: { textAlign: "right" },
-  catalog: {
-    fontSize: 7,
-    color: "#555555",
-    marginTop: 1,
+  lineDetails: {
+    fontSize: 7.5,
+    fontFamily: "Helvetica",
+    marginTop: 2,
+    lineHeight: 1.3,
   },
   wordsRow: {
     flexDirection: "row",
@@ -276,8 +282,8 @@ const styles = StyleSheet.create({
   },
   footer: {
     position: "absolute",
-    left: 16,
-    right: 16,
+    left: 36,
+    right: 18,
     bottom: 10,
     borderTopWidth: 0.5,
     borderTopColor: BORDER,
@@ -299,6 +305,7 @@ export type QuotePdfData = {
   createdAt: string;
   status: string;
   withGst: boolean;
+  showHsn?: boolean;
   buyerName: string;
   buyerCompany: string;
   buyerEmail: string;
@@ -364,6 +371,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   const totalQty = data.lineItems.reduce((sum, l) => sum + l.qty, 0);
   const taxableAmount = Math.max(0, round2(data.subtotal - data.discountAmount));
   const withGst = data.withGst;
+  const showHsn = data.showHsn !== false;
   const bankLine = quoteBankDetailsLine(data.company);
   const contactLine = quoteContactFooterLine(data.company);
 
@@ -386,7 +394,13 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
     otherTaxLabel: data.otherTaxLabel,
   });
 
-  const descCol = withGst ? styles.colDesc : styles.colDescWide;
+  const descCol = showHsn
+    ? withGst
+      ? styles.colDesc
+      : styles.colDescWide
+    : withGst
+      ? styles.colDescNoHsn
+      : styles.colDescNoGstNoHsn;
   const amtCol = withGst ? styles.colAmt : styles.colAmtWide;
 
   return (
@@ -440,7 +454,9 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
           <View style={styles.tableHeader}>
             <Text style={[styles.th, styles.colSn, styles.center]}>SN</Text>
             <Text style={[styles.th, descCol]}>Description of Goods</Text>
-            <Text style={[styles.th, styles.colHsn, styles.center]}>HSN</Text>
+            {showHsn ? (
+              <Text style={[styles.th, styles.colHsn, styles.center]}>HSN</Text>
+            ) : null}
             <Text style={[styles.th, styles.colQty, styles.center]}>Qty</Text>
             <Text style={[styles.th, styles.colRate, styles.right]}>Unit Rate</Text>
             {withGst ? (
@@ -454,10 +470,9 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
 
           {data.lineItems.map((line, i) => {
             const displayName = line.aliasName?.trim() || line.description;
-            const showCatalog =
-              Boolean(line.aliasName?.trim()) &&
-              Boolean(line.description.trim()) &&
-              line.aliasName!.trim() !== line.description.trim();
+            const details = line.aliasName?.trim()
+              ? quoteLineDetails(line.aliasName, line.description)
+              : "";
             return (
               <View key={i} style={styles.tableRow} wrap={false}>
                 <Text style={[styles.td, styles.colSn, styles.center]}>{i + 1}</Text>
@@ -465,9 +480,13 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                   <Text style={{ fontFamily: "Helvetica-Bold", fontSize: 8 }}>
                     {displayName || "—"}
                   </Text>
-                  {showCatalog ? <Text style={styles.catalog}>{line.description}</Text> : null}
+                  {details ? <Text style={styles.lineDetails}>{details}</Text> : null}
                 </View>
-                <Text style={[styles.td, styles.colHsn, styles.center]}>{line.hsnCode || ""}</Text>
+                {showHsn ? (
+                  <Text style={[styles.td, styles.colHsn, styles.center]}>
+                    {formatQuoteHsn(line.hsnCode)}
+                  </Text>
+                ) : null}
                 <Text style={[styles.td, styles.colQty, styles.center]}>
                   {formatQuoteQty(line.qty, line.unit)}
                 </Text>
@@ -492,7 +511,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
           <View style={styles.tableRow}>
             <Text style={[styles.td, styles.colSn]} />
             <Text style={[styles.td, descCol]} />
-            <Text style={[styles.td, styles.colHsn]} />
+            {showHsn ? <Text style={[styles.td, styles.colHsn]} /> : null}
             <Text style={[styles.tdBold, styles.colQty, styles.center]}>
               {Number.isInteger(totalQty) ? String(totalQty) : String(totalQty)}
             </Text>

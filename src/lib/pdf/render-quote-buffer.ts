@@ -30,6 +30,7 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     closingText: quote.closingText?.trim() || QUOTE_CLOSING,
     status: quote.status,
     withGst,
+    showHsn: quote.showHsn !== false,
     buyerName: quote.buyerName,
     buyerCompany: quote.buyerCompany,
     buyerEmail: quote.buyerEmail,

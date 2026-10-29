@@ -10,14 +10,19 @@ import {
   defaultQuoteTerms,
   formatQuoteAmount,
   formatQuoteDateDisplay,
+  formatQuoteHsn,
   formatQuoteQty,
+  quoteLineDetails,
   formatTaxAnalysis,
   quoteBankDetailsLine,
   quoteContactFooterLine,
   quoteIntro,
   quoteSignatoryName,
+  quoteShowHsn,
+  quoteTableColCount,
+  quoteWordsColSpan,
 } from "@/lib/quote-format";
-import { X } from "lucide-react";
+import { Minus, X } from "lucide-react";
 
 export type QuotePreviewCompany = {
   name: string;
@@ -68,6 +73,8 @@ type Props = {
     gstin: string;
   };
   withGst: boolean;
+  showHsn?: boolean;
+  onRemoveHsn?: () => void;
   otherTaxLabel: string;
   lineItems: QuotePreviewLine[];
   calc: QuoteCalcResult;
@@ -135,6 +142,8 @@ export function QuotePreviewModal({
   company,
   buyer,
   withGst,
+  showHsn,
+  onRemoveHsn,
   otherTaxLabel,
   lineItems,
   calc,
@@ -183,6 +192,9 @@ export function QuotePreviewModal({
     otherTaxAmount: calc.otherTaxAmount,
     otherTaxLabel,
   });
+  const includeHsn = quoteShowHsn(showHsn);
+  const tableCols = quoteTableColCount(withGst, includeHsn);
+  const wordsCols = quoteWordsColSpan(withGst, includeHsn);
 
   return (
     <div
@@ -231,7 +243,7 @@ export function QuotePreviewModal({
             className="mb-3 w-full h-auto"
           />
 
-          <div className="flex flex-1 flex-col px-5 sm:px-7">
+          <div className="flex flex-1 flex-col pl-9 pr-5 sm:pl-14 sm:pr-7">
           <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-x-3">
             <EditableBlock
               section="buyer"
@@ -300,9 +312,27 @@ export function QuotePreviewModal({
                   <th className="border border-black px-1.5 py-1 text-[11px] font-bold">
                     Description of Goods
                   </th>
-                  <th className="border border-black px-1.5 py-1 text-center text-[11px] font-bold">
-                    HSN
-                  </th>
+                  {includeHsn ? (
+                    <th className="border border-black px-1.5 py-1 text-center text-[11px] font-bold">
+                      <span className="inline-flex items-center justify-center gap-1">
+                        HSN
+                        {onRemoveHsn ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemoveHsn();
+                            }}
+                            className="inline-flex h-4 w-4 items-center justify-center rounded border border-black/50 bg-white text-black hover:bg-red-50"
+                            title="Remove HSN column"
+                            aria-label="Remove HSN column"
+                          >
+                            <Minus className="h-3 w-3" strokeWidth={2.5} />
+                          </button>
+                        ) : null}
+                      </span>
+                    </th>
+                  ) : null}
                   <th className="border border-black px-1.5 py-1 text-center text-[11px] font-bold">
                     Qty
                   </th>
@@ -330,10 +360,9 @@ export function QuotePreviewModal({
                   const tax = lineTax(line, withGst);
                   const amount = Math.round((taxable + tax) * 100) / 100;
                   const name = displayName(line);
-                  const showCatalog =
-                    Boolean(line.aliasName?.trim()) &&
-                    Boolean(line.description.trim()) &&
-                    line.aliasName!.trim() !== line.description.trim();
+                  const details = line.aliasName?.trim()
+                    ? quoteLineDetails(line.aliasName, line.description)
+                    : "";
                   return (
                     <tr key={line.key}>
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
@@ -345,15 +374,17 @@ export function QuotePreviewModal({
                         ) : (
                           <span className="italic text-slate-400">Item…</span>
                         )}
-                        {showCatalog ? (
-                          <span className="mt-0.5 block text-[10px] text-slate-600">
-                            {line.description}
+                        {details ? (
+                          <span className="mt-0.5 block whitespace-pre-line text-[10px] font-normal text-black">
+                            {details}
                           </span>
                         ) : null}
                       </td>
-                      <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
-                        {line.hsnCode || ""}
-                      </td>
+                      {includeHsn ? (
+                        <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
+                          {formatQuoteHsn(line.hsnCode)}
+                        </td>
+                      ) : null}
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
                         {formatQuoteQty(line.qty, line.unit)}
                       </td>
@@ -379,7 +410,9 @@ export function QuotePreviewModal({
                 <tr className="font-bold">
                   <td className="border border-black px-1.5 py-1.5" />
                   <td className="border border-black px-1.5 py-1.5" />
-                  <td className="border border-black px-1.5 py-1.5" />
+                  {includeHsn ? (
+                    <td className="border border-black px-1.5 py-1.5" />
+                  ) : null}
                   <td className="border border-black px-1.5 py-1.5 text-center tabular-nums">
                     {totalQty}
                   </td>
@@ -400,7 +433,7 @@ export function QuotePreviewModal({
                 </tr>
                 <tr>
                   <td
-                    colSpan={withGst ? 5 : 4}
+                    colSpan={wordsCols}
                     className="border border-black px-1.5 py-1.5 text-[13px] font-bold"
                   >
                     Amount in Words: {words}
@@ -417,7 +450,7 @@ export function QuotePreviewModal({
                 </tr>
                 <tr>
                   <td
-                    colSpan={withGst ? 8 : 6}
+                    colSpan={tableCols}
                     className="border border-black px-1.5 py-1.5 text-[13px] font-bold"
                   >
                     {taxAnalysis}
@@ -454,7 +487,7 @@ export function QuotePreviewModal({
 
           </div>
 
-          <div className="mt-auto border-t border-black px-5 py-3 text-[12px] leading-relaxed sm:px-7">
+          <div className="mt-auto border-t border-black py-3 pl-9 pr-5 text-[12px] leading-relaxed sm:pl-14 sm:pr-7">
             {bankLine ? <p>{bankLine}</p> : null}
             {contactLine ? <p className="mt-1">{contactLine}</p> : null}
             <p className="mt-1 text-right">Page 1 of 1</p>

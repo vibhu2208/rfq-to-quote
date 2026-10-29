@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   Eye,
+  Minus,
   Plus,
   RotateCcw,
   Search,
@@ -59,6 +60,7 @@ type ProductHit = {
 type LineItem = {
   key: string;
   productId: string | null;
+  catalogName?: string;
   description: string;
   aliasName: string;
   qty: number;
@@ -79,6 +81,7 @@ export type QuoteFormState = {
   buyerAddress: string;
   buyerGstin: string;
   withGst: boolean;
+  showHsn: boolean;
   gstMode: "AUTO" | "CGST_SGST" | "IGST";
   deliveryCharge: number;
   discountPercent: number;
@@ -159,6 +162,7 @@ const emptyQuote = (): QuoteFormState => ({
   buyerAddress: "",
   buyerGstin: "",
   withGst: true,
+  showHsn: true,
   gstMode: "AUTO",
   deliveryCharge: 0,
   discountPercent: 0,
@@ -193,6 +197,7 @@ function withDocumentDefaults(
 ): QuoteFormState {
   return {
     ...state,
+    showHsn: state.showHsn !== false,
     quoteDate: state.quoteDate || todayQuoteDateIso(),
     introText: state.introText?.trim() || quoteIntro(company.name),
     termsText: state.termsText?.trim() || defaultQuoteTerms(company.paymentTerms),
@@ -226,6 +231,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     null
   );
   const [buyerError, setBuyerError] = useState("");
+  const [hsnConfirmOpen, setHsnConfirmOpen] = useState(false);
 
   const sendDefaults = useMemo(
     () =>
@@ -383,7 +389,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       ...f,
       lineItems: f.lineItems.map((l) => ({
         ...l,
-        aliasName: l.description.trim(),
+        aliasName: (l.catalogName || l.aliasName).trim(),
       })),
     }));
   }
@@ -398,7 +404,8 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   function pickProduct(idx: number, p: ProductHit) {
     updateLine(idx, {
       productId: p.id,
-      description: p.name + (p.description ? ` — ${p.description}` : ""),
+      catalogName: p.name,
+      description: p.description || "",
       aliasName: p.name,
       unit: p.unit,
       unitPrice:
@@ -547,6 +554,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       buyerAddress: form.buyerAddress,
       buyerGstin: form.buyerGstin.trim().toUpperCase(),
       withGst: form.withGst,
+      showHsn: form.showHsn,
       gstMode: form.gstMode,
       deliveryCharge: calc.deliveryCharge,
       discountPercent: form.discountPercent,
@@ -652,6 +660,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         buyerAddress: form.buyerAddress,
         buyerGstin: form.buyerGstin.trim().toUpperCase(),
         withGst: form.withGst,
+        showHsn: form.showHsn,
         gstMode: form.gstMode,
         deliveryCharge: calc.deliveryCharge,
         discountPercent: form.discountPercent,
@@ -945,6 +954,8 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           gstin: form.buyerGstin,
         }}
         withGst={form.withGst}
+        showHsn={form.showHsn}
+        onRemoveHsn={() => setHsnConfirmOpen(true)}
         otherTaxLabel={form.otherTaxLabel}
         lineItems={form.lineItems}
         calc={calc}
@@ -1221,6 +1232,48 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         </div>
       ) : null}
 
+      {hsnConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-primary/40 px-4"
+          onClick={() => setHsnConfirmOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="hsn-confirm-title"
+            className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="hsn-confirm-title" className="text-lg font-semibold">
+              Remove HSN column?
+            </h2>
+            <p className="mt-2 text-sm text-mid-green">
+              Some clients do not need HSN on the quotation. This will hide the
+              HSN line from this quote, including the preview and PDF.
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setHsnConfirmOpen(false)}
+                className="rounded-lg border border-light-green/50 px-3 py-2 text-sm hover:bg-light-green/20"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setForm((f) => ({ ...f, showHsn: false }));
+                  setHsnConfirmOpen(false);
+                }}
+                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+              >
+                Remove HSN
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]">
             <section className="min-w-0 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1236,6 +1289,16 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     />
                     With GST
                   </label>
+                  {form.showHsn ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, showHsn: true }))}
+                      className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-xs text-foreground hover:bg-pale-green/40 sm:text-sm"
+                    >
+                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                      Add HSN
+                    </button>
+                  )}
                   <select
                     value={form.gstMode}
                     onChange={(e) =>
@@ -1271,11 +1334,28 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[44rem] text-left text-sm">
+                <table className="w-full min-w-[52rem] text-left text-sm">
                   <thead className="text-mid-green">
                     <tr>
-                      <th className="pb-2 font-medium">Product / description</th>
+                      <th className="pb-2 font-medium">Product</th>
+                      <th className="min-w-[12rem] pb-2 font-medium">Description</th>
                       <th className="w-28 pb-2 font-medium">Alias</th>
+                      {form.showHsn ? (
+                        <th className="w-24 pb-2 font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            HSN
+                            <button
+                              type="button"
+                              onClick={() => setHsnConfirmOpen(true)}
+                              className="inline-flex h-5 w-5 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              title="Remove HSN column from quotation"
+                              aria-label="Remove HSN column"
+                            >
+                              <Minus className="h-3 w-3" strokeWidth={2.5} />
+                            </button>
+                          </span>
+                        </th>
+                      ) : null}
                       <th className="w-16 pb-2 font-medium">Qty</th>
                       <th className="w-16 pb-2 font-medium">Unit</th>
                       <th className="w-28 pb-2 font-medium">Price</th>
@@ -1305,14 +1385,12 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                               >
                                 <Search className="h-4 w-4" strokeWidth={1.5} />
                               </button>
-                              <input
-                                value={line.description}
-                                onChange={(e) =>
-                                  updateLine(idx, { description: e.target.value })
-                                }
-                                className="min-w-0 flex-1 rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
-                                placeholder="Catalog / internal description"
-                              />
+                              <span
+                                className="min-w-0 flex-1 truncate text-xs text-mid-green"
+                                title={line.catalogName || undefined}
+                              >
+                                {line.catalogName || "Search catalog"}
+                              </span>
                             </div>
                             {searchIdx === idx ? (
                               <div className="absolute left-0 right-0 z-20 mt-1 min-w-[240px] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
@@ -1355,6 +1433,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             ) : null}
                           </div>
                         </td>
+                        <td className="py-2 pr-2 align-top">
+                          <input
+                            value={line.description}
+                            onChange={(e) =>
+                              updateLine(idx, { description: e.target.value })
+                            }
+                            className="w-full min-w-[12rem] rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
+                            placeholder="Description"
+                            title="Fetched from the product; edit as needed for this quote"
+                          />
+                        </td>
                         <td className="w-28 py-2 pr-2 align-top">
                           <input
                             value={line.aliasName}
@@ -1366,6 +1455,19 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             title="Shown as the product name on the quotation"
                           />
                         </td>
+                        {form.showHsn ? (
+                          <td className="w-24 py-2 pr-2 align-top">
+                            <input
+                              value={line.hsnCode || ""}
+                              onChange={(e) =>
+                                updateLine(idx, { hsnCode: e.target.value })
+                              }
+                              className="w-24 max-w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none focus:border-mid-green"
+                              placeholder="—"
+                              title="HSN shown on the quotation"
+                            />
+                          </td>
+                        ) : null}
                         <td className="py-2 pr-1 align-top">
                           <input
                             type="number"

@@ -42,6 +42,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   type LineCreate = {
     productId: string | null;
     description: string;
+    aliasName: string;
     qty: number;
     unit: string;
     unitPrice: number;
@@ -70,7 +71,8 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     const taxRate = decimalToNumber(p.taxRate);
     return {
       productId: p.id,
-      description: `${p.name}${p.description ? ` — ${p.description}` : ""}`,
+      description: p.description || "",
+      aliasName: p.name,
       qty,
       unit: p.unit,
       unitPrice,
@@ -113,7 +115,8 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   if (lines.length === 0 && requirementItems.length > 1) {
     lines = requirementItems.map((item, i) => ({
       productId: null,
-      description: item.description,
+      description: "",
+      aliasName: item.description,
       qty: item.quantity,
       unit: item.unit,
       unitPrice: 0,
@@ -133,7 +136,8 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     lines = [
       {
         productId: null,
-        description: descParts.join(" — ") || rfq.subject || "From RFQ",
+        description: "",
+        aliasName: descParts.join(" — ") || rfq.subject || "From RFQ",
         qty: defaultQty,
         unit: typeof specs?.unit === "string" ? specs.unit : "pcs",
         unitPrice: 0,
@@ -264,7 +268,8 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
       const unitPrice = full ? catalogSellPrice(full) : top.product.offerPrice;
       return {
         productId: top.product.id,
-        description: top.product.name,
+        description: full?.description || "",
+        aliasName: top.product.name,
         qty,
         unit: (full?.unit || top.product.unit || item.unit || "pcs") as string,
         unitPrice,
@@ -274,7 +279,8 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
 
     return {
       productId: null,
-      description: extractedName,
+      description: "",
+      aliasName: extractedName,
       qty,
       unit: item.unit || "pcs",
       unitPrice: item.unitPrice && item.unitPrice > 0 ? item.unitPrice : 0,

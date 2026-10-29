@@ -28,6 +28,7 @@ const quoteSchema = z.object({
   buyerAddress: z.string().optional(),
   buyerGstin: z.string().optional(),
   withGst: z.boolean().optional(),
+  showHsn: z.boolean().optional(),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional(),
   deliveryCharge: z.coerce.number().nonnegative().optional(),
   discountPercent: z.coerce.number().nonnegative().optional(),
@@ -220,6 +221,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
             ? data.buyerGstin.trim().toUpperCase()
             : existing.buyerGstin,
         withGst: data.withGst ?? existing.withGst,
+        showHsn: data.showHsn ?? existing.showHsn,
         gstMode: data.gstMode ?? existing.gstMode,
         subtotal: calc.subtotal,
         gstAmount: calc.gstAmount,

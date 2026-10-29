@@ -1,15 +1,41 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Money, StatusBadge } from "@/components/ui";
+import { QuotesFilters } from "@/components/quotes-filters";
 import { decimalToNumber } from "@/lib/quotes";
+import {
+  parseQuoteListFilters,
+  quoteListHasFilters,
+  quoteListQuery,
+  quoteListWhere,
+  QUOTE_LIST_PAGE_SIZE,
+} from "@/lib/quote-list";
 import { format } from "date-fns";
 
-export default async function QuotesPage() {
-  const quotes = await prisma.quote.findMany({
-    orderBy: [{ needsAssistance: "desc" }, { updatedAt: "desc" }],
-  });
+type Props = {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
 
-  const needsHelpCount = quotes.filter((q) => q.needsAssistance).length;
+export default async function QuotesPage({ searchParams }: Props) {
+  const filters = parseQuoteListFilters(await searchParams);
+  const where = quoteListWhere(filters);
+  const skip = (filters.page - 1) * QUOTE_LIST_PAGE_SIZE;
+
+  const [quotes, total, needsHelpCount] = await Promise.all([
+    prisma.quote.findMany({
+      where,
+      orderBy: [{ needsAssistance: "desc" }, { updatedAt: "desc" }],
+      skip,
+      take: QUOTE_LIST_PAGE_SIZE,
+    }),
+    prisma.quote.count({ where }),
+    prisma.quote.count({ where: { needsAssistance: true } }),
+  ]);
+
+  const pageCount = Math.max(1, Math.ceil(total / QUOTE_LIST_PAGE_SIZE));
+  const filtered = quoteListHasFilters(filters);
+  const fromRow = total === 0 ? 0 : skip + 1;
+  const toRow = Math.min(skip + quotes.length, total);
 
   return (
     <div className="space-y-6">
@@ -39,6 +65,8 @@ export default async function QuotesPage() {
         </div>
       </div>
 
+      <QuotesFilters filters={filters} />
+
       <div className="overflow-hidden rounded-xl bg-white/40 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
         <table className="w-full text-left text-sm">
           <thead className="bg-dark-secondary/5 text-mid-green">
@@ -55,14 +83,25 @@ export default async function QuotesPage() {
             {quotes.length === 0 ? (
               <tr>
                 <td colSpan={6} className="px-4 py-10 text-center text-mid-green">
-                  No quotes yet.{" "}
-                  <Link href="/quotes/generate" className="underline">
-                    Generate from a requirement
-                  </Link>{" "}
-                  or{" "}
-                  <Link href="/quotes/new" className="underline">
-                    start blank
-                  </Link>
+                  {filtered ? (
+                    <>
+                      No quotes match these filters.{" "}
+                      <Link href="/quotes" className="underline">
+                        Clear search
+                      </Link>
+                    </>
+                  ) : (
+                    <>
+                      No quotes yet.{" "}
+                      <Link href="/quotes/generate" className="underline">
+                        Generate from a requirement
+                      </Link>{" "}
+                      or{" "}
+                      <Link href="/quotes/new" className="underline">
+                        start blank
+                      </Link>
+                    </>
+                  )}
                 </td>
               </tr>
             ) : (
@@ -99,7 +138,7 @@ export default async function QuotesPage() {
                         : "—"}
                   </td>
                   <td className="px-4 py-3 text-mid-green">
-                    {format(q.updatedAt, "dd MMM yyyy")}
+                    {format(q.issuedAt ?? q.updatedAt, "dd MMM yyyy")}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Money value={decimalToNumber(q.grandTotal)} />
@@ -109,6 +148,33 @@ export default async function QuotesPage() {
             )}
           </tbody>
         </table>
+        {total > 0 ? (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-light-green/30 px-4 py-3 text-sm text-mid-green">
+            <p>
+              Showing {fromRow}–{toRow} of {total}
+            </p>
+            {pageCount > 1 ? (
+              <div className="flex gap-2">
+                {filters.page > 1 ? (
+                  <Link
+                    href={quoteListQuery(filters, filters.page - 1)}
+                    className="rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-white/70"
+                  >
+                    Previous
+                  </Link>
+                ) : null}
+                {filters.page < pageCount ? (
+                  <Link
+                    href={quoteListQuery(filters, filters.page + 1)}
+                    className="rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-white/70"
+                  >
+                    Next
+                  </Link>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

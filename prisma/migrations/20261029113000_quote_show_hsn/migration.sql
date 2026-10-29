@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Quote" ADD COLUMN "showHsn" BOOLEAN NOT NULL DEFAULT true;

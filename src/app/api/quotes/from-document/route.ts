@@ -114,7 +114,8 @@ export async function POST(req: NextRequest) {
         ? matched
         : fields.lineItems.map((l) => ({
             productId: null as string | null,
-            description:
+            description: "",
+            aliasName:
               [l.productName, l.model ? `Model: ${l.model}` : null]
                 .filter(Boolean)
                 .join(" — ") || "From document",
@@ -181,6 +182,7 @@ export async function POST(req: NextRequest) {
           create: lines.map((l, i) => ({
             productId: l.productId,
             description: l.description,
+            aliasName: l.aliasName || "",
             qty: l.qty,
             unit: l.unit,
             unitPrice: l.unitPrice,

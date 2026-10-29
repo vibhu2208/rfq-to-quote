@@ -209,6 +209,8 @@ model Quote {
   buyerGstin   String @default("")
 
   withGst         Boolean @default(true)
+  /// When false the HSN column is omitted from the quotation
+  showHsn         Boolean @default(true)
   gstMode         String  @default("AUTO") // AUTO | CGST_SGST | IGST
   subtotal        Decimal @default(0) @db.Decimal(14, 2)
   gstAmount       Decimal @default(0) @db.Decimal(14, 2)

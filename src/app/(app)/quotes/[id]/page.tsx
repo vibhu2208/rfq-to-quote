@@ -5,6 +5,7 @@ import { QuoteAccountingActions } from "@/components/quote-accounting-actions";
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
+import { quoteLineDetails } from "@/lib/quote-format";
 import { format } from "date-fns";
 import type { ManualOverrides } from "@/lib/tax";
 
@@ -17,7 +18,7 @@ export default async function EditQuotePage({ params }: Props) {
     include: {
       lineItems: {
         orderBy: { sortOrder: "asc" },
-        include: { product: { select: { hsnCode: true } } },
+        include: { product: { select: { hsnCode: true, name: true, description: true } } },
       },
       rfq: {
         select: {
@@ -42,6 +43,7 @@ export default async function EditQuotePage({ params }: Props) {
     buyerAddress: quote.buyerAddress,
     buyerGstin: quote.buyerGstin,
     withGst: quote.withGst,
+    showHsn: quote.showHsn !== false,
     gstMode: (quote.gstMode as QuoteFormState["gstMode"]) || "AUTO",
     deliveryCharge: decimalToNumber(quote.deliveryCharge),
     discountPercent: decimalToNumber(quote.discountPercent),
@@ -61,8 +63,12 @@ export default async function EditQuotePage({ params }: Props) {
     lineItems: quote.lineItems.map((li) => ({
       key: li.id,
       productId: li.productId,
-      description: li.description,
-      aliasName: li.aliasName || "",
+      description:
+        quoteLineDetails(li.aliasName || li.product?.name || "", li.description) ||
+        li.product?.description ||
+        "",
+      aliasName: li.aliasName || li.product?.name || "",
+      catalogName: li.product?.name || "",
       qty: decimalToNumber(li.qty),
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),

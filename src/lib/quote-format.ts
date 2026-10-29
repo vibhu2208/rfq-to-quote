@@ -87,6 +87,22 @@ export function parseQuoteDate(iso?: string | null): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Product details for a quote line, stripping a catalog "Name — details" prefix. */
+export function quoteLineDetails(aliasName: string | null | undefined, description: string): string {
+  const alias = aliasName?.trim() || "";
+  const desc = description.trim();
+  if (!desc) return "";
+  if (alias && desc === alias) return "";
+  if (alias && desc.startsWith(`${alias} — `)) return desc.slice(alias.length + 3);
+  if (alias && desc.startsWith(`${alias} - `)) return desc.slice(alias.length + 3);
+  return description;
+}
+
+export function formatQuoteHsn(hsn?: string | null): string {
+  const value = hsn?.trim();
+  return value ? value : "-";
+}
+
 export function formatQuoteQty(qty: number, unit: string): string {
   const raw = (unit || "NOS").trim();
   const u =
@@ -136,6 +152,19 @@ export function quoteContactFooterLine(company: {
   ]
     .filter(Boolean)
     .join(" | ");
+}
+
+export function quoteShowHsn(showHsn?: boolean | null): boolean {
+  return showHsn !== false;
+}
+
+/** SN + description + qty + rate + amount, plus optional HSN and GST/tax. */
+export function quoteTableColCount(withGst: boolean, showHsn: boolean): number {
+  return 5 + (showHsn ? 1 : 0) + (withGst ? 2 : 0);
+}
+
+export function quoteWordsColSpan(withGst: boolean, showHsn: boolean): number {
+  return 3 + (showHsn ? 1 : 0) + (withGst ? 1 : 0);
 }
 
 export const QUOTE_CLOSING =
