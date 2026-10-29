@@ -41,7 +41,11 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (parsed.success) {
       productIds = parsed.data.productIds || [];
       quantities = parsed.data.quantities || {};
-      lines = parsed.data.lines || [];
+      lines = (parsed.data.lines || []).map((line) => ({
+        productId: line.productId,
+        qty: line.qty && line.qty > 0 ? line.qty : 1,
+        unitPrice: line.unitPrice,
+      }));
     }
   } catch {
     // empty body ok
