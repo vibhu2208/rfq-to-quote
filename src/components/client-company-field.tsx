@@ -3,6 +3,15 @@
 import { KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { Plus } from "lucide-react";
 
+export type ClientContactHit = {
+  id: string;
+  name: string;
+  designation: string;
+  email: string;
+  phone: string;
+  isPrimary: boolean;
+};
+
 export type ClientHit = {
   id: string;
   code: string;
@@ -14,6 +23,7 @@ export type ClientHit = {
   managedByName?: string | null;
   clientTypeName?: string | null;
   sourceClientId?: string | null;
+  contacts?: ClientContactHit[];
   billingAddress: {
     city: string;
     state: string;
@@ -30,6 +40,30 @@ type Props = {
   placeholder?: string;
   required?: boolean;
 };
+
+export function primaryClientContact(client: {
+  managedByName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  contacts?: ClientContactHit[];
+}): ClientContactHit | null {
+  const list = client.contacts || [];
+  return list.find((c) => c.isPrimary) || list[0] || null;
+}
+
+export function contactFieldsFromClient(client: {
+  managedByName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  contacts?: ClientContactHit[];
+}) {
+  const contact = primaryClientContact(client);
+  return {
+    name: contact?.name || client.managedByName || "",
+    email: contact?.email || client.email || "",
+    phone: contact?.phone || client.phone || "",
+  };
+}
 
 function displayName(c: ClientHit) {
   return c.legalName || c.tradeName || c.code;

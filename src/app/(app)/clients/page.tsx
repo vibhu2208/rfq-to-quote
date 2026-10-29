@@ -1,8 +1,13 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Building2, ChevronLeft, ChevronRight, Plus, RefreshCw, Search, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Plus, RefreshCw, Search, X } from "lucide-react";
 import { MasterDetailDialog } from "@/components/master-detail-dialog";
+import { ClientOnboardDialog } from "@/components/client-onboard-dialog";
+import {
+  ClientContactsEditor,
+  type ClientContact,
+} from "@/components/client-contacts-editor";
 
 type BillingAddress = {
   id?: string;
@@ -36,20 +41,7 @@ type Client = {
   masterData?: Record<string, unknown> | null;
   active: boolean;
   billingAddress: BillingAddress | null;
-};
-
-type Preview = {
-  legalName: string;
-  tradeName: string;
-  status: string;
-  stateName: string;
-  stateCode: string;
-  addressLine1: string;
-  addressLine2: string;
-  city: string;
-  state: string;
-  postalCode: string;
-  message: string;
+  contacts?: ClientContact[];
 };
 
 function clientMasterFallback(c: Client): Record<string, unknown> {
@@ -77,35 +69,22 @@ function hasMasterFields(data: unknown): data is Record<string, unknown> {
   return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
 }
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 100;
 
-const emptyPreview = (): Preview => ({
-  legalName: "",
-  tradeName: "",
-  status: "",
-  stateName: "",
-  stateCode: "",
-  addressLine1: "",
-  addressLine2: "",
-  city: "",
-  state: "",
-  postalCode: "",
-  message: "",
-});
+const fieldClass =
+  "h-9 shrink-0 rounded-full border-0 bg-dark-secondary/[0.05] px-3 text-[13px] text-dark-primary outline-none placeholder:text-mid-green/65 focus:bg-white focus:ring-1 focus:ring-mid-green/30";
 
 export default function ClientsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [q, setQ] = useState("");
+  const [type, setType] = useState("");
+  const [gst, setGst] = useState("");
+  const [vendor, setVendor] = useState("");
+  const [types, setTypes] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
-  const [gstin, setGstin] = useState("");
-  const [email, setEmail] = useState("");
-  const [phone, setPhone] = useState("");
-  const [preview, setPreview] = useState<Preview>(emptyPreview());
-  const [fetching, setFetching] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [detail, setDetail] = useState<Client | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -118,6 +97,9 @@ export default function ClientsPage() {
       pageSize: String(PAGE_SIZE),
     });
     if (q) params.set("q", q);
+    if (type) params.set("type", type);
+    if (gst) params.set("gst", gst);
+    if (vendor) params.set("vendor", vendor);
     const res = await fetch(`/api/parties?${params}`);
     const data = await res.json();
     if (Array.isArray(data)) {
@@ -126,100 +108,15 @@ export default function ClientsPage() {
     } else {
       setClients(Array.isArray(data.items) ? data.items : []);
       setTotal(typeof data.total === "number" ? data.total : 0);
+      if (Array.isArray(data.types)) setTypes(data.types);
     }
     setLoading(false);
-  }, [q, page]);
+  }, [q, page, type, gst, vendor]);
 
   useEffect(() => {
-    const t = setTimeout(load, q ? 200 : 0);
+    const t = setTimeout(load, q ? 250 : 0);
     return () => clearTimeout(t);
   }, [load, q]);
-
-  function openOnboard() {
-    setGstin("");
-    setEmail("");
-    setPhone("");
-    setPreview(emptyPreview());
-    setMessage("");
-    setModalOpen(true);
-  }
-
-  async function fetchFromPortal() {
-    const value = gstin.trim().toUpperCase();
-    if (value.length !== 15) {
-      setMessage("Enter a valid 15-character GSTIN");
-      return;
-    }
-    setFetching(true);
-    setMessage("");
-    try {
-      const res = await fetch("/api/parties", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "gstin", gstin: value, save: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || data.verification?.message || "Lookup failed");
-      }
-      const v = data.verification;
-      const a = data.address || {};
-      setPreview({
-        legalName: v.legalName || "",
-        tradeName: v.tradeName || "",
-        status: v.status || "",
-        stateName: v.stateName || "",
-        stateCode: v.stateCode || "",
-        addressLine1: a.addressLine1 || v.address || "",
-        addressLine2: a.addressLine2 || "",
-        city: a.city || "",
-        state: a.state || v.stateName || "",
-        postalCode: a.postalCode || "",
-        message: v.message || "Fetched from GST portal via Sandbox",
-      });
-      setMessage(v.message || "Details fetched — review and save");
-    } catch (e) {
-      setPreview(emptyPreview());
-      setMessage(e instanceof Error ? e.message : "Lookup failed");
-    } finally {
-      setFetching(false);
-    }
-  }
-
-  async function saveClient(e: FormEvent) {
-    e.preventDefault();
-    const value = gstin.trim().toUpperCase();
-    if (value.length !== 15) {
-      setMessage("Enter a valid 15-character GSTIN");
-      return;
-    }
-    setSaving(true);
-    setMessage("");
-    try {
-      const res = await fetch("/api/parties", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "gstin",
-          gstin: value,
-          email: email.trim() || undefined,
-          phone: phone.trim() || undefined,
-          save: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || data.verification?.message || "Save failed");
-      }
-      setModalOpen(false);
-      setMessage(`Saved ${data.party?.legalName || value}`);
-      load();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Save failed");
-    } finally {
-      setSaving(false);
-    }
-  }
 
   async function openDetail(client: Client) {
     setDetail(client);
@@ -253,145 +150,246 @@ export default function ClientsPage() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const to = Math.min(page * PAGE_SIZE, total);
+  const filtered = Boolean(q || type || gst || vendor);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Clients</h1>
-          <p className="mt-1 text-sm text-mid-green">
-            Client master from Excel — click a row for the full record
-          </p>
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+      <form
+        onSubmit={(e) => e.preventDefault()}
+        autoComplete="off"
+        className="shrink-0 px-4 py-2.5"
+      >
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex shrink-0 items-center gap-2">
+            <h1 className="text-lg font-semibold tracking-tight text-dark-primary">Clients</h1>
+            <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-xs font-medium tabular-nums text-mid-green">
+              {total}
+            </span>
+          </div>
+
+          <div className="relative min-w-[8rem] flex-1">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green/70"
+              strokeWidth={1.5}
+            />
+            <input
+              type="search"
+              value={q}
+              autoComplete="off"
+              onChange={(e) => {
+                setQ(e.target.value);
+                setPage(1);
+              }}
+              placeholder="Search name, GSTIN, client ID, type…"
+              aria-label="Search clients"
+              className="h-9 w-full rounded-full border-0 bg-dark-secondary/[0.05] pl-9 pr-3 text-sm outline-none placeholder:text-mid-green/60 focus:bg-white focus:ring-1 focus:ring-mid-green/30"
+            />
+          </div>
+
+          <select
+            value={type}
+            onChange={(e) => {
+              setType(e.target.value);
+              setPage(1);
+            }}
+            aria-label="Client type"
+            className={`${fieldClass} max-w-[11rem]`}
+          >
+            <option value="">Type</option>
+            {types.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={gst}
+            onChange={(e) => {
+              setGst(e.target.value);
+              setPage(1);
+            }}
+            aria-label="GST"
+            className={`${fieldClass} w-[6.5rem]`}
+          >
+            <option value="">GST</option>
+            <option value="yes">With GST</option>
+            <option value="no">Without GST</option>
+          </select>
+
+          <label className="inline-flex h-9 shrink-0 cursor-pointer items-center rounded-full bg-dark-secondary/[0.05] px-3 text-[13px] font-medium text-mid-green transition hover:bg-light-green/20 has-[:checked]:bg-mid-green has-[:checked]:text-background">
+            <input
+              type="checkbox"
+              checked={vendor === "1"}
+              onChange={(e) => {
+                setVendor(e.target.checked ? "1" : "");
+                setPage(1);
+              }}
+              className="sr-only"
+            />
+            Vendor
+          </label>
+
+          {filtered ? (
+            <button
+              type="button"
+              onClick={() => {
+                setQ("");
+                setType("");
+                setGst("");
+                setVendor("");
+                setPage(1);
+              }}
+              className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm text-mid-green hover:bg-light-green/15"
+            >
+              <X className="h-3.5 w-3.5" strokeWidth={1.5} />
+              Clear
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => {
+              setMessage("");
+              setModalOpen(true);
+            }}
+            className="ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-mid-green px-3.5 text-sm font-medium text-background hover:bg-dark-secondary"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+            Onboard
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={openOnboard}
-          className="inline-flex items-center gap-2 rounded-lg bg-mid-green px-3 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
-        >
-          <Plus className="h-4 w-4" strokeWidth={1.5} />
-          Onboard client
-        </button>
-      </div>
+        {message && !modalOpen ? (
+          <p className="mt-2 text-xs text-mid-green">{message}</p>
+        ) : null}
+      </form>
 
-      {message && !modalOpen ? <p className="text-sm text-mid-green">{message}</p> : null}
-
-      <div className="relative max-w-md">
-        <Search
-          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-mid-green"
-          strokeWidth={1.5}
-        />
-        <input
-          value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-            setPage(1);
-          }}
-          placeholder="Search name, GSTIN, client ID, type…"
-          className="w-full rounded-lg border border-light-green/40 bg-white/50 py-2 pl-9 pr-3 text-sm outline-none focus:border-mid-green"
-        />
-      </div>
-
-      <div className="overflow-x-auto rounded-xl bg-white/40">
-        <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="bg-dark-secondary/5 text-mid-green">
+      <div className="min-h-0 flex-1 overflow-auto">
+        <table className="w-full table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[7.5rem]" />
+            <col />
+            <col className="w-[8.5rem]" />
+            <col className="w-[10.5rem]" />
+            <col className="w-[9rem]" />
+            <col className="w-[8rem]" />
+            <col className="w-[8.5rem]" />
+            <col className="w-[3rem]" />
+          </colgroup>
+          <thead className="sticky top-0 z-10 border-t border-light-green/20 bg-[#fbfaf6] text-[10px] uppercase tracking-wide text-mid-green">
             <tr>
-              <th className="px-4 py-3">Client ID</th>
-              <th className="px-4 py-3">Client</th>
-              <th className="px-4 py-3">Client type</th>
-              <th className="px-4 py-3">GSTIN</th>
-              <th className="px-4 py-3">City</th>
-              <th className="px-4 py-3">Phone</th>
-              <th className="px-4 py-3"></th>
+              <th className="px-3 py-2 font-medium">Client ID</th>
+              <th className="px-3 py-2 font-medium">Client</th>
+              <th className="px-3 py-2 font-medium">Type</th>
+              <th className="px-3 py-2 font-medium">GSTIN</th>
+              <th className="px-3 py-2 font-medium">City</th>
+              <th className="px-3 py-2 font-medium">Phone</th>
+              <th className="px-3 py-2 font-medium">Contact</th>
+              <th className="px-2 py-2 font-medium" />
             </tr>
           </thead>
           <tbody>
             {loading && clients.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-mid-green">
+                <td colSpan={8} className="px-3 py-12 text-center text-sm text-mid-green">
                   Loading…
                 </td>
               </tr>
             ) : clients.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-mid-green">
-                  No clients yet. Onboard one with their GSTIN.
+                <td colSpan={8} className="px-3 py-12 text-center text-sm text-mid-green">
+                  {filtered ? "No clients match these filters." : "No clients yet. Onboard a client to start."}
                 </td>
               </tr>
             ) : (
-              clients.map((c) => (
-                <tr
-                  key={c.id}
-                  className="cursor-pointer border-t border-light-green/20 hover:bg-light-green/15"
-                  onClick={() => openDetail(c)}
-                >
-                  <td className="px-4 py-3 font-medium">{c.sourceClientId || c.code}</td>
-                  <td className="px-4 py-3">
-                    <div>{c.legalName}</div>
-                    {c.tradeName && c.tradeName !== c.legalName ? (
-                      <div className="text-xs text-mid-green">{c.tradeName}</div>
-                    ) : null}
-                    {c.email ? <div className="text-xs text-mid-green">{c.email}</div> : null}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="rounded px-2 py-0.5 text-xs bg-mid-green/20 text-mid-green">
-                      {c.clientTypeName || "—"}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs">{c.gstin || "—"}</td>
-                  <td className="px-4 py-3 text-xs text-mid-green">
-                    {[c.billingAddress?.city, c.billingAddress?.state].filter(Boolean).join(", ") || "—"}
-                  </td>
-                  <td className="px-4 py-3 text-xs">{c.phone || "—"}</td>
-                  <td className="px-4 py-3 text-right">
-                    {c.gstin ? (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          reverify(c);
-                        }}
-                        className="inline-flex items-center gap-1 rounded p-1.5 text-mid-green hover:bg-light-green/30"
-                        title="Refresh from GST portal"
-                      >
-                        <RefreshCw className="h-4 w-4" strokeWidth={1.5} />
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))
+              clients.map((c) => {
+                const primary = c.contacts?.find((x) => x.isPrimary) || c.contacts?.[0];
+                const contactName = primary?.name || c.managedByName;
+                const extra =
+                  (c.contacts?.length || 0) > 1 ? ` +${(c.contacts?.length || 0) - 1}` : "";
+                return (
+                  <tr
+                    key={c.id}
+                    className="cursor-pointer border-t border-light-green/15 hover:bg-light-green/10"
+                    onClick={() => openDetail(c)}
+                  >
+                    <td className="px-3 py-2 align-middle font-medium">
+                      {c.sourceClientId || c.code}
+                    </td>
+                    <td className="px-3 py-2 align-middle">
+                      <span className="block truncate">{c.legalName}</span>
+                      {c.tradeName && c.tradeName !== c.legalName ? (
+                        <span className="mt-0.5 block truncate text-xs text-mid-green">
+                          {c.tradeName}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-2 align-middle">
+                      <span className="rounded px-2 py-0.5 text-xs bg-mid-green/20 text-mid-green">
+                        {c.clientTypeName || "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 align-middle font-mono text-xs">{c.gstin || "—"}</td>
+                    <td className="truncate px-3 py-2 align-middle text-xs text-mid-green">
+                      {[c.billingAddress?.city, c.billingAddress?.state].filter(Boolean).join(", ") ||
+                        "—"}
+                    </td>
+                    <td className="px-3 py-2 align-middle text-xs">{c.phone || "—"}</td>
+                    <td className="truncate px-3 py-2 align-middle text-xs">
+                      {contactName ? `${contactName}${extra}` : "—"}
+                    </td>
+                    <td className="px-2 py-1.5 align-middle text-right">
+                      {c.gstin ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void reverify(c);
+                          }}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-light-green/25"
+                          title="Refresh from GST portal"
+                        >
+                          <RefreshCw className="h-4 w-4" strokeWidth={1.5} />
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
       </div>
 
       {total > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-mid-green">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-light-green/20 px-3 py-2 text-xs text-mid-green">
           <p>
-            {loading ? "Loading…" : `Showing ${from}–${to} of ${total}`}
+            {loading ? "Loading…" : `${from}–${to} of ${total}`}
           </p>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1 || loading}
-              className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-light-green/20 disabled:opacity-40"
-            >
-              <ChevronLeft className="h-4 w-4" strokeWidth={1.5} />
-              Previous
-            </button>
-            <span className="tabular-nums">
-              Page {page} of {totalPages}
-            </span>
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages || loading}
-              className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 px-3 py-1.5 hover:bg-light-green/20 disabled:opacity-40"
-            >
-              Next
-              <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
-            </button>
-          </div>
+          {totalPages > 1 ? (
+            <div className="flex gap-1.5">
+              {page > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={loading}
+                  className="rounded-md border border-light-green/40 px-2.5 py-1 hover:bg-white/70 disabled:opacity-40"
+                >
+                  Previous
+                </button>
+              ) : null}
+              {page < totalPages ? (
+                <button
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={loading}
+                  className="rounded-md border border-light-green/40 px-2.5 py-1 hover:bg-white/70 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -416,113 +414,29 @@ export default function ClientsPage() {
               </button>
             ) : null
           }
-        />
+        >
+          <ClientContactsEditor
+            partyId={detail.id}
+            contacts={detail.contacts || []}
+            onChange={(contacts) => {
+              setDetail((d) => (d ? { ...d, contacts } : d));
+              setClients((list) =>
+                list.map((c) => (c.id === detail.id ? { ...c, contacts } : c))
+              );
+            }}
+          />
+        </MasterDetailDialog>
       ) : null}
 
       {modalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
-          <form
-            onSubmit={saveClient}
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-background p-6 shadow-xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold inline-flex items-center gap-2">
-                  <Building2 className="h-5 w-5 text-mid-green" strokeWidth={1.5} />
-                  Onboard client
-                </h2>
-                <p className="mt-1 text-xs text-mid-green">
-                  Enter GSTIN → fetch from portal → save customer master
-                </p>
-              </div>
-              <button type="button" onClick={() => setModalOpen(false)} className="p-1 text-mid-green">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              <label className="block text-sm">
-                <span className="mb-1 block text-mid-green">GSTIN</span>
-                <div className="flex gap-2">
-                  <input
-                    value={gstin}
-                    onChange={(e) => setGstin(e.target.value.toUpperCase())}
-                    maxLength={15}
-                    placeholder="15-character GSTIN"
-                    className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 font-mono text-sm outline-none focus:border-mid-green"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={fetchFromPortal}
-                    disabled={fetching || gstin.trim().length !== 15}
-                    className="shrink-0 rounded-lg border border-mid-green/40 px-3 py-2 text-sm hover:bg-mid-green/10 disabled:opacity-50"
-                  >
-                    {fetching ? "Fetching…" : "Fetch"}
-                  </button>
-                </div>
-              </label>
-
-              {preview.legalName || preview.addressLine1 ? (
-                <div className="rounded-lg border border-light-green/30 bg-white/50 p-3 text-sm space-y-1">
-                  <p>
-                    <span className="text-mid-green">Legal name:</span> {preview.legalName || "—"}
-                  </p>
-                  <p>
-                    <span className="text-mid-green">Trade name:</span> {preview.tradeName || "—"}
-                  </p>
-                  <p>
-                    <span className="text-mid-green">Status:</span> {preview.status || "—"} ·{" "}
-                    {preview.stateName || preview.stateCode || ""}
-                  </p>
-                  <p>
-                    <span className="text-mid-green">Address:</span>{" "}
-                    {[preview.addressLine1, preview.addressLine2, preview.city, preview.state, preview.postalCode]
-                      .filter(Boolean)
-                      .join(", ") || "—"}
-                  </p>
-                </div>
-              ) : null}
-
-              <label className="block text-sm">
-                <span className="mb-1 block text-mid-green">Contact email (optional)</span>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-1 block text-mid-green">Phone (optional)</span>
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
-                />
-              </label>
-            </div>
-
-            {message ? <p className="mt-3 text-sm text-dark-primary">{message}</p> : null}
-
-            <div className="mt-6 flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setModalOpen(false)}
-                className="rounded-lg px-4 py-2 text-sm text-mid-green hover:bg-light-green/20"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={saving || gstin.trim().length !== 15}
-                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
-              >
-                {saving ? "Saving…" : "Save client"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <ClientOnboardDialog
+          onClose={() => setModalOpen(false)}
+          onSaved={(name) => {
+            setModalOpen(false);
+            setMessage(`Saved ${name}`);
+            load();
+          }}
+        />
       ) : null}
     </div>
   );

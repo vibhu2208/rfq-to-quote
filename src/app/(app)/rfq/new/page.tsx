@@ -12,6 +12,7 @@ import {
 import { useRouter } from "next/navigation";
 import {
   ClientCompanyField,
+  contactFieldsFromClient,
   type ClientHit,
 } from "@/components/client-company-field";
 
@@ -64,9 +65,10 @@ export default function CaptureRequirementPage() {
     }
     setPartyId(client.id);
     setCompany(client.legalName);
-    if (client.managedByName) setContactName(client.managedByName);
-    if (client.email) setEmail(client.email);
-    if (client.phone) setPhone(client.phone);
+    const fields = contactFieldsFromClient(client);
+    if (fields.name) setContactName(fields.name);
+    if (fields.email) setEmail(fields.email);
+    if (fields.phone) setPhone(fields.phone);
   }
 
   const assignFile = useCallback((next: File | null) => {

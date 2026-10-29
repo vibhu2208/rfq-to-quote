@@ -1,3 +1,6 @@
+/** Below this, catalog regex/token search is treated as a weak match. */
+export const MIN_STRONG_SEARCH_SCORE = 80;
+
 /** Split a user query into searchable tokens (whitespace-separated, lowercased). */
 export function searchTokens(q: string): string[] {
   return q
@@ -6,6 +9,26 @@ export function searchTokens(q: string): string[] {
     .split(/\s+/)
     .map((t) => t.trim())
     .filter((t) => t.length > 0);
+}
+
+export function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Case-insensitive regex: query words in order, allowing other words in between. */
+export function catalogQueryRegex(q: string): RegExp | null {
+  const tokens = searchTokens(q);
+  if (tokens.length === 0) return null;
+  const pattern = tokens.map(escapeRegex).join(".*?");
+  try {
+    return new RegExp(pattern, "i");
+  } catch {
+    return null;
+  }
+}
+
+export function isWeakCatalogMatch(bestScore: number, hitCount: number): boolean {
+  return hitCount === 0 || bestScore < MIN_STRONG_SEARCH_SCORE;
 }
 
 /**
@@ -35,6 +58,13 @@ export function scoreProductSearchHit(
   else if (code.includes(ql)) score += 50;
 
   if (desc.includes(ql)) score += 20;
+
+  const regex = catalogQueryRegex(ql);
+  if (regex) {
+    if (regex.test(product.name)) score += 50;
+    else if (regex.test(product.code)) score += 30;
+    else if (regex.test(product.description || "")) score += 10;
+  }
 
   // Per-token hits (multi-word queries like "dell 16gb")
   for (const t of tokens) {

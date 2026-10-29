@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum QuoteStatus {
@@ -196,6 +197,8 @@ model RfqMessage {
 model Quote {
   id          String      @id @default(cuid())
   quoteNumber String      @unique
+  /// Optional label the user sets so the quote is easier to find later
+  quoteName   String      @default("")
   status      QuoteStatus @default(DRAFT)
   version     Int         @default(1)
   rfqId       String?
@@ -253,6 +256,7 @@ model Quote {
 
   lineItems        QuoteLineItem[]
   messages         QuoteMessage[]
+  attachments      QuoteAttachment[]
   knowledgeEntries KnowledgeEntry[]
   rfq              Rfq?              @relation(fields: [rfqId], references: [id], onDelete: SetNull)
   proformaInvoices ProformaInvoice[]
@@ -264,6 +268,23 @@ model Quote {
   @@index([threadRef])
   @@index([needsAssistance])
   @@index([buyerEmail])
+}
+
+model QuoteAttachment {
+  id          String   @id @default(cuid())
+  quoteId     String
+  fileName    String   @default("")
+  contentType String   @default("application/octet-stream")
+  size        Int      @default(0)
+  note        String   @default("")
+  storageKey  String   @default("")
+  data        Bytes?
+  createdAt   DateTime @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+  @@index([createdAt])
 }
 
 model QuoteMessage {
@@ -1032,6 +1053,7 @@ model Party {
   organisation      Organisation       @relation(fields: [organisationId], references: [id], onDelete: Restrict)
   gstRegistration   GSTRegistration?   @relation(fields: [gstRegistrationId], references: [id], onDelete: SetNull)
   addresses         Address[]
+  contacts          PartyContact[]
   proformaInvoices  ProformaInvoice[]
   invoices          Invoice[]
   creditDebitNotes  CreditDebitNote[]
@@ -1065,6 +1087,22 @@ model Address {
   party Party @relation(fields: [partyId], references: [id], onDelete: Cascade)
 
   @@index([partyId, type])
+}
+
+model PartyContact {
+  id           String   @id @default(cuid())
+  partyId      String
+  name         String
+  designation  String   @default("")
+  email        String   @default("")
+  phone        String   @default("")
+  isPrimary    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  party Party @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  @@index([partyId, isPrimary])
 }
 
 model Warehouse {

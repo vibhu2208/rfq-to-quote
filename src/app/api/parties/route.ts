@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { requireUserId } from "@/lib/api/session-user";
@@ -8,6 +9,19 @@ import { verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
 import { getStateCode } from "@/lib/accounting/states";
 import { isAccountingError } from "@/lib/accounting/errors";
 import { rankPartiesByQuery } from "@/lib/party-search";
+import {
+  partyContactOrderBy,
+  partyContactSelect,
+  serializePartyContacts,
+  upsertPrimaryContactFromFields,
+  type PartyContactRecord,
+} from "@/lib/party-contacts";
+import { formToPartyPayload } from "@/lib/client-onboard";
+import {
+  applyPartyOnboardPayload,
+  createPartyFromOnboard,
+  loadOnboardedParty,
+} from "@/lib/client-onboard-save";
 
 function serializeParty(
   party: {
@@ -44,6 +58,7 @@ function serializeParty(
       stateCode: string;
       postalCode: string;
     }>;
+    contacts?: PartyContactRecord[];
   } | null
 ) {
   if (!party) return null;
@@ -87,6 +102,7 @@ function serializeParty(
         }
       : null,
     addresses: party.addresses,
+    contacts: serializePartyContacts(party.contacts),
   };
 }
 
@@ -123,6 +139,18 @@ export async function GET(req: NextRequest) {
                 { code: { startsWith: q, mode: "insensitive" } },
                 { gstin: { startsWith: q, mode: "insensitive" } },
                 { sourceClientId: { startsWith: q, mode: "insensitive" } },
+                { managedByName: { contains: q, mode: "insensitive" } },
+                {
+                  contacts: {
+                    some: {
+                      OR: [
+                        { name: { contains: q, mode: "insensitive" } },
+                        { email: { contains: q, mode: "insensitive" } },
+                        { phone: { contains: q, mode: "insensitive" } },
+                      ],
+                    },
+                  },
+                },
               ],
             }
           : {}),
@@ -138,6 +166,10 @@ export async function GET(req: NextRequest) {
         managedByName: true,
         clientTypeName: true,
         sourceClientId: true,
+        contacts: {
+          select: partyContactSelect,
+          orderBy: partyContactOrderBy,
+        },
       },
       orderBy: { legalName: "asc" },
       take,
@@ -154,6 +186,9 @@ export async function GET(req: NextRequest) {
   const organisationId = await getDefaultOrganisationId();
   const pageParam = url.searchParams.get("page");
   const pageSizeParam = url.searchParams.get("pageSize");
+  const typeParam = url.searchParams.get("type")?.trim() || "";
+  const gstParam = url.searchParams.get("gst")?.trim() || "";
+  const vendorParam = url.searchParams.get("vendor")?.trim() || "";
   const paginated = Boolean(pageParam) || Boolean(pageSizeParam);
   const pageSize = paginated
     ? Math.min(Math.max(Number(pageSizeParam) || 50, 1), 100)
@@ -196,11 +231,33 @@ export async function GET(req: NextRequest) {
           { email: { contains: q, mode: "insensitive" as const } },
           { phone: { contains: q, mode: "insensitive" as const } },
           { clientTypeName: { contains: q, mode: "insensitive" as const } },
+          {
+            contacts: {
+              some: {
+                OR: [
+                  { name: { contains: q, mode: "insensitive" as const } },
+                  { email: { contains: q, mode: "insensitive" as const } },
+                  { phone: { contains: q, mode: "insensitive" as const } },
+                ],
+              },
+            },
+          },
         ],
       }
     : {};
 
-  const where = { ...baseWhere, ...listFilter };
+  const extraFilters: Prisma.PartyWhereInput[] = [];
+  if (q && "OR" in listFilter) extraFilters.push({ OR: listFilter.OR });
+  if (typeParam) extraFilters.push({ clientTypeName: typeParam });
+  if (gstParam === "yes") {
+    extraFilters.push({ gstin: { not: null } }, { NOT: { gstin: "" } });
+  }
+  if (gstParam === "no") {
+    extraFilters.push({ OR: [{ gstin: null }, { gstin: "" }] });
+  }
+  if (vendorParam === "1") extraFilters.push({ isVendor: true });
+  const where: Prisma.PartyWhereInput =
+    extraFilters.length > 0 ? { ...baseWhere, AND: extraFilters } : baseWhere;
   const listSelect = {
     id: true,
     code: true,
@@ -240,9 +297,13 @@ export async function GET(req: NextRequest) {
         postalCode: true,
       },
     },
+    contacts: {
+      select: partyContactSelect,
+      orderBy: partyContactOrderBy,
+    },
   };
 
-  const [parties, total] = await Promise.all([
+  const [parties, total, typeRows] = await Promise.all([
     prisma.party.findMany({
       where,
       select: listSelect,
@@ -254,11 +315,25 @@ export async function GET(req: NextRequest) {
       take: pageSize,
     }),
     paginated ? prisma.party.count({ where }) : Promise.resolve(0),
+    paginated
+      ? prisma.party.groupBy({
+          by: ["clientTypeName"],
+          where: {
+            organisationId,
+            type: { not: "OTHER" as const },
+            clientTypeName: { not: null },
+          },
+          orderBy: { clientTypeName: "asc" },
+        })
+      : Promise.resolve([]),
   ]);
 
   const items = parties.map(serializeParty);
   if (paginated) {
-    return NextResponse.json({ items, total, page, pageSize });
+    const types = typeRows
+      .map((row) => row.clientTypeName)
+      .filter((name): name is string => Boolean(name && name.trim()));
+    return NextResponse.json({ items, total, page, pageSize, types });
   }
 
   const ranked = q ? rankPartiesByQuery(parties, q) : parties;
@@ -267,6 +342,8 @@ export async function GET(req: NextRequest) {
 
 const onboardSchema = z.object({
   gstin: z.string().length(15),
+  contactName: z.string().optional(),
+  designation: z.string().optional(),
   email: z.string().email().optional().or(z.literal("")),
   phone: z.string().optional(),
   /** If false, only fetch portal details without saving. Default true. */
@@ -277,6 +354,8 @@ const createManualSchema = z.object({
   legalName: z.string().min(1),
   tradeName: z.string().optional(),
   gstin: z.string().length(15).optional().or(z.literal("")),
+  contactName: z.string().optional(),
+  designation: z.string().optional(),
   email: z.string().email().optional().or(z.literal("")),
   phone: z.string().optional(),
   placeOfSupplyCode: z.string().optional(),
@@ -289,6 +368,22 @@ const createManualSchema = z.object({
   verifyGstin: z.boolean().optional().default(false),
 });
 
+const onboardContactSchema = z.object({
+  name: z.string().optional().default(""),
+  designation: z.string().optional().default(""),
+  email: z.string().optional().default(""),
+  phone: z.string().optional().default(""),
+  isPrimary: z.boolean().optional().default(false),
+});
+
+const onboardFullSchema = z.object({
+  verifyGstin: z.boolean().optional().default(true),
+  contactName: z.string().optional().default(""),
+  designation: z.string().optional().default(""),
+  contacts: z.array(onboardContactSchema).optional().default([]),
+  fields: z.record(z.string(), z.union([z.string(), z.boolean(), z.number(), z.null()])).default({}),
+});
+
 export async function POST(req: NextRequest) {
   const { session, error } = await requireSession();
   if (error) return error;
@@ -296,9 +391,85 @@ export async function POST(req: NextRequest) {
   if (userError) return userError;
 
   const body = await req.json();
-  const mode = body?.mode === "manual" ? "manual" : "gstin";
+  const mode =
+    body?.mode === "manual" ? "manual" : body?.mode === "full" ? "full" : "gstin";
 
   try {
+    if (mode === "full") {
+      const parsed = onboardFullSchema.safeParse(body);
+      if (!parsed.success) {
+        return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+      }
+      const fields: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed.data.fields)) {
+        if (typeof value === "boolean") fields[key] = value ? "Yes" : "";
+        else if (value == null) fields[key] = "";
+        else fields[key] = String(value);
+      }
+      const payload = formToPartyPayload({
+        fields,
+        contacts:
+          parsed.data.contacts.length > 0
+            ? parsed.data.contacts
+            : [
+                {
+                  name: parsed.data.contactName,
+                  designation: parsed.data.designation,
+                  email: "",
+                  phone: "",
+                  isPrimary: true,
+                },
+              ],
+      });
+      if (!payload.legalName) {
+        return NextResponse.json({ error: "Enter the client name" }, { status: 400 });
+      }
+      if (payload.sourceClientId) {
+        const clash = await prisma.party.findFirst({
+          where: { sourceClientId: payload.sourceClientId },
+          select: { id: true },
+        });
+        if (clash) {
+          return NextResponse.json(
+            { error: "That client ID is already in use" },
+            { status: 409 }
+          );
+        }
+      }
+
+      let partyId: string | undefined;
+      const gstin = payload.gstin?.toUpperCase() || "";
+      if (parsed.data.verifyGstin && gstin.length === 15) {
+        const result = await verifyAndStorePartyGstin({
+          gstin,
+          createPartyIfMissing: true,
+          legalNameHint: payload.legalName,
+          email: payload.email || undefined,
+          phone: payload.phone || undefined,
+          userId,
+        });
+        if (!result.verification.valid) {
+          return NextResponse.json(
+            {
+              error: result.verification.message || "Invalid GSTIN",
+              verification: result.verification,
+            },
+            { status: 400 }
+          );
+        }
+        partyId = result.partyId;
+      }
+
+      if (!partyId) {
+        partyId = await createPartyFromOnboard(payload);
+      } else {
+        await applyPartyOnboardPayload(partyId, payload);
+      }
+
+      const saved = await loadOnboardedParty(partyId);
+      return NextResponse.json({ party: serializeParty(saved) }, { status: 201 });
+    }
+
     if (mode === "gstin") {
       const parsed = onboardSchema.safeParse(body);
       if (!parsed.success) {
@@ -320,11 +491,27 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      if (result.partyId && parsed.data.save !== false) {
+        await upsertPrimaryContactFromFields(result.partyId, {
+          name: parsed.data.contactName,
+          designation: parsed.data.designation,
+          email: parsed.data.email,
+          phone: parsed.data.phone,
+        });
+      }
+
+      const savedParty = result.partyId
+        ? await prisma.party.findUnique({
+            where: { id: result.partyId },
+            include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
+          })
+        : result.party;
+
       return NextResponse.json(
         {
           verification: result.verification,
           address: result.address,
-          party: result.party ? serializeParty(result.party) : null,
+          party: savedParty ? serializeParty(savedParty) : null,
         },
         { status: parsed.data.save === false ? 200 : 201 }
       );
@@ -351,20 +538,18 @@ export async function POST(req: NextRequest) {
           { status: 400 }
         );
       }
-      // Allow contact overrides after portal fetch
-      if (result.partyId && (data.email || data.phone)) {
-        await prisma.party.update({
-          where: { id: result.partyId },
-          data: {
-            email: data.email || undefined,
-            phone: data.phone || undefined,
-          },
+      if (result.partyId) {
+        await upsertPrimaryContactFromFields(result.partyId, {
+          name: data.contactName,
+          designation: data.designation,
+          email: data.email,
+          phone: data.phone,
         });
       }
       const party = result.partyId
         ? await prisma.party.findUniqueOrThrow({
             where: { id: result.partyId },
-            include: { addresses: true },
+            include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
           })
         : null;
       return NextResponse.json(
@@ -390,6 +575,7 @@ export async function POST(req: NextRequest) {
         gstin: data.gstin ? data.gstin.toUpperCase() : null,
         email: data.email || null,
         phone: data.phone || null,
+        managedByName: data.contactName?.trim() || null,
         placeOfSupplyCode: data.placeOfSupplyCode || stateCode,
         ...(data.addressLine1
           ? {
@@ -410,10 +596,21 @@ export async function POST(req: NextRequest) {
             }
           : {}),
       },
-      include: { addresses: true },
+      include: { addresses: true, contacts: true },
     });
 
-    return NextResponse.json({ party: serializeParty(party) }, { status: 201 });
+    await upsertPrimaryContactFromFields(party.id, {
+      name: data.contactName,
+      designation: data.designation,
+      email: data.email,
+      phone: data.phone,
+    });
+    const saved = await prisma.party.findUniqueOrThrow({
+      where: { id: party.id },
+      include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
+    });
+
+    return NextResponse.json({ party: serializeParty(saved) }, { status: 201 });
   } catch (err) {
     if (isAccountingError(err)) {
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });

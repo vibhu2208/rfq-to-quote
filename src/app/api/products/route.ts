@@ -6,7 +6,12 @@ import { decimalToNumber } from "@/lib/quotes";
 import { catalogSellPrice } from "@/lib/product-price";
 import { getDefaultOrgContext } from "@/lib/accounting/context";
 import { syncProductToInventory } from "@/lib/accounting/inventory";
-import { rankProductsByQuery, searchTokens } from "@/lib/product-search";
+import {
+  isWeakCatalogMatch,
+  rankProductsByQuery,
+  scoreProductSearchHit,
+  searchTokens,
+} from "@/lib/product-search";
 
 const productSchema = z.object({
   code: z.string().min(1),
@@ -87,72 +92,97 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const q = searchParams.get("q")?.trim() || "";
   const activeParam = searchParams.get("active");
+  const withMeta = searchParams.get("withMeta") === "1";
   const take = Math.min(Number(searchParams.get("take") || 100), 2000);
   const tokens = searchTokens(q);
 
+  const tokenOr = (token: string) => ({
+    OR: [
+      { code: { contains: token, mode: "insensitive" as const } },
+      { sourceProductId: { contains: token, mode: "insensitive" as const } },
+      { name: { contains: token, mode: "insensitive" as const } },
+      { description: { contains: token, mode: "insensitive" as const } },
+      { category: { contains: token, mode: "insensitive" as const } },
+      { brand: { contains: token, mode: "insensitive" as const } },
+      { modelNo: { contains: token, mode: "insensitive" as const } },
+      { hsnCode: { contains: token, mode: "insensitive" as const } },
+    ],
+  });
+
   // Multi-word queries: every token must match somewhere on code/name/description
   // (so "dell 16gb" finds "Dell Latitude 16GB RAM", not only contiguous substrings).
-  const tokenFilters =
-    tokens.length > 0
-      ? tokens.map((token) => ({
-          OR: [
-            { code: { contains: token, mode: "insensitive" as const } },
-            { sourceProductId: { contains: token, mode: "insensitive" as const } },
-            { name: { contains: token, mode: "insensitive" as const } },
-            { description: { contains: token, mode: "insensitive" as const } },
-            { category: { contains: token, mode: "insensitive" as const } },
-            { brand: { contains: token, mode: "insensitive" as const } },
-            { modelNo: { contains: token, mode: "insensitive" as const } },
-            { hsnCode: { contains: token, mode: "insensitive" as const } },
-          ],
-        }))
-      : [];
+  const tokenFilters = tokens.length > 0 ? tokens.map(tokenOr) : [];
 
   // Pull a wider pool when searching so relevance ranking can surface the best name hits
   // instead of the first N alphabetically.
   const fetchTake = q ? Math.min(Math.max(take * 5, 50), 2000) : take;
+  const activeWhere =
+    activeParam === "true" ? { active: true } : activeParam === "false" ? { active: false } : {};
+  const productSelect = {
+    id: true,
+    code: true,
+    name: true,
+    description: true,
+    unit: true,
+    productType: true,
+    sourceProductId: true,
+    category: true,
+    subCategory: true,
+    brand: true,
+    hsnCode: true,
+    gstTaxName: true,
+    modelNo: true,
+    partNo: true,
+    taxCategory: true,
+    basePrice: true,
+    offerPrice: true,
+    lastPrice: true,
+    lastPricedAt: true,
+    taxRate: true,
+    mrp: true,
+    openingStock: true,
+    active: true,
+    createdAt: true,
+    updatedAt: true,
+  } as const;
 
   const products = await prisma.product.findMany({
     where: {
-      AND: [
-        activeParam === "true" ? { active: true } : activeParam === "false" ? { active: false } : {},
-        ...tokenFilters,
-      ],
+      AND: [activeWhere, ...tokenFilters],
     },
-    select: {
-      id: true,
-      code: true,
-      name: true,
-      description: true,
-      unit: true,
-      productType: true,
-      sourceProductId: true,
-      category: true,
-      subCategory: true,
-      brand: true,
-      hsnCode: true,
-      gstTaxName: true,
-      modelNo: true,
-      partNo: true,
-      taxCategory: true,
-      basePrice: true,
-      offerPrice: true,
-      lastPrice: true,
-      lastPricedAt: true,
-      taxRate: true,
-      mrp: true,
-      openingStock: true,
-      active: true,
-      createdAt: true,
-      updatedAt: true,
-    },
+    select: productSelect,
     orderBy: [{ active: "desc" }, { name: "asc" }],
     take: fetchTake,
   });
 
-  const ranked = q ? rankProductsByQuery(products, q).slice(0, take) : products;
+  let ranked = q ? rankProductsByQuery(products, q).slice(0, take) : products;
+  let bestScore = 0;
+  if (q && ranked[0]) {
+    bestScore = scoreProductSearchHit(ranked[0], q, tokens);
+  }
 
-  return NextResponse.json(ranked.map(serializeProduct));
+  // AND token filter can miss useful rows; fall back to OR so the UI can show
+  // weak suggestions instead of an empty list.
+  if (q && ranked.length === 0 && tokens.length > 0) {
+    const loose = await prisma.product.findMany({
+      where: {
+        AND: [activeWhere, { OR: tokens.map(tokenOr) }],
+      },
+      select: productSelect,
+      take: fetchTake,
+    });
+    ranked = rankProductsByQuery(loose, q).slice(0, take);
+    bestScore = ranked[0] ? scoreProductSearchHit(ranked[0], q, tokens) : 0;
+  }
+
+  const serialized = ranked.map(serializeProduct);
+  if (!withMeta) return NextResponse.json(serialized);
+
+  return NextResponse.json({
+    products: serialized,
+    bestScore,
+    weak: isWeakCatalogMatch(bestScore, serialized.length),
+  });
 }
 
 export async function POST(req: NextRequest) {

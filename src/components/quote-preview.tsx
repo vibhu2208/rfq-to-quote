@@ -243,7 +243,7 @@ export function QuotePreviewModal({
             className="mb-3 w-full h-auto"
           />
 
-          <div className="flex flex-1 flex-col pl-9 pr-5 sm:pl-14 sm:pr-7">
+          <div className="flex flex-1 flex-col pb-10 pl-9 pr-5 sm:pl-14 sm:pr-7">
           <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-x-3">
             <EditableBlock
               section="buyer"
@@ -487,7 +487,7 @@ export function QuotePreviewModal({
 
           </div>
 
-          <div className="mt-auto border-t border-black py-3 pl-9 pr-5 text-[12px] leading-relaxed sm:pl-14 sm:pr-7">
+          <div className="mt-auto border-t border-black py-3 pb-8 pl-9 pr-5 text-[12px] leading-relaxed sm:pl-14 sm:pr-7">
             {bankLine ? <p>{bankLine}</p> : null}
             {contactLine ? <p className="mt-1">{contactLine}</p> : null}
             <p className="mt-1 text-right">Page 1 of 1</p>

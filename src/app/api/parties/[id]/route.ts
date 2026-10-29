@@ -6,6 +6,11 @@ import { requireUserId } from "@/lib/api/session-user";
 import { verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
 import { getStateCode } from "@/lib/accounting/states";
 import { decimalToNumber } from "@/lib/quotes";
+import {
+  partyContactOrderBy,
+  serializePartyContacts,
+  type PartyContactRecord,
+} from "@/lib/party-contacts";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -62,6 +67,7 @@ function serializeParty(party: {
     stateCode: string;
     postalCode: string;
   }>;
+  contacts?: PartyContactRecord[];
 }) {
   const billing =
     party.addresses.find((a) => a.type === "BILLING" && a.isDefault) ||
@@ -122,6 +128,7 @@ function serializeParty(party: {
         }
       : null,
     addresses: party.addresses,
+    contacts: serializePartyContacts(party.contacts),
   };
 }
 
@@ -131,7 +138,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const { id } = await params;
   const party = await prisma.party.findUnique({
     where: { id },
-    include: { addresses: true },
+    include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
   });
   if (!party) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json(serializeParty(party));
@@ -231,7 +238,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   const party = await prisma.party.findUniqueOrThrow({
     where: { id },
-    include: { addresses: true },
+    include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
   });
   return NextResponse.json(serializeParty(party));
 }
@@ -243,7 +250,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   const party = await prisma.party.update({
     where: { id },
     data: { active: false },
-    include: { addresses: true },
+    include: { addresses: true, contacts: { orderBy: partyContactOrderBy } },
   });
   return NextResponse.json(serializeParty(party));
 }

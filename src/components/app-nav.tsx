@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
+import { signOut } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 import {
   BookMarked,
@@ -122,9 +122,8 @@ function NavLink({
   );
 }
 
-export function AppNav() {
+export function AppNav({ email: userEmail }: { email: string }) {
   const pathname = usePathname();
-  const { data } = useSession();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [menuPath, setMenuPath] = useState(pathname);
@@ -161,10 +160,8 @@ export function AppNav() {
     };
   }, [mobileOpen]);
 
-  const email = data?.user?.email ?? "";
-
   return (
-    <header className="sticky top-0 z-40 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
+    <header className="sticky top-0 z-40 shrink-0 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
       <div className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
         <button
           type="button"
@@ -210,10 +207,10 @@ export function AppNav() {
               aria-haspopup="menu"
             >
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold text-background">
-                {initialsFromEmail(email)}
+                {initialsFromEmail(userEmail)}
               </span>
               <span className="hidden max-w-[10rem] truncate text-sm text-light-green md:inline">
-                {email}
+                {userEmail}
               </span>
               <ChevronDown
                 className={`h-3.5 w-3.5 text-light-green transition ${userOpen ? "rotate-180" : ""}`}
@@ -226,7 +223,7 @@ export function AppNav() {
               >
                 <div className="border-b border-dark-primary/8 px-3 py-2.5">
                   <p className="text-xs text-mid-green">Signed in</p>
-                  <p className="truncate text-sm font-medium">{email || "Account"}</p>
+                  <p className="truncate text-sm font-medium">{userEmail || "Account"}</p>
                 </div>
                 <button
                   type="button"
@@ -289,7 +286,7 @@ export function AppNav() {
               ))}
             </nav>
             <div className="border-t border-white/10 p-3">
-              <p className="truncate px-3 pb-2 text-xs text-light-green">{email}</p>
+              <p className="truncate px-3 pb-2 text-xs text-light-green">{userEmail}</p>
               <button
                 type="button"
                 onClick={() => signOut({ callbackUrl: "/login" })}

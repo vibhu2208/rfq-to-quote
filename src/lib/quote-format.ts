@@ -103,8 +103,41 @@ export function formatQuoteHsn(hsn?: string | null): string {
   return value ? value : "-";
 }
 
+export const DEFAULT_QUOTE_UNIT = "nos";
+
+export const QUOTE_UNITS = [
+  { value: "nos", label: "Nos" },
+  { value: "pcs", label: "Pcs" },
+  { value: "set", label: "Set" },
+  { value: "box", label: "Box" },
+  { value: "pkt", label: "Pkt" },
+  { value: "bag", label: "Bag" },
+  { value: "ctn", label: "Ctn" },
+  { value: "doz", label: "Doz" },
+  { value: "prs", label: "Pair" },
+  { value: "rol", label: "Rol" },
+  { value: "mtr", label: "Mtr" },
+  { value: "sqm", label: "Sqm" },
+  { value: "kgs", label: "Kgs" },
+  { value: "ltr", label: "Ltr" },
+  { value: "lot", label: "Lot" },
+] as const;
+
+export function normalizeQuoteUnit(unit?: string | null): string {
+  const raw = (unit || DEFAULT_QUOTE_UNIT).trim();
+  if (!raw) return DEFAULT_QUOTE_UNIT;
+  const match = QUOTE_UNITS.find((u) => u.value.toLowerCase() === raw.toLowerCase());
+  return match?.value || raw;
+}
+
+export function quoteUnitOptions(current?: string | null): Array<{ value: string; label: string }> {
+  const value = normalizeQuoteUnit(current);
+  if (QUOTE_UNITS.some((u) => u.value === value)) return [...QUOTE_UNITS];
+  return [...QUOTE_UNITS, { value, label: value }];
+}
+
 export function formatQuoteQty(qty: number, unit: string): string {
-  const raw = (unit || "NOS").trim();
+  const raw = (unit || DEFAULT_QUOTE_UNIT).trim();
   const u =
     /^(pc|pcs|piece|pieces)$/i.test(raw) || raw.toLowerCase() === "nos"
       ? "NOS"

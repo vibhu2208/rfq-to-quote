@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { rankProductsByQuery, scoreProductSearchHit, searchTokens } from "@/lib/product-search";
+import {
+  catalogQueryRegex,
+  isWeakCatalogMatch,
+  rankProductsByQuery,
+  scoreProductSearchHit,
+  searchTokens,
+} from "@/lib/product-search";
 import { matchProductsToRfq, matchProductsToRfqItems } from "@/lib/product-match";
 import type { Product } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -68,6 +74,18 @@ describe("product-search", () => {
       ["cctv", "camera", "2mp"]
     );
     expect(exact).toBeGreaterThan(partial);
+  });
+
+  it("builds a flexible whitespace regex from the typed requirement", () => {
+    const re = catalogQueryRegex("Dell  16 GB");
+    expect(re?.test("Dell Latitude 16 GB RAM")).toBe(true);
+    expect(re?.test("HP printer")).toBe(false);
+  });
+
+  it("flags empty or low scores as a weak catalog match", () => {
+    expect(isWeakCatalogMatch(0, 0)).toBe(true);
+    expect(isWeakCatalogMatch(40, 3)).toBe(true);
+    expect(isWeakCatalogMatch(120, 2)).toBe(false);
   });
 });
 

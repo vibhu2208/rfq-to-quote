@@ -1,130 +1,182 @@
 "use client";
 
-import type { FormEvent, ReactNode } from "react";
+import { startTransition, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Search, X } from "lucide-react";
+import { Plus, Search, Sparkles, X } from "lucide-react";
 import {
+  quoteListHasFilters,
+  quoteListQuery,
   QUOTE_LIST_STATUSES,
   type QuoteListFilters,
 } from "@/lib/quote-list";
+import { DateRangePicker } from "@/components/date-range-picker";
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="block min-w-0">
-      <span className="mb-1 block text-xs font-medium text-mid-green">{label}</span>
-      {children}
-    </label>
-  );
+const fieldClass =
+  "h-9 shrink-0 rounded-full border-0 bg-dark-secondary/[0.05] px-3 text-[13px] text-dark-primary outline-none placeholder:text-mid-green/65 focus:bg-white focus:ring-1 focus:ring-mid-green/30";
+
+function statusLabel(status: string) {
+  return status
+    .replaceAll("_", " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-const inputClass =
-  "w-full rounded-lg border border-light-green/40 bg-white/70 px-3 py-2 text-sm outline-none focus:border-mid-green";
-
-export function QuotesFilters({ filters }: { filters: QuoteListFilters }) {
+export function QuotesFilters({
+  filters,
+  total,
+  needsHelpCount,
+}: {
+  filters: QuoteListFilters;
+  total: number;
+  needsHelpCount: number;
+}) {
   const router = useRouter();
+  const [q, setQ] = useState(filters.q);
+  const [dates, setDates] = useState({ from: filters.from, to: filters.to });
+  const filtered = quoteListHasFilters({ ...filters, q, from: dates.from, to: dates.to });
 
-  function onSearch(e: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    setQ(filters.q);
+    setDates({ from: filters.from, to: filters.to });
+  }, [filters.q, filters.from, filters.to]);
+
+  function navigate(next: Partial<QuoteListFilters>) {
+    const href = quoteListQuery({
+      ...filters,
+      q: next.q ?? q,
+      from: next.from ?? dates.from,
+      to: next.to ?? dates.to,
+      client: "",
+      product: "",
+      status: next.status ?? filters.status,
+      gst: next.gst ?? filters.gst,
+      assist: next.assist ?? filters.assist,
+      page: 1,
+    });
+    startTransition(() => {
+      router.push(href);
+    });
+  }
+
+  useEffect(() => {
+    if (q === filters.q) return;
+    const t = window.setTimeout(() => navigate({ q }), 250);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce search text only
+  }, [q]);
+
+  function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const data = new FormData(e.currentTarget);
-    const params = new URLSearchParams();
-    for (const [key, raw] of data.entries()) {
-      const value = String(raw).trim();
-      if (value) params.set(key, value);
-    }
-    const qs = params.toString();
-    router.push(qs ? `/quotes?${qs}` : "/quotes");
+    navigate({ q });
+  }
+
+  function commitDates(from: string, to: string) {
+    setDates({ from, to });
+    navigate({ from, to, q });
   }
 
   return (
-    <form
-      onSubmit={onSearch}
-      className="rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]"
-    >
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Field label="General search">
+    <form onSubmit={onSubmit} autoComplete="off" className="shrink-0 px-4 py-2.5">
+      <div className="flex flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="flex shrink-0 items-center gap-2">
+          <h1 className="text-lg font-semibold tracking-tight text-dark-primary">Quotes</h1>
+          <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-xs font-medium tabular-nums text-mid-green">
+            {total}
+          </span>
+          {needsHelpCount > 0 ? (
+            <Link
+              href="/quotes?assist=1"
+              className="rounded-full bg-dark-primary/10 px-2 py-0.5 text-[11px] font-medium text-dark-primary hover:bg-dark-primary/15"
+            >
+              {needsHelpCount} assist
+            </Link>
+          ) : null}
+        </div>
+
+        <div className="relative min-w-[8rem] flex-1">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green/70"
+            strokeWidth={1.5}
+          />
           <input
             type="search"
             name="q"
-            defaultValue={filters.q}
-            placeholder="Quote no, buyer, email, phone, GSTIN…"
-            className={inputClass}
+            value={q}
+            autoComplete="off"
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search name, number, client, product…"
+            aria-label="Search quotes"
+            className="h-9 w-full rounded-full border-0 bg-dark-secondary/[0.05] pl-9 pr-3 text-sm outline-none placeholder:text-mid-green/60 focus:bg-white focus:ring-1 focus:ring-mid-green/30"
           />
-        </Field>
-        <Field label="Client">
+        </div>
+
+        <select
+          name="status"
+          value={filters.status}
+          onChange={(e) => navigate({ status: e.target.value, q })}
+          aria-label="Status"
+          className={`${fieldClass} w-[8.5rem]`}
+        >
+          <option value="">Status</option>
+          {QUOTE_LIST_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {statusLabel(s)}
+            </option>
+          ))}
+        </select>
+
+        <DateRangePicker from={dates.from} to={dates.to} onCommit={commitDates} />
+
+        <select
+          name="gst"
+          value={filters.gst}
+          onChange={(e) => navigate({ gst: e.target.value, q })}
+          aria-label="GST"
+          className={`${fieldClass} w-[6.5rem]`}
+        >
+          <option value="">GST</option>
+          <option value="yes">With GST</option>
+          <option value="no">Without GST</option>
+        </select>
+
+        <label className="inline-flex h-9 shrink-0 cursor-pointer items-center rounded-full bg-dark-secondary/[0.05] px-3 text-[13px] font-medium text-mid-green transition hover:bg-light-green/20 has-[:checked]:bg-mid-green has-[:checked]:text-background">
           <input
-            type="search"
-            name="client"
-            defaultValue={filters.client}
-            placeholder="Company or contact name"
-            className={inputClass}
+            type="checkbox"
+            name="assist"
+            value="1"
+            checked={filters.assist === "1"}
+            onChange={(e) => navigate({ assist: e.target.checked ? "1" : "", q })}
+            className="sr-only"
           />
-        </Field>
-        <Field label="Product">
-          <input
-            type="search"
-            name="product"
-            defaultValue={filters.product}
-            placeholder="Alias, description, or catalog"
-            className={inputClass}
-          />
-        </Field>
-        <Field label="Status">
-          <select name="status" defaultValue={filters.status} className={inputClass}>
-            <option value="">All statuses</option>
-            {QUOTE_LIST_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s.replaceAll("_", " ").toLowerCase()}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="From date">
-          <input type="date" name="from" defaultValue={filters.from} className={inputClass} />
-        </Field>
-        <Field label="To date">
-          <input type="date" name="to" defaultValue={filters.to} className={inputClass} />
-        </Field>
-        <Field label="GST">
-          <select name="gst" defaultValue={filters.gst} className={inputClass}>
-            <option value="">All</option>
-            <option value="yes">With GST</option>
-            <option value="no">Without GST</option>
-          </select>
-        </Field>
-        <div className="flex flex-col justify-end gap-2">
-          <label className="inline-flex items-center gap-2 text-sm text-dark-secondary">
-            <input
-              type="checkbox"
-              name="assist"
-              value="1"
-              defaultChecked={filters.assist === "1"}
-              className="rounded border-light-green/40"
-            />
-            Needs assistance
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="submit"
-              className="inline-flex items-center gap-1.5 rounded-lg bg-mid-green px-3 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
-            >
-              <Search className="h-4 w-4" strokeWidth={1.5} />
-              Search
-            </button>
-            <Link
-              href="/quotes"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-light-green/40 bg-white/70 px-3 py-2 text-sm text-dark-secondary hover:bg-white"
-            >
-              <X className="h-4 w-4" strokeWidth={1.5} />
-              Clear
-            </Link>
-          </div>
+          Assist
+        </label>
+
+        {filtered ? (
+          <Link
+            href="/quotes"
+            className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-sm text-mid-green hover:bg-light-green/15"
+          >
+            <X className="h-3.5 w-3.5" strokeWidth={1.5} />
+            Clear
+          </Link>
+        ) : null}
+
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <Link
+            href="/quotes/new"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-light-green/35 bg-white px-3.5 text-sm font-medium text-dark-secondary hover:bg-light-green/15"
+          >
+            <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+            New
+          </Link>
+          <Link
+            href="/quotes/generate"
+            className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-3.5 text-sm font-medium text-background hover:bg-dark-secondary"
+          >
+            <Sparkles className="h-3.5 w-3.5" strokeWidth={1.5} />
+            Generate
+          </Link>
         </div>
       </div>
     </form>

@@ -5,7 +5,7 @@ import { QuoteAccountingActions } from "@/components/quote-accounting-actions";
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
-import { quoteLineDetails } from "@/lib/quote-format";
+import { normalizeQuoteUnit, quoteLineDetails } from "@/lib/quote-format";
 import { format } from "date-fns";
 import type { ManualOverrides } from "@/lib/tax";
 
@@ -13,6 +13,10 @@ type Props = { params: Promise<{ id: string }> };
 
 export default async function EditQuotePage({ params }: Props) {
   const { id } = await params;
+  if (id === "new") {
+    const company = getCompanyConfig();
+    return <QuoteBuilder sellerState={company.sellerState} company={company} />;
+  }
   const quote = await prisma.quote.findUnique({
     where: { id },
     include: {
@@ -35,6 +39,7 @@ export default async function EditQuotePage({ params }: Props) {
   const initial: QuoteFormState = {
     id: quote.id,
     quoteNumber: quote.quoteNumber,
+    quoteName: quote.quoteName || "",
     buyerName: quote.buyerName,
     buyerCompany: quote.buyerCompany,
     buyerEmail: quote.buyerEmail,
@@ -83,7 +88,7 @@ export default async function EditQuotePage({ params }: Props) {
   );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-4">
       <QuoteBuilder
         initial={initial}
         sellerState={company.sellerState}

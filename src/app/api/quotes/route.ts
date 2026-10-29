@@ -12,8 +12,8 @@ const lineSchema = z.object({
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
   aliasName: z.string().optional().default(""),
-  qty: z.coerce.number().positive(),
-  unit: z.string().default("pcs"),
+  qty: z.coerce.number().nonnegative(),
+  unit: z.string().default("nos"),
   unitPrice: z.coerce.number().nonnegative(),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
@@ -39,6 +39,7 @@ const quoteSchema = z.object({
   introText: z.string().optional().default(""),
   termsText: z.string().optional().default(""),
   closingText: z.string().optional().default(""),
+  quoteName: z.string().optional().default(""),
   quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT"]).optional().default("DRAFT"),
   manualOverrides: z.record(z.string(), z.boolean()).optional().default({}),
@@ -180,6 +181,7 @@ export async function POST(req: NextRequest) {
   const quote = await prisma.quote.create({
     data: {
       quoteNumber,
+      quoteName: data.quoteName.trim(),
       status: data.status,
       buyerName: data.buyerName,
       buyerCompany: data.buyerCompany,
@@ -223,13 +225,8 @@ export async function POST(req: NextRequest) {
         })),
       },
     },
-    include: {
-      lineItems: {
-        include: { product: { select: { id: true, code: true, name: true } } },
-        orderBy: { sortOrder: "asc" },
-      },
-    },
+    select: { id: true, quoteNumber: true, status: true },
   });
 
-  return NextResponse.json(serializeQuote(quote), { status: 201 });
+  return NextResponse.json(quote, { status: 201 });
 }

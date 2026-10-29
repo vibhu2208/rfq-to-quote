@@ -1,18 +1,23 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2,
   Copy,
   Download,
   Eye,
+  Mail,
+  MessageCircle,
   Minus,
   Plus,
+  Printer,
   RotateCcw,
   Search,
   Send,
+  Sparkles,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -33,14 +38,21 @@ import {
 } from "@/components/quote-preview";
 import {
   QUOTE_CLOSING,
+  DEFAULT_QUOTE_UNIT,
   defaultQuoteTerms,
+  normalizeQuoteUnit,
   quoteIntro,
+  quoteUnitOptions,
   todayQuoteDateIso,
 } from "@/lib/quote-format";
 import {
   ClientCompanyField,
+  contactFieldsFromClient,
+  type ClientContactHit,
   type ClientHit,
 } from "@/components/client-company-field";
+import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
+import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 
 type ProductHit = {
   id: string;
@@ -73,6 +85,7 @@ type LineItem = {
 export type QuoteFormState = {
   id?: string;
   quoteNumber?: string;
+  quoteName: string;
   buyerName: string;
   buyerCompany: string;
   buyerEmail: string;
@@ -154,6 +167,7 @@ function buyerGaps(form: QuoteFormState) {
 }
 
 const emptyQuote = (): QuoteFormState => ({
+  quoteName: "",
   buyerName: "",
   buyerCompany: "",
   buyerEmail: "",
@@ -183,13 +197,63 @@ const emptyQuote = (): QuoteFormState => ({
       description: "",
       aliasName: "",
       qty: 1,
-      unit: "pcs",
+      unit: DEFAULT_QUOTE_UNIT,
       unitPrice: 0,
       taxRate: 18,
       hsnCode: "",
     },
   ],
 });
+
+function finiteAmount(n: number, fallback = 0) {
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function quoteSavePayload(
+  form: QuoteFormState,
+  calc: ReturnType<typeof calculateQuoteTotals>,
+  status?: "DRAFT" | "SENT"
+) {
+  return {
+    buyerName: form.buyerName,
+    buyerCompany: form.buyerCompany,
+    buyerEmail: form.buyerEmail,
+    buyerPhone: form.buyerPhone,
+    buyerState: form.buyerState,
+    buyerAddress: form.buyerAddress,
+    buyerGstin: form.buyerGstin.trim().toUpperCase(),
+    withGst: form.withGst,
+    showHsn: form.showHsn,
+    gstMode: form.gstMode,
+    deliveryCharge: calc.deliveryCharge,
+    discountPercent: form.discountPercent,
+    discountAmount: calc.discountAmount,
+    otherTaxAmount: calc.otherTaxAmount,
+    otherTaxLabel: form.otherTaxLabel,
+    notes: "",
+    quoteNumber: form.quoteNumber,
+    quoteName: form.quoteName,
+    introText: form.introText,
+    termsText: form.termsText,
+    closingText: form.closingText,
+    quoteDate: form.quoteDate,
+    status: status || form.status,
+    manualOverrides: form.manualOverrides,
+    subtotal: calc.subtotal,
+    gstAmount: calc.gstAmount,
+    grandTotal: calc.grandTotal,
+    lineItems: form.lineItems.map((l, i) => ({
+      productId: l.productId,
+      description: l.description,
+      aliasName: l.aliasName,
+      qty: finiteAmount(l.qty),
+      unit: normalizeQuoteUnit(l.unit),
+      unitPrice: finiteAmount(l.unitPrice),
+      taxRate: finiteAmount(l.taxRate),
+      sortOrder: i,
+    })),
+  };
+}
 
 function withDocumentDefaults(
   state: QuoteFormState,
@@ -210,11 +274,18 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   const [form, setForm] = useState<QuoteFormState>(() =>
     withDocumentDefaults(initial || emptyQuote(), company)
   );
+  const formRef = useRef(form);
+  formRef.current = form;
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [searchIdx, setSearchIdx] = useState<number | null>(null);
   const [searchQ, setSearchQ] = useState("");
   const [hits, setHits] = useState<ProductHit[]>([]);
+  const [searchWeak, setSearchWeak] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchAiLoading, setSearchAiLoading] = useState(false);
+  const [searchAiDone, setSearchAiDone] = useState(false);
+  const [searchAiError, setSearchAiError] = useState("");
   const [msg, setMsg] = useState("");
   const [sendOpen, setSendOpen] = useState(false);
   const [sendChannel, setSendChannel] = useState<QuoteSendChannel>("EMAIL");
@@ -232,6 +303,10 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   );
   const [buyerError, setBuyerError] = useState("");
   const [hsnConfirmOpen, setHsnConfirmOpen] = useState(false);
+  const [buyerContacts, setBuyerContacts] = useState<ClientContactHit[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState("");
+  const [whatsAppOpen, setWhatsAppOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
 
   const sendDefaults = useMemo(
     () =>
@@ -251,14 +326,27 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     ]
   );
 
-  function openSendModal() {
-    if (!form.id) {
-      setMsg("Save the quote before sending");
+  function openSendModal(channel: QuoteSendChannel = "EMAIL") {
+    if (!formRef.current.id) {
+      setMsg("Could not save quote before sending");
       return;
     }
-    setSendChannel(sendDefaults.suggestedChannel);
-    setSendTo(sendDefaults.suggestedTo);
-    setSendHint(sendDefaults.hint);
+    setSendChannel(channel);
+    if (channel === "EMAIL") {
+      setSendTo(
+        formRef.current.buyerEmail.trim() ||
+          sendContext?.customerEmail?.trim() ||
+          sendDefaults.suggestedTo
+      );
+      setSendHint("Sends the quotation PDF to this email.");
+    } else {
+      setSendTo(
+        formRef.current.buyerPhone.trim() ||
+          sendContext?.customerPhone?.trim() ||
+          ""
+      );
+      setSendHint("WhatsApp sending will be connected later.");
+    }
     setSendNote("");
     setSendError("");
     setSendOpen(true);
@@ -277,27 +365,52 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   }
 
   function requestPdf() {
-    if (!form.id) {
-      setMsg("Save the quote before downloading PDF");
-      return;
-    }
-    if (buyerGaps(form).length > 0) {
-      openBuyerPanel("pdf");
-      return;
-    }
-    void downloadPdf();
+    void (async () => {
+      const ok = await saveQuote();
+      if (!ok || !formRef.current.id) {
+        setMsg("Could not save quote before PDF");
+        return;
+      }
+      if (buyerGaps(formRef.current).length > 0) {
+        openBuyerPanel("pdf");
+        return;
+      }
+      await downloadPdf();
+    })();
+  }
+
+  function requestPrint() {
+    void (async () => {
+      const ok = await saveQuote();
+      if (!ok || !formRef.current.id) {
+        setMsg("Could not save quote before printing");
+        return;
+      }
+      if (buyerGaps(formRef.current).length > 0) {
+        openBuyerPanel("pdf");
+        return;
+      }
+      try {
+        await printQuotePdf(formRef.current.id);
+      } catch {
+        setMsg("Print failed");
+      }
+    })();
   }
 
   function requestSend() {
-    if (!form.id) {
-      setMsg("Save the quote before sending");
-      return;
-    }
-    if (buyerGaps(form).length > 0) {
-      openBuyerPanel("send");
-      return;
-    }
-    openSendModal();
+    void (async () => {
+      const ok = await saveQuote();
+      if (!ok || !formRef.current.id) {
+        setMsg("Could not save quote before sending");
+        return;
+      }
+      if (buyerGaps(formRef.current).length > 0) {
+        openBuyerPanel("send");
+        return;
+      }
+      openSendModal();
+    })();
   }
 
   async function confirmBuyer() {
@@ -317,18 +430,93 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     }
   }
 
+  function resetCatalogSearch() {
+    setSearchIdx(null);
+    setSearchQ("");
+    setHits([]);
+    setSearchWeak(false);
+    setSearchLoading(false);
+    setSearchAiLoading(false);
+    setSearchAiDone(false);
+    setSearchAiError("");
+  }
+
   useEffect(() => {
     if (searchIdx == null || searchQ.trim().length < 1) {
-      const timeout = setTimeout(() => setHits([]), 0);
+      const timeout = setTimeout(() => {
+        setHits([]);
+        setSearchWeak(false);
+        setSearchLoading(false);
+      }, 0);
       return () => clearTimeout(timeout);
     }
+    let cancelled = false;
+    const query = searchQ.trim();
     const t = setTimeout(async () => {
-      const res = await fetch(`/api/products?q=${encodeURIComponent(searchQ)}&active=true&take=25`);
-      const data = await res.json();
-      setHits(Array.isArray(data) ? data : []);
+      setSearchLoading(true);
+      setSearchAiDone(false);
+      setSearchAiError("");
+      try {
+        const res = await fetch(
+          `/api/products?q=${encodeURIComponent(query)}&active=true&take=25&withMeta=1`
+        );
+        const data = await res.json();
+        if (cancelled) return;
+        if (Array.isArray(data)) {
+          setHits(data);
+          setSearchWeak(false);
+        } else if (data && Array.isArray(data.products)) {
+          setHits(data.products);
+          setSearchWeak(Boolean(data.weak));
+        } else {
+          setHits([]);
+          setSearchWeak(true);
+        }
+      } catch {
+        if (!cancelled) {
+          setHits([]);
+          setSearchWeak(true);
+        }
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
     }, 200);
-    return () => clearTimeout(t);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
   }, [searchQ, searchIdx]);
+
+  async function searchCatalogWithAi() {
+    const query = searchQ.trim();
+    if (query.length < 2 || searchAiLoading) return;
+    setSearchAiLoading(true);
+    setSearchAiError("");
+    try {
+      const res = await fetch("/api/products/ai-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ q: query }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (searchQ.trim() !== query) return;
+      if (!res.ok) {
+        setSearchAiError(
+          typeof data.error === "string" ? data.error : "AI search failed"
+        );
+        return;
+      }
+      setHits(Array.isArray(data.products) ? data.products : []);
+      setSearchAiDone(true);
+      setSearchWeak(false);
+    } catch {
+      if (searchQ.trim() === query) {
+        setSearchAiError("AI search failed");
+      }
+    } finally {
+      setSearchAiLoading(false);
+    }
+  }
 
   const calc = useMemo(() => {
     return calculateQuoteTotals({
@@ -357,6 +545,114 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     });
   }, [form, sellerState]);
 
+  const calcRef = useRef(calc);
+  const lastSavedJsonRef = useRef<string | null>(null);
+  const baselineJsonRef = useRef<string | null>(null);
+  const saveChainRef = useRef(Promise.resolve(true));
+  calcRef.current = calc;
+
+  const saveQuote = useCallback((status?: "DRAFT" | "SENT") => {
+    const run = async () => {
+      setSaving(true);
+      try {
+        for (;;) {
+          const snapshot = formRef.current;
+          const payload = quoteSavePayload(snapshot, calcRef.current, status);
+          const json = JSON.stringify(payload);
+          if (snapshot.id && json === lastSavedJsonRef.current && !status) {
+            return true;
+          }
+
+          const isEdit = Boolean(snapshot.id);
+          const res = await fetch(isEdit ? `/api/quotes/${snapshot.id}` : "/api/quotes", {
+            method: isEdit ? "PUT" : "POST",
+            headers: { "Content-Type": "application/json" },
+            body: json,
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            setMsg(typeof err.error === "string" ? err.error : "Save failed");
+            return false;
+          }
+
+          const saved = await res.json();
+          lastSavedJsonRef.current = json;
+          const nextStatus: QuoteFormState["status"] =
+            saved.status === "SENT" ? "SENT" : snapshot.status;
+          const next: QuoteFormState = {
+            ...formRef.current,
+            id: saved.id || snapshot.id,
+            quoteNumber: saved.quoteNumber || snapshot.quoteNumber,
+            status: nextStatus,
+          };
+          formRef.current = next;
+          if (
+            next.id !== snapshot.id ||
+            next.quoteNumber !== snapshot.quoteNumber ||
+            next.status !== snapshot.status
+          ) {
+            setForm(next);
+          }
+          if (!isEdit && next.id && window.location.pathname.startsWith("/quotes/new")) {
+            window.history.replaceState(window.history.state, "", `/quotes/${next.id}`);
+          }
+
+          const latest = JSON.stringify(
+            quoteSavePayload(formRef.current, calcRef.current, status)
+          );
+          if (latest === json) return true;
+        }
+      } catch {
+        setMsg("Save failed");
+        return false;
+      } finally {
+        setSaving(false);
+      }
+    };
+
+    const next = saveChainRef.current.then(run, run);
+    saveChainRef.current = next.then(
+      () => true,
+      () => true
+    );
+    return next;
+  }, []);
+
+  useEffect(() => {
+    const json = JSON.stringify(quoteSavePayload(form, calc, form.status));
+    if (baselineJsonRef.current === null) {
+      baselineJsonRef.current = json;
+      return;
+    }
+    if (json === baselineJsonRef.current || json === lastSavedJsonRef.current) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void saveQuote();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [form, calc, saveQuote]);
+
+  useEffect(() => {
+    const flush = () => {
+      const json = JSON.stringify(
+        quoteSavePayload(formRef.current, calcRef.current, formRef.current.status)
+      );
+      if (json === baselineJsonRef.current || json === lastSavedJsonRef.current) return;
+      void saveQuote();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+  }, [saveQuote]);
+
   function updateLine(idx: number, patch: Partial<LineItem>) {
     setForm((f) => {
       const lineItems = f.lineItems.map((l, i) => (i === idx ? { ...l, ...patch } : l));
@@ -375,7 +671,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           description: "",
           aliasName: "",
           qty: 1,
-          unit: "pcs",
+          unit: DEFAULT_QUOTE_UNIT,
           unitPrice: 0,
           taxRate: 18,
           hsnCode: "",
@@ -407,7 +703,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       catalogName: p.name,
       description: p.description || "",
       aliasName: p.name,
-      unit: p.unit,
+      unit: normalizeQuoteUnit(p.unit),
       unitPrice:
         (p.sellPrice && p.sellPrice > 0
           ? p.sellPrice
@@ -419,9 +715,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       taxRate: p.taxRate,
       hsnCode: p.hsnCode || "",
     });
-    setSearchIdx(null);
-    setSearchQ("");
-    setHits([]);
+    resetCatalogSearch();
   }
 
   function setOverride(field: keyof ManualOverrides, value: number) {
@@ -493,14 +787,38 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     }
   }
 
+  function applyContact(contact: ClientContactHit | null, fallback?: ClientHit | null) {
+    const fields = contact
+      ? { name: contact.name, email: contact.email, phone: contact.phone }
+      : fallback
+        ? contactFieldsFromClient(fallback)
+        : null;
+    if (!fields) return;
+    setForm((f) => ({
+      ...f,
+      buyerName: fields.name || f.buyerName,
+      buyerEmail: fields.email || f.buyerEmail,
+      buyerPhone: fields.phone || f.buyerPhone,
+    }));
+  }
+
   async function applySelectedClient(client: ClientHit | null) {
-    if (!client) return;
+    if (!client) {
+      setBuyerContacts([]);
+      setSelectedContactId("");
+      return;
+    }
+    const initialContacts = client.contacts || [];
+    const initial = initialContacts.find((c) => c.isPrimary) || initialContacts[0] || null;
+    setBuyerContacts(initialContacts);
+    setSelectedContactId(initial?.id || "");
+    const fields = contactFieldsFromClient(client);
     setForm((f) => ({
       ...f,
       buyerCompany: client.legalName || client.tradeName || f.buyerCompany,
-      buyerName: client.managedByName || f.buyerName,
-      buyerEmail: client.email || f.buyerEmail,
-      buyerPhone: client.phone || f.buyerPhone,
+      buyerName: fields.name || f.buyerName,
+      buyerEmail: fields.email || f.buyerEmail,
+      buyerPhone: fields.phone || f.buyerPhone,
       buyerGstin: (client.gstin || f.buyerGstin).toUpperCase(),
     }));
     try {
@@ -526,12 +844,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           })
         : "";
       const state = matchIndianState(a?.state);
+      const contacts = Array.isArray(full.contacts) ? (full.contacts as ClientContactHit[]) : [];
+      const primary = contacts.find((c) => c.isPrimary) || contacts[0] || null;
+      setBuyerContacts(contacts);
+      setSelectedContactId(primary?.id || "");
+      const next = contactFieldsFromClient(full);
       setForm((f) => ({
         ...f,
         buyerCompany: full.legalName || f.buyerCompany,
-        buyerName: full.managedByName || f.buyerName,
-        buyerEmail: full.email || f.buyerEmail,
-        buyerPhone: full.phone || f.buyerPhone,
+        buyerName: next.name || f.buyerName,
+        buyerEmail: next.email || f.buyerEmail,
+        buyerPhone: next.phone || f.buyerPhone,
         buyerGstin: (full.gstin || f.buyerGstin || "").toUpperCase(),
         buyerAddress: address || f.buyerAddress,
         buyerState: state || f.buyerState,
@@ -541,103 +864,26 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     }
   }
 
-  async function saveQuote(status?: "DRAFT" | "SENT") {
-    setSaving(true);
-    setMsg("");
-
-    const payload = {
-      buyerName: form.buyerName,
-      buyerCompany: form.buyerCompany,
-      buyerEmail: form.buyerEmail,
-      buyerPhone: form.buyerPhone,
-      buyerState: form.buyerState,
-      buyerAddress: form.buyerAddress,
-      buyerGstin: form.buyerGstin.trim().toUpperCase(),
-      withGst: form.withGst,
-      showHsn: form.showHsn,
-      gstMode: form.gstMode,
-      deliveryCharge: calc.deliveryCharge,
-      discountPercent: form.discountPercent,
-      discountAmount: calc.discountAmount,
-      otherTaxAmount: calc.otherTaxAmount,
-      otherTaxLabel: form.otherTaxLabel,
-      notes: "",
-      quoteNumber: form.quoteNumber,
-      introText: form.introText,
-      termsText: form.termsText,
-      closingText: form.closingText,
-      quoteDate: form.quoteDate,
-      status: status || form.status,
-      manualOverrides: form.manualOverrides,
-      subtotal: calc.subtotal,
-      gstAmount: calc.gstAmount,
-      grandTotal: calc.grandTotal,
-      lineItems: form.lineItems.map((l, i) => ({
-        productId: l.productId,
-        description: l.description,
-        aliasName: l.aliasName,
-        qty: l.qty,
-        unit: l.unit,
-        unitPrice: l.unitPrice,
-        taxRate: l.taxRate,
-        sortOrder: i,
-      })),
-    };
-
-    const isEdit = Boolean(form.id);
-    const res = await fetch(isEdit ? `/api/quotes/${form.id}` : "/api/quotes", {
-      method: isEdit ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    setSaving(false);
-
-    if (!res.ok) {
-      const err = await res.json();
-      setMsg(typeof err.error === "string" ? err.error : "Save failed");
-      return false;
-    }
-
-    const saved = await res.json();
-    setMsg("Saved");
-    if (!isEdit) {
-      router.push(`/quotes/${saved.id}`);
-      router.refresh();
-    } else {
-      setForm((f) => ({ ...f, quoteNumber: saved.quoteNumber, status: saved.status }));
-      router.refresh();
-    }
-    return true;
-  }
-
   async function onSave(e: FormEvent, status?: "DRAFT" | "SENT") {
     e.preventDefault();
     await saveQuote(status);
   }
 
   async function downloadPdf() {
-    if (!form.id) {
-      setMsg("Save the quote before downloading PDF");
-      return;
-    }
     const saved = await saveQuote();
-    if (!saved) return;
-    const res = await fetch(`/api/quotes/${form.id}/pdf`);
-    if (!res.ok) {
-      setMsg("PDF generation failed");
+    const id = formRef.current.id;
+    if (!saved || !id) {
+      setMsg("Could not save quote before PDF");
       return;
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${form.quoteNumber || "quote"}.pdf`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      await downloadQuotePdf(id, formRef.current.quoteNumber || "quote");
+    } catch {
+      setMsg("PDF generation failed");
+    }
   }
 
   async function sendQuote() {
-    if (!form.id) return;
     const to = sendTo.trim();
     if (!to) {
       setSendError("Enter who to send this quote to.");
@@ -647,56 +893,15 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     setSendError("");
     setMsg("");
 
-    // Persist latest buyer fields before sending
-    const saveRes = await fetch(`/api/quotes/${form.id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        buyerName: form.buyerName,
-        buyerCompany: form.buyerCompany,
-        buyerEmail: form.buyerEmail,
-        buyerPhone: form.buyerPhone,
-        buyerState: form.buyerState,
-        buyerAddress: form.buyerAddress,
-        buyerGstin: form.buyerGstin.trim().toUpperCase(),
-        withGst: form.withGst,
-        showHsn: form.showHsn,
-        gstMode: form.gstMode,
-        deliveryCharge: calc.deliveryCharge,
-        discountPercent: form.discountPercent,
-        discountAmount: calc.discountAmount,
-        otherTaxAmount: calc.otherTaxAmount,
-        otherTaxLabel: form.otherTaxLabel,
-        notes: "",
-        quoteNumber: form.quoteNumber,
-        introText: form.introText,
-        termsText: form.termsText,
-        closingText: form.closingText,
-        quoteDate: form.quoteDate,
-        status: form.status,
-        manualOverrides: form.manualOverrides,
-        subtotal: calc.subtotal,
-        gstAmount: calc.gstAmount,
-        grandTotal: calc.grandTotal,
-        lineItems: form.lineItems.map((l, i) => ({
-          productId: l.productId,
-          description: l.description,
-          aliasName: l.aliasName,
-          qty: l.qty,
-          unit: l.unit,
-          unitPrice: l.unitPrice,
-          taxRate: l.taxRate,
-          sortOrder: i,
-        })),
-      }),
-    });
-    if (!saveRes.ok) {
+    const savedOk = await saveQuote();
+    const id = formRef.current.id;
+    if (!savedOk || !id) {
       setSending(false);
       setSendError("Could not save quote before sending");
       return;
     }
 
-    const res = await fetch(`/api/quotes/${form.id}/send`, {
+    const res = await fetch(`/api/quotes/${id}/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -778,6 +983,28 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
             onSelectClient={(client) => void applySelectedClient(client)}
           />
         </label>
+        {buyerContacts.length > 0 ? (
+          <label className="block text-xs">
+            <span className="mb-0.5 block text-mid-green">Point of contact</span>
+            <select
+              value={selectedContactId}
+              onChange={(e) => {
+                const id = e.target.value;
+                setSelectedContactId(id);
+                applyContact(buyerContacts.find((c) => c.id === id) || null);
+              }}
+              className="w-full rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
+            >
+              {buyerContacts.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {c.designation ? ` · ${c.designation}` : ""}
+                  {c.isPrimary ? " (primary)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {(
           [
             ["buyerName", "Contact"],
@@ -966,72 +1193,131 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     );
   }
 
+  const saveLabel = saving
+    ? "Saving…"
+    : msg === "Save failed" || msg.startsWith("Could not save")
+      ? "Save failed"
+      : form.id
+        ? "Saved"
+        : "Unsaved";
+  const saveTone =
+    saveLabel === "Save failed"
+      ? "bg-dark-primary/10 text-dark-primary"
+      : saveLabel === "Saving…"
+        ? "bg-light-green/30 text-dark-secondary"
+        : "bg-light-green/25 text-dark-secondary";
+  const iconBtn =
+    "inline-flex h-8 w-8 items-center justify-center rounded-md border border-light-green/35 bg-white text-mid-green hover:bg-light-green/15 disabled:opacity-60";
+  const field =
+    "h-8 rounded-md border border-light-green/35 bg-background px-2 text-sm outline-none focus:border-mid-green";
+  const cellInput = `${field} w-full`;
+  const numInput =
+    `${cellInput} text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
+  const chargeInput =
+    `${field} text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
+
   return (
-    <form onSubmit={(e) => onSave(e)} className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">
+    <form onSubmit={(e) => onSave(e)} className="space-y-3 pb-8">
+      <header className="flex flex-wrap items-center gap-2 rounded-xl bg-white/80 px-3 py-2 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+        <h1 className="shrink-0 text-lg font-semibold tracking-tight text-dark-primary">
           {form.id ? form.quoteNumber || "Edit quote" : "New quote"}
         </h1>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => openBuyerPanel("edit")}
-            className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
-          >
-            <Building2 className="h-4 w-4 shrink-0 text-mid-green" strokeWidth={1.5} />
-            <span className="truncate">
-              {form.buyerCompany.trim() || "Add buyer details"}
+        <input
+          value={form.quoteName}
+          onChange={(e) => setForm((f) => ({ ...f, quoteName: e.target.value }))}
+          placeholder="Quote name"
+          aria-label="Quote name"
+          className="h-8 min-w-[10rem] flex-1 rounded-md border border-light-green/30 bg-background px-2.5 text-sm outline-none placeholder:text-mid-green/55 focus:border-mid-green sm:max-w-xs"
+        />
+        <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium capitalize text-dark-secondary">
+          {form.status.toLowerCase()}
+        </span>
+        <span
+          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${saveTone}`}
+          aria-live="polite"
+        >
+          {saveLabel}
+        </span>
+        <button
+          type="button"
+          onClick={() => openBuyerPanel("edit")}
+          className="inline-flex h-8 max-w-[18rem] items-center gap-1.5 rounded-md border border-light-green/35 bg-white px-2 text-sm hover:bg-light-green/15"
+        >
+          <Building2 className="h-3.5 w-3.5 shrink-0 text-mid-green" strokeWidth={1.5} />
+          <span className="truncate">
+            {form.buyerCompany.trim() || "Add buyer"}
+          </span>
+          {buyerGaps(form).length > 0 ? (
+            <span className="shrink-0 rounded-full bg-dark-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-dark-primary">
+              Incomplete
             </span>
-            {buyerGaps(form).length > 0 ? (
-              <span className="rounded-full bg-mid-green/15 px-2 py-0.5 text-[11px] text-mid-green">
-                Incomplete
-              </span>
-            ) : null}
-          </button>
+          ) : null}
+        </button>
+        <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
             onClick={() => {
               setPreviewSection("buyer");
               setPreviewOpen(true);
             }}
-            className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-mid-green px-2.5 text-sm font-medium text-background hover:bg-dark-secondary"
             title="Preview quote"
           >
-            <Eye className="h-4 w-4 text-mid-green" strokeWidth={1.5} />
+            <Eye className="h-3.5 w-3.5" strokeWidth={1.5} />
             Preview
           </button>
-          {form.id ? (
-            <button
-              type="button"
-              onClick={requestPdf}
-              className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
-            >
-              <Download className="h-4 w-4 text-mid-green" strokeWidth={1.5} />
-              PDF
-            </button>
-          ) : null}
-          <button
-            type="submit"
-            disabled={saving || sending}
-            className="rounded-lg border border-mid-green/40 px-4 py-2 text-sm font-medium text-mid-green hover:bg-light-green/20 disabled:opacity-60"
-          >
-            {saving ? "Saving…" : "Save draft"}
+          <button type="button" onClick={requestPdf} className={iconBtn} title="Download PDF" aria-label="Download PDF">
+            <Download className="h-4 w-4" strokeWidth={1.5} />
           </button>
           <button
             type="button"
             disabled={saving || sending}
             onClick={requestSend}
-            className="inline-flex items-center gap-2 rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+            className={iconBtn}
+            title="Email"
+            aria-label="Email"
           >
-            <Send className="h-4 w-4" strokeWidth={1.5} />
-            Send quote
+            <Mail className="h-4 w-4" strokeWidth={1.5} />
           </button>
+          <button type="button" onClick={requestPrint} className={iconBtn} title="Print" aria-label="Print">
+            <Printer className="h-4 w-4" strokeWidth={1.5} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setWhatsAppOpen(true)}
+            className={iconBtn}
+            title="WhatsApp (coming soon)"
+            aria-label="WhatsApp"
+          >
+            <MessageCircle className="h-4 w-4" strokeWidth={1.5} />
+          </button>
+          {form.id ? (
+            <button
+              type="button"
+              onClick={() => setAttachOpen(true)}
+              className={iconBtn}
+              title="Attach note, screenshot, or file"
+              aria-label="Upload"
+            >
+              <Upload className="h-4 w-4" strokeWidth={1.5} />
+            </button>
+          ) : null}
         </div>
-      </div>
+      </header>
 
       {msg ? <p className="text-sm text-mid-green">{msg}</p> : null}
 
       {renderPreviewModal()}
+
+      {form.id ? (
+        <QuoteAttachmentsDialog
+          quoteId={form.id}
+          quoteNumber={form.quoteNumber || "Quote"}
+          quoteName={form.quoteName}
+          open={attachOpen}
+          onClose={() => setAttachOpen(false)}
+        />
+      ) : null}
 
       {sendOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
@@ -1171,6 +1457,40 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         </div>
       ) : null}
 
+      {whatsAppOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <h2 className="text-lg font-semibold">WhatsApp</h2>
+              <button
+                type="button"
+                onClick={() => setWhatsAppOpen(false)}
+                className="rounded-lg p-1 hover:bg-light-green/20"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5 text-mid-green" />
+              </button>
+            </div>
+            <p className="mt-3 text-sm text-mid-green">
+              WhatsApp sending will be connected later. Use Email to send this quote for now.
+            </p>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setWhatsAppOpen(false)}
+                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {buyerOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
           <div
@@ -1274,12 +1594,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         </div>
       ) : null}
 
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(19rem,24rem)]">
-            <section className="min-w-0 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-medium text-mid-green">Line items</h2>
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="inline-flex items-center gap-1.5 text-xs sm:text-sm">
+      <div className="space-y-3">
+            <section className="min-w-0 overflow-hidden rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+              <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-1.5">
+                <h2 className="text-sm font-semibold text-dark-primary">
+                  Line items
+                  <span className="ml-1.5 font-normal text-mid-green">
+                    {form.lineItems.length}
+                  </span>
+                </h2>
+                <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                  <label className="inline-flex items-center gap-1.5 text-xs">
                     <input
                       type="checkbox"
                       checked={form.withGst}
@@ -1287,16 +1612,16 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                         setForm((f) => ({ ...f, withGst: e.target.checked }))
                       }
                     />
-                    With GST
+                    GST
                   </label>
                   {form.showHsn ? null : (
                     <button
                       type="button"
                       onClick={() => setForm((f) => ({ ...f, showHsn: true }))}
-                      className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-xs text-foreground hover:bg-pale-green/40 sm:text-sm"
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
                     >
-                      <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
-                      Add HSN
+                      <Plus className="h-3 w-3" strokeWidth={1.5} />
+                      HSN
                     </button>
                   )}
                   <select
@@ -1307,7 +1632,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                         gstMode: e.target.value as QuoteFormState["gstMode"],
                       }))
                     }
-                    className="rounded-lg border border-light-green/40 bg-background px-2 py-1.5 text-xs sm:text-sm"
+                    className="h-7 rounded-md border border-light-green/40 bg-background px-1.5 text-xs"
                   >
                     <option value="AUTO">GST auto</option>
                     <option value="CGST_SGST">CGST + SGST</option>
@@ -1316,91 +1641,135 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                   <button
                     type="button"
                     onClick={copyProductNamesToAliases}
-                    className="inline-flex items-center gap-1 rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-xs text-foreground hover:bg-pale-green/40 sm:text-sm"
-                    title="Copy each product name into Alias name"
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                    title="Copy each product name into the quote name"
                   >
-                    <Copy className="h-3.5 w-3.5" strokeWidth={1.5} />
-                    Use product names
+                    <Copy className="h-3 w-3" strokeWidth={1.5} />
+                    Use names
                   </button>
                   <button
                     type="button"
                     onClick={addLine}
-                    className="inline-flex items-center gap-1 rounded-lg bg-mid-green/10 px-2.5 py-1.5 text-xs text-mid-green hover:bg-mid-green/20 sm:text-sm"
+                    className="inline-flex h-7 items-center gap-1 rounded-md bg-mid-green px-2 text-xs font-medium text-background hover:bg-dark-secondary"
                   >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                    <Plus className="h-3 w-3" strokeWidth={1.5} />
                     Add
                   </button>
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[52rem] text-left text-sm">
-                  <thead className="text-mid-green">
+              <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col />
+                    <col />
+                    {form.showHsn ? <col className="w-[6.75rem]" /> : null}
+                    <col className="w-[4.25rem]" />
+                    <col className="w-[4.75rem]" />
+                    <col className="w-[6.25rem]" />
+                    <col className="w-[3.75rem]" />
+                    <col className="w-[6.5rem]" />
+                    <col className="w-8" />
+                  </colgroup>
+                  <thead className="bg-dark-secondary/[0.04] text-[10px] uppercase tracking-wide text-mid-green">
                     <tr>
-                      <th className="pb-2 font-medium">Product</th>
-                      <th className="min-w-[12rem] pb-2 font-medium">Description</th>
-                      <th className="w-28 pb-2 font-medium">Alias</th>
+                      <th className="px-2 py-1.5 font-medium">Item</th>
+                      <th className="px-2 py-1.5 font-medium">Description</th>
                       {form.showHsn ? (
-                        <th className="w-24 pb-2 font-medium">
+                        <th className="px-1.5 py-1.5 font-medium">
                           <span className="inline-flex items-center gap-1">
                             HSN
                             <button
                               type="button"
                               onClick={() => setHsnConfirmOpen(true)}
-                              className="inline-flex h-5 w-5 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
                               title="Remove HSN column from quotation"
                               aria-label="Remove HSN column"
                             >
-                              <Minus className="h-3 w-3" strokeWidth={2.5} />
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
                             </button>
                           </span>
                         </th>
                       ) : null}
-                      <th className="w-16 pb-2 font-medium">Qty</th>
-                      <th className="w-16 pb-2 font-medium">Unit</th>
-                      <th className="w-28 pb-2 font-medium">Price</th>
-                      <th className="w-16 pb-2 font-medium">Tax%</th>
-                      <th className="w-32 pb-2 text-right font-medium">Total</th>
-                      <th className="w-8 pb-2"></th>
+                      <th className="px-1.5 py-1.5 font-medium">Qty</th>
+                      <th className="px-1.5 py-1.5 font-medium">Unit</th>
+                      <th className="px-1.5 py-1.5 font-medium">Price</th>
+                      <th className="px-1.5 py-1.5 font-medium">Tax%</th>
+                      <th className="px-2 py-1.5 text-right font-medium">Total</th>
+                      <th className="px-1 py-1.5"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {form.lineItems.map((line, idx) => (
                       <tr
                         key={line.key}
-                        className={idx % 2 === 1 ? "bg-light-green/10" : undefined}
+                        className="border-t border-light-green/15 hover:bg-light-green/10"
                       >
-                        <td className="py-2 pr-2 align-top">
+                        <td className="px-2 py-1.5 align-top">
                           <div className="relative">
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => {
+                                  resetCatalogSearch();
                                   setSearchIdx(idx);
-                                  setSearchQ("");
                                 }}
-                                className="inline-flex h-[2.125rem] w-[2.125rem] shrink-0 items-center justify-center rounded-lg border border-light-green/40 text-mid-green hover:bg-light-green/20"
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-light-green/40 text-mid-green hover:bg-light-green/20"
                                 title="Search catalog"
                                 aria-label="Search catalog"
                               >
-                                <Search className="h-4 w-4" strokeWidth={1.5} />
+                                <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
                               </button>
-                              <span
-                                className="min-w-0 flex-1 truncate text-xs text-mid-green"
-                                title={line.catalogName || undefined}
-                              >
-                                {line.catalogName || "Search catalog"}
-                              </span>
+                              <input
+                                value={line.aliasName}
+                                onChange={(e) =>
+                                  updateLine(idx, { aliasName: e.target.value })
+                                }
+                                className={cellInput}
+                                placeholder="Name on quote"
+                                title={
+                                  line.catalogName
+                                    ? `On quote · catalog: ${line.catalogName}`
+                                    : "Shown as the product name on the quotation"
+                                }
+                              />
                             </div>
                             {searchIdx === idx ? (
-                              <div className="absolute left-0 right-0 z-20 mt-1 min-w-[240px] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
+                              <div className="absolute left-0 z-20 mt-1 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
                                 <input
                                   autoFocus
                                   value={searchQ}
-                                  onChange={(e) => setSearchQ(e.target.value)}
+                                  onChange={(e) => {
+                                    setSearchQ(e.target.value);
+                                    setSearchAiDone(false);
+                                    setSearchAiError("");
+                                  }}
                                   placeholder="Search code or name…"
                                   className="mb-2 w-full rounded border border-light-green/40 px-2 py-1.5 text-sm outline-none"
                                 />
+                                {searchWeak && searchQ.trim() && !searchAiDone && !searchLoading ? (
+                                  <div className="mb-2 rounded-md border border-amber-200/80 bg-amber-50 px-2 py-1.5 text-xs text-amber-950">
+                                    <p>
+                                      Catalog match is weak — these may not be the right products.
+                                    </p>
+                                    <button
+                                      type="button"
+                                      disabled={searchAiLoading || searchQ.trim().length < 2}
+                                      onClick={() => void searchCatalogWithAi()}
+                                      className="mt-1.5 inline-flex items-center gap-1.5 rounded-md bg-mid-green px-2 py-1 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+                                    >
+                                      <Sparkles className="h-3 w-3" strokeWidth={2} />
+                                      {searchAiLoading ? "Searching with AI…" : "Search with AI"}
+                                    </button>
+                                  </div>
+                                ) : null}
+                                {searchAiError ? (
+                                  <p className="mb-2 px-1 text-xs text-red-700">{searchAiError}</p>
+                                ) : null}
+                                {searchAiDone ? (
+                                  <p className="mb-1 px-1 text-[11px] text-mid-green">
+                                    AI suggestions for this requirement
+                                  </p>
+                                ) : null}
                                 <div className="max-h-40 overflow-y-auto">
                                   {hits.map((h) => (
                                     <button
@@ -1416,15 +1785,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                                       </span>
                                     </button>
                                   ))}
-                                  {searchQ && hits.length === 0 ? (
+                                  {searchLoading || searchAiLoading ? (
+                                    <p className="px-2 py-2 text-xs text-mid-green">Searching…</p>
+                                  ) : searchQ && hits.length === 0 ? (
                                     <p className="px-2 py-2 text-xs text-mid-green">
-                                      No matches
+                                      {searchAiDone ? "AI found no catalog matches" : "No matches"}
                                     </p>
                                   ) : null}
                                 </div>
                                 <button
                                   type="button"
-                                  onClick={() => setSearchIdx(null)}
+                                  onClick={resetCatalogSearch}
                                   className="mt-1 text-xs text-mid-green"
                                 >
                                   Close
@@ -1433,42 +1804,31 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             ) : null}
                           </div>
                         </td>
-                        <td className="py-2 pr-2 align-top">
+                        <td className="px-2 py-1.5 align-top">
                           <input
                             value={line.description}
                             onChange={(e) =>
                               updateLine(idx, { description: e.target.value })
                             }
-                            className="w-full min-w-[12rem] rounded-lg border border-light-green/40 bg-background px-2 py-1.5 outline-none focus:border-mid-green"
+                            className={cellInput}
                             placeholder="Description"
                             title="Fetched from the product; edit as needed for this quote"
                           />
                         </td>
-                        <td className="w-28 py-2 pr-2 align-top">
-                          <input
-                            value={line.aliasName}
-                            onChange={(e) =>
-                              updateLine(idx, { aliasName: e.target.value })
-                            }
-                            className="w-28 max-w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none focus:border-mid-green"
-                            placeholder="On quote"
-                            title="Shown as the product name on the quotation"
-                          />
-                        </td>
                         {form.showHsn ? (
-                          <td className="w-24 py-2 pr-2 align-top">
+                          <td className="px-1.5 py-1.5 align-top">
                             <input
                               value={line.hsnCode || ""}
                               onChange={(e) =>
                                 updateLine(idx, { hsnCode: e.target.value })
                               }
-                              className="w-24 max-w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none focus:border-mid-green"
+                              className={`${cellInput} px-1 font-mono text-xs`}
                               placeholder="—"
                               title="HSN shown on the quotation"
                             />
                           </td>
                         ) : null}
-                        <td className="py-2 pr-1 align-top">
+                        <td className="px-1.5 py-1.5 align-top">
                           <input
                             type="number"
                             min={0}
@@ -1477,19 +1837,26 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             onChange={(e) =>
                               updateLine(idx, { qty: Number(e.target.value) })
                             }
-                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                            className={numInput}
                           />
                         </td>
-                        <td className="py-2 pr-1 align-top">
-                          <input
-                            value={line.unit}
+                        <td className="px-1.5 py-1.5 align-top">
+                          <select
+                            value={normalizeQuoteUnit(line.unit)}
                             onChange={(e) =>
                               updateLine(idx, { unit: e.target.value })
                             }
-                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
-                          />
+                            className={`${cellInput} px-1`}
+                            title="Unit"
+                          >
+                            {quoteUnitOptions(line.unit).map((u) => (
+                              <option key={u.value} value={u.value}>
+                                {u.label}
+                              </option>
+                            ))}
+                          </select>
                         </td>
-                        <td className="py-2 pr-1 align-top">
+                        <td className="px-1.5 py-1.5 align-top">
                           <input
                             type="number"
                             min={0}
@@ -1498,10 +1865,10 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             onChange={(e) =>
                               updateLine(idx, { unitPrice: Number(e.target.value) })
                             }
-                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                            className={numInput}
                           />
                         </td>
-                        <td className="py-2 pr-1 align-top">
+                        <td className="px-1.5 py-1.5 align-top">
                           <input
                             type="number"
                             min={0}
@@ -1510,13 +1877,13 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             onChange={(e) =>
                               updateLine(idx, { taxRate: Number(e.target.value) })
                             }
-                            className="w-full rounded-lg border border-light-green/40 bg-background px-1.5 py-1.5 outline-none"
+                            className={numInput}
                           />
                         </td>
-                        <td className="w-32 py-2 pr-1 text-right align-top text-xs tabular-nums sm:text-sm">
+                        <td className="px-2 py-1.5 text-right align-middle text-sm font-medium tabular-nums text-dark-primary">
                           {formatMoney(calc.lineTotals[idx] ?? 0)}
                         </td>
-                        <td className="py-2 align-top">
+                        <td className="px-1 py-1.5 align-middle">
                           <button
                             type="button"
                             onClick={() => removeLine(idx)}
@@ -1530,176 +1897,140 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     ))}
                   </tbody>
                 </table>
+
+              <div className="flex flex-wrap items-end justify-between gap-3 border-t border-light-green/20 px-3 py-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">Discount %</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={form.discountPercent}
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          discountPercent: Number(e.target.value),
+                          manualOverrides: {
+                            ...f.manualOverrides,
+                            discountAmount: false,
+                          },
+                        }))
+                      }
+                      className={`${chargeInput} w-[5.5rem]`}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Freight{form.manualOverrides.deliveryCharge ? " · man" : ""}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={calc.deliveryCharge}
+                      onChange={(e) =>
+                        setOverride("deliveryCharge", Number(e.target.value))
+                      }
+                      className={`${chargeInput} w-[6.5rem]`}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">Other tax</span>
+                    <input
+                      value={form.otherTaxLabel}
+                      onChange={(e) =>
+                        setForm((f) => ({ ...f, otherTaxLabel: e.target.value }))
+                      }
+                      className={`${field} w-[6rem]`}
+                      placeholder="TCS"
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount{form.manualOverrides.otherTaxAmount ? " · man" : ""}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={calc.otherTaxAmount}
+                      onChange={(e) =>
+                        setOverride("otherTaxAmount", Number(e.target.value))
+                      }
+                      className={`${chargeInput} w-[6.5rem]`}
+                    />
+                  </label>
+                </div>
+                <div className="min-w-[16rem] flex-1 space-y-1 text-xs sm:max-w-sm sm:flex-none">
+                  <div className="mb-1 flex items-center justify-between">
+                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">Totals</span>
+                    {hasOverrides ? (
+                      <button
+                        type="button"
+                        onClick={resetCalculations}
+                        className="inline-flex items-center gap-1 text-[10px] text-mid-green hover:underline"
+                      >
+                        <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                  <label className="flex items-center justify-between gap-3">
+                    <span>Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={calc.subtotal}
+                      onChange={(e) =>
+                        setOverride("subtotal", Number(e.target.value))
+                      }
+                      className="h-7 w-24 rounded border border-light-green/40 bg-background px-1.5 text-right text-xs outline-none"
+                    />
+                  </label>
+                  {calc.discountAmount > 0 ? (
+                    <div className="flex justify-between text-mid-green">
+                      <span>Discount</span>
+                      <span className="tabular-nums">-{formatMoney(calc.discountAmount)}</span>
+                    </div>
+                  ) : null}
+                  {form.withGst && calc.gstSplit === "CGST_SGST" ? (
+                    <>
+                      <div className="flex justify-between">
+                        <span>CGST</span>
+                        <span className="tabular-nums">{formatMoney(calc.cgstAmount)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>SGST</span>
+                        <span className="tabular-nums">{formatMoney(calc.sgstAmount)}</span>
+                      </div>
+                    </>
+                  ) : null}
+                  {form.withGst && calc.gstSplit === "IGST" ? (
+                    <div className="flex justify-between">
+                      <span>IGST</span>
+                      <span className="tabular-nums">{formatMoney(calc.igstAmount)}</span>
+                    </div>
+                  ) : null}
+                  <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-2.5 py-1.5 text-background">
+                    <span className="text-xs font-medium">
+                      Grand total
+                      {form.manualOverrides.grandTotal ? " · man" : ""}
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={calc.grandTotal}
+                      onChange={(e) =>
+                        setOverride("grandTotal", Number(e.target.value))
+                      }
+                      aria-label="Grand total"
+                      className="w-28 bg-transparent text-right text-sm font-semibold tabular-nums text-background outline-none"
+                    />
+                  </label>
+                </div>
               </div>
             </section>
-
-          <aside className="space-y-4 lg:sticky lg:top-4">
-            <div className="space-y-2.5 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-              <h2 className="text-sm font-medium text-mid-green">Charges</h2>
-              <div className="grid gap-2.5">
-              <label className="block text-sm">
-                <span className="mb-0.5 block text-xs text-mid-green">Discount %</span>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={form.discountPercent}
-                  onChange={(e) =>
-                    setForm((f) => ({
-                      ...f,
-                      discountPercent: Number(e.target.value),
-                      manualOverrides: {
-                        ...f.manualOverrides,
-                        discountAmount: false,
-                      },
-                    }))
-                  }
-                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-0.5 block text-xs text-mid-green">
-                  Delivery / freight{" "}
-                  {form.manualOverrides.deliveryCharge ? "(manual)" : ""}
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={calc.deliveryCharge}
-                  onChange={(e) =>
-                    setOverride("deliveryCharge", Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-0.5 block text-xs text-mid-green">Other tax label</span>
-                <input
-                  value={form.otherTaxLabel}
-                  onChange={(e) =>
-                    setForm((f) => ({ ...f, otherTaxLabel: e.target.value }))
-                  }
-                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-                  placeholder="e.g. TCS"
-                />
-              </label>
-              <label className="block text-sm">
-                <span className="mb-0.5 block text-xs text-mid-green">
-                  Other tax amount{" "}
-                  {form.manualOverrides.otherTaxAmount ? "(manual)" : ""}
-                </span>
-                <input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  value={calc.otherTaxAmount}
-                  onChange={(e) =>
-                    setOverride("otherTaxAmount", Number(e.target.value))
-                  }
-                  className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none"
-                />
-              </label>
-              </div>
-            </div>
-
-            <div className="rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-medium text-mid-green">Totals</h2>
-                {hasOverrides ? (
-                  <button
-                    type="button"
-                    onClick={resetCalculations}
-                    className="inline-flex items-center gap-1 text-xs text-mid-green hover:underline"
-                  >
-                    <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
-                    Reset calculations
-                  </button>
-                ) : null}
-              </div>
-              <div className="space-y-2 text-sm">
-                <label className="flex items-center justify-between gap-4">
-                  <span>
-                    Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={calc.subtotal}
-                    onChange={(e) =>
-                      setOverride("subtotal", Number(e.target.value))
-                    }
-                    className="w-24 min-w-0 rounded border border-light-green/40 bg-background px-2 py-1 text-right outline-none"
-                  />
-                </label>
-                <div className="flex justify-between text-mid-green">
-                  <span>Discount</span>
-                  <span className="tabular-nums">
-                    -{formatMoney(calc.discountAmount)}
-                  </span>
-                </div>
-                {form.withGst && calc.gstSplit === "CGST_SGST" ? (
-                  <>
-                    <div className="flex justify-between">
-                      <span>CGST</span>
-                      <span className="tabular-nums">
-                        {formatMoney(calc.cgstAmount)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span>SGST</span>
-                      <span className="tabular-nums">
-                        {formatMoney(calc.sgstAmount)}
-                      </span>
-                    </div>
-                  </>
-                ) : null}
-                {form.withGst && calc.gstSplit === "IGST" ? (
-                  <div className="flex justify-between">
-                    <span>IGST</span>
-                    <span className="tabular-nums">
-                      {formatMoney(calc.igstAmount)}
-                    </span>
-                  </div>
-                ) : null}
-                <div className="flex justify-between">
-                  <span>GST total</span>
-                  <span
-                    className={`tabular-nums ${form.withGst ? "" : "opacity-40"}`}
-                  >
-                    {formatMoney(calc.gstAmount)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Other tax</span>
-                  <span className="tabular-nums">
-                    {formatMoney(calc.otherTaxAmount)}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Delivery</span>
-                  <span className="tabular-nums">
-                    {formatMoney(calc.deliveryCharge)}
-                  </span>
-                </div>
-                <label className="flex items-center justify-between gap-4 border-t border-light-green/30 pt-3 text-base font-semibold">
-                  <span>
-                    Grand total{" "}
-                    {form.manualOverrides.grandTotal ? "(manual)" : ""}
-                  </span>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={calc.grandTotal}
-                    onChange={(e) =>
-                      setOverride("grandTotal", Number(e.target.value))
-                    }
-                    className="w-24 min-w-0 rounded border border-mid-green/50 bg-background px-2 py-1 text-right font-semibold outline-none"
-                  />
-                </label>
-              </div>
-            </div>
-          </aside>
       </div>
     </form>
   );

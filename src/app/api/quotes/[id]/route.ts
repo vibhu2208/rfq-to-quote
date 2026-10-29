@@ -1,10 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
-import { decimalToNumber } from "@/lib/quotes";
 import { parseQuoteDate } from "@/lib/quote-format";
 
 const lineSchema = z.object({
@@ -12,8 +12,8 @@ const lineSchema = z.object({
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
   aliasName: z.string().optional().default(""),
-  qty: z.coerce.number().positive(),
-  unit: z.string().default("pcs"),
+  qty: z.coerce.number().nonnegative(),
+  unit: z.string().default("nos"),
   unitPrice: z.coerce.number().nonnegative(),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
@@ -37,6 +37,7 @@ const quoteSchema = z.object({
   otherTaxLabel: z.string().optional(),
   notes: z.string().optional(),
   quoteNumber: z.string().optional(),
+  quoteName: z.string().optional(),
   introText: z.string().optional(),
   termsText: z.string().optional(),
   closingText: z.string().optional(),
@@ -138,14 +139,13 @@ export async function GET(_req: NextRequest, { params }: Params) {
 }
 
 export async function PUT(req: NextRequest, { params }: Params) {
-  const { error } = await requireSession();
+  const [{ error }, { id }, body] = await Promise.all([
+    requireSession(),
+    params,
+    req.json(),
+  ]);
   if (error) return error;
 
-  const { id } = await params;
-  const existing = await prisma.quote.findUnique({ where: { id } });
-  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const body = await req.json();
   const parsed = quoteSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
@@ -154,24 +154,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const data = parsed.data;
   const company = getCompanyConfig();
   const lineItems = data.lineItems ?? [];
-  const overrides = (data.manualOverrides ?? existing.manualOverrides ?? {}) as ManualOverrides;
-  const nextNumber = data.quoteNumber?.trim() || existing.quoteNumber;
-  if (nextNumber !== existing.quoteNumber) {
-    const taken = await prisma.quote.findUnique({
-      where: { quoteNumber: nextNumber },
-      select: { id: true },
-    });
-    if (taken) {
-      return NextResponse.json(
-        { error: "That ref no is already used by another quote" },
-        { status: 400 }
-      );
-    }
-  }
+  const overrides = (data.manualOverrides ?? {}) as ManualOverrides;
+  const nextNumber = data.quoteNumber?.trim() || "";
   const issuedAt =
-    data.quoteDate !== undefined
-      ? parseQuoteDate(data.quoteDate) ?? existing.issuedAt
-      : existing.issuedAt;
+    data.quoteDate !== undefined ? parseQuoteDate(data.quoteDate) : undefined;
+  const status = data.status ?? "DRAFT";
 
   const calc = calculateQuoteTotals({
     lines: lineItems.map((l) => ({
@@ -179,94 +166,125 @@ export async function PUT(req: NextRequest, { params }: Params) {
       unitPrice: l.unitPrice,
       taxRate: l.taxRate,
     })),
-    withGst: data.withGst ?? existing.withGst,
-    buyerState: data.buyerState ?? existing.buyerState,
+    withGst: data.withGst ?? true,
+    buyerState: data.buyerState ?? "",
     sellerState: company.sellerState,
-    gstMode: data.gstMode ?? (existing.gstMode as "AUTO" | "CGST_SGST" | "IGST"),
-    deliveryCharge: data.deliveryCharge ?? decimalToNumber(existing.deliveryCharge),
-    discountPercent: data.discountPercent ?? decimalToNumber(existing.discountPercent),
-    discountAmount: data.discountAmount ?? decimalToNumber(existing.discountAmount),
-    otherTaxAmount: data.otherTaxAmount ?? decimalToNumber(existing.otherTaxAmount),
+    gstMode: data.gstMode ?? "AUTO",
+    deliveryCharge: data.deliveryCharge ?? 0,
+    discountPercent: data.discountPercent ?? 0,
+    discountAmount: data.discountAmount ?? 0,
+    otherTaxAmount: data.otherTaxAmount ?? 0,
     overrides,
     previous: {
-      subtotal: data.subtotal ?? decimalToNumber(existing.subtotal),
-      gstAmount: data.gstAmount ?? decimalToNumber(existing.gstAmount),
-      cgstAmount: decimalToNumber(existing.cgstAmount),
-      sgstAmount: decimalToNumber(existing.sgstAmount),
-      igstAmount: decimalToNumber(existing.igstAmount),
-      otherTaxAmount: data.otherTaxAmount ?? decimalToNumber(existing.otherTaxAmount),
-      deliveryCharge: data.deliveryCharge ?? decimalToNumber(existing.deliveryCharge),
-      discountAmount: data.discountAmount ?? decimalToNumber(existing.discountAmount),
-      grandTotal: data.grandTotal ?? decimalToNumber(existing.grandTotal),
+      subtotal: data.subtotal,
+      gstAmount: data.gstAmount,
+      otherTaxAmount: data.otherTaxAmount,
+      deliveryCharge: data.deliveryCharge,
+      discountAmount: data.discountAmount,
+      grandTotal: data.grandTotal,
     },
   });
 
-  const status = data.status ?? existing.status;
-  const becameSent = status === "SENT" && !existing.sentAt;
+  const linesJson = JSON.stringify(
+    lineItems.map((l, i) => ({
+      id: l.id || randomUUID(),
+      productId: l.productId || null,
+      description: l.description || "",
+      aliasName: l.aliasName?.trim() || "",
+      qty: l.qty,
+      unit: l.unit || "pcs",
+      unitPrice: l.unitPrice,
+      taxRate: l.taxRate,
+      lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
+      sortOrder: l.sortOrder ?? i,
+    }))
+  );
 
-  const quote = await prisma.$transaction(async (tx) => {
-    await tx.quoteLineItem.deleteMany({ where: { quoteId: id } });
+  try {
+    const rows = await prisma.$queryRaw<
+      Array<{ id: string; quoteNumber: string; status: string }>
+    >`
+      WITH upd AS (
+        UPDATE "Quote"
+        SET
+          "buyerName" = COALESCE(${data.buyerName}, "buyerName"),
+          "buyerCompany" = COALESCE(${data.buyerCompany}, "buyerCompany"),
+          "buyerEmail" = COALESCE(${data.buyerEmail}, "buyerEmail"),
+          "buyerPhone" = COALESCE(${data.buyerPhone}, "buyerPhone"),
+          "buyerState" = COALESCE(${data.buyerState}, "buyerState"),
+          "buyerAddress" = COALESCE(${data.buyerAddress}, "buyerAddress"),
+          "buyerGstin" = COALESCE(${data.buyerGstin?.trim().toUpperCase() ?? null}, "buyerGstin"),
+          "withGst" = COALESCE(${data.withGst}, "withGst"),
+          "showHsn" = COALESCE(${data.showHsn}, "showHsn"),
+          "gstMode" = COALESCE(${data.gstMode}, "gstMode"),
+          "subtotal" = ${calc.subtotal},
+          "gstAmount" = ${calc.gstAmount},
+          "cgstAmount" = ${calc.cgstAmount},
+          "sgstAmount" = ${calc.sgstAmount},
+          "igstAmount" = ${calc.igstAmount},
+          "otherTaxAmount" = ${calc.otherTaxAmount},
+          "otherTaxLabel" = COALESCE(${data.otherTaxLabel}, "otherTaxLabel"),
+          "deliveryCharge" = ${calc.deliveryCharge},
+          "discountAmount" = ${calc.discountAmount},
+          "discountPercent" = COALESCE(${data.discountPercent}, "discountPercent"),
+          "grandTotal" = ${calc.grandTotal},
+          "manualOverrides" = ${JSON.stringify(overrides)}::jsonb,
+          "notes" = COALESCE(${data.notes}, "notes"),
+          "quoteNumber" = COALESCE(NULLIF(${nextNumber}, ''), "quoteNumber"),
+          "quoteName" = COALESCE(${data.quoteName}, "quoteName"),
+          "introText" = COALESCE(${data.introText}, "introText"),
+          "termsText" = COALESCE(${data.termsText}, "termsText"),
+          "closingText" = COALESCE(${data.closingText}, "closingText"),
+          "issuedAt" = COALESCE(${issuedAt}, "issuedAt"),
+          "status" = CAST(${status} AS "QuoteStatus"),
+          "sentAt" = CASE
+            WHEN CAST(${status} AS "QuoteStatus") = 'SENT' AND "sentAt" IS NULL THEN NOW()
+            ELSE "sentAt"
+          END,
+          "updatedAt" = NOW()
+        WHERE id = ${id}
+        RETURNING id, "quoteNumber", status
+      ),
+      del AS (
+        DELETE FROM "QuoteLineItem" WHERE "quoteId" IN (SELECT id FROM upd)
+      ),
+      ins AS (
+        INSERT INTO "QuoteLineItem" (
+          "id", "quoteId", "productId", "description", "aliasName",
+          "qty", "unit", "unitPrice", "taxRate", "lineTotal", "sortOrder"
+        )
+        SELECT
+          COALESCE(NULLIF(e->>'id', ''), replace(gen_random_uuid()::text, '-', '')),
+          (SELECT id FROM upd),
+          NULLIF(e->>'productId', ''),
+          COALESCE(e->>'description', ''),
+          COALESCE(e->>'aliasName', ''),
+          COALESCE((e->>'qty')::numeric, 0),
+          COALESCE(e->>'unit', 'nos'),
+          COALESCE((e->>'unitPrice')::numeric, 0),
+          COALESCE((e->>'taxRate')::numeric, 18),
+          COALESCE((e->>'lineTotal')::numeric, 0),
+          COALESCE((e->>'sortOrder')::int, 0)
+        FROM jsonb_array_elements(${linesJson}::jsonb) AS e
+        WHERE EXISTS (SELECT 1 FROM upd)
+          AND jsonb_array_length(${linesJson}::jsonb) > 0
+      )
+      SELECT id, "quoteNumber", status::text AS status FROM upd
+    `;
 
-    return tx.quote.update({
-      where: { id },
-      data: {
-        buyerName: data.buyerName ?? existing.buyerName,
-        buyerCompany: data.buyerCompany ?? existing.buyerCompany,
-        buyerEmail: data.buyerEmail ?? existing.buyerEmail,
-        buyerPhone: data.buyerPhone ?? existing.buyerPhone,
-        buyerState: data.buyerState ?? existing.buyerState,
-        buyerAddress: data.buyerAddress ?? existing.buyerAddress,
-        buyerGstin:
-          data.buyerGstin !== undefined
-            ? data.buyerGstin.trim().toUpperCase()
-            : existing.buyerGstin,
-        withGst: data.withGst ?? existing.withGst,
-        showHsn: data.showHsn ?? existing.showHsn,
-        gstMode: data.gstMode ?? existing.gstMode,
-        subtotal: calc.subtotal,
-        gstAmount: calc.gstAmount,
-        cgstAmount: calc.cgstAmount,
-        sgstAmount: calc.sgstAmount,
-        igstAmount: calc.igstAmount,
-        otherTaxAmount: calc.otherTaxAmount,
-        otherTaxLabel: data.otherTaxLabel ?? existing.otherTaxLabel,
-        deliveryCharge: calc.deliveryCharge,
-        discountAmount: calc.discountAmount,
-        discountPercent: data.discountPercent ?? existing.discountPercent,
-        grandTotal: calc.grandTotal,
-        manualOverrides: overrides,
-        notes: data.notes ?? existing.notes,
-        quoteNumber: nextNumber,
-        introText: data.introText ?? existing.introText,
-        termsText: data.termsText ?? existing.termsText,
-        closingText: data.closingText ?? existing.closingText,
-        issuedAt,
-        status,
-        sentAt: becameSent ? new Date() : existing.sentAt,
-        lineItems: {
-          create: lineItems.map((l, i) => ({
-            productId: l.productId || null,
-            description: l.description,
-            aliasName: l.aliasName?.trim() || "",
-            qty: l.qty,
-            unit: l.unit,
-            unitPrice: l.unitPrice,
-            taxRate: l.taxRate,
-            lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
-            sortOrder: l.sortOrder ?? i,
-          })),
-        },
-      },
-      include: {
-        lineItems: {
-          include: { product: { select: { id: true, code: true, name: true } } },
-          orderBy: { sortOrder: "asc" },
-        },
-      },
-    });
-  });
-
-  return NextResponse.json(serializeQuote(quote));
+    const quote = rows[0];
+    if (!quote) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    return NextResponse.json(quote);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "";
+    if (message.includes("Quote_quoteNumber_key") || message.includes("quoteNumber")) {
+      return NextResponse.json(
+        { error: "That ref no is already used by another quote" },
+        { status: 400 }
+      );
+    }
+    throw e;
+  }
 }
 
 export async function DELETE(_req: NextRequest, { params }: Params) {

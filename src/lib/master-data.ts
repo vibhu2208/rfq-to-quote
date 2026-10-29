@@ -1,7 +1,7 @@
 export type MasterField = { key: string; label: string; value: string };
 export type MasterGroup = { title: string; fields: MasterField[] };
 
-const CLIENT_GROUPS: { title: string; keys: string[] }[] = [
+export const CLIENT_GROUPS: { title: string; keys: string[] }[] = [
   {
     title: "Identity",
     keys: [

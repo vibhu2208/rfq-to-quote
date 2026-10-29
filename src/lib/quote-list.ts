@@ -1,6 +1,6 @@
 import type { Prisma, QuoteStatus } from "@prisma/client";
 
-export const QUOTE_LIST_PAGE_SIZE = 50;
+export const QUOTE_LIST_PAGE_SIZE = 100;
 
 export const QUOTE_LIST_STATUSES = [
   "DRAFT",
@@ -94,11 +94,24 @@ export function quoteListWhere(f: QuoteListFilters): Prisma.QuoteWhereInput {
     and.push({
       OR: [
         { quoteNumber: { contains: f.q, mode: "insensitive" } },
+        { quoteName: { contains: f.q, mode: "insensitive" } },
         { buyerName: { contains: f.q, mode: "insensitive" } },
         { buyerCompany: { contains: f.q, mode: "insensitive" } },
         { buyerEmail: { contains: f.q, mode: "insensitive" } },
         { buyerPhone: { contains: f.q, mode: "insensitive" } },
         { buyerGstin: { contains: f.q, mode: "insensitive" } },
+        {
+          lineItems: {
+            some: {
+              OR: [
+                { description: { contains: f.q, mode: "insensitive" } },
+                { aliasName: { contains: f.q, mode: "insensitive" } },
+                { product: { is: { name: { contains: f.q, mode: "insensitive" } } } },
+                { product: { is: { code: { contains: f.q, mode: "insensitive" } } } },
+              ],
+            },
+          },
+        },
       ],
     });
   }

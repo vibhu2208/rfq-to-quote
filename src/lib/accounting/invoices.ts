@@ -35,8 +35,8 @@ export async function createProformaFromQuote(quoteId: string, userId?: string) 
   const ctx = await getDefaultOrgContext();
   const quote = await loadQuote(quoteId);
 
-  // Resolve fiscal period + party outside the write transaction — Neon latency was
-  // blowing the default 5s interactive transaction timeout.
+  // Resolve fiscal period + party outside the write transaction so pooler
+  // latency does not blow the default 5s interactive transaction timeout.
   const period = await ensureOpenPeriod(prisma, {
     organisationId: ctx.organisationId,
     legalEntityId: ctx.legalEntityId,
@@ -195,7 +195,7 @@ async function buildInvoiceFromLines(
     quoteId?: string | null;
     notes?: string;
     userId?: string;
-    /** Prefetch outside the write transaction to avoid Neon latency timeouts. */
+    /** Prefetch outside the write transaction to avoid pooler latency timeouts. */
     period?: Awaited<ReturnType<typeof ensureOpenPeriod>>;
   }
 ) {

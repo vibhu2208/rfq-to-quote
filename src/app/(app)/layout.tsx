@@ -12,9 +12,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   }
 
   return (
-    <div className="flex h-full min-h-screen flex-col bg-background">
-      <AppNav />
-      <main className="mx-auto flex w-full max-w-[110rem] min-h-0 flex-1 flex-col px-3 py-6 sm:px-4 lg:px-5 xl:px-6">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background">
+      <AppNav email={session.user?.email ?? ""} />
+      <main className="mx-auto flex min-h-0 w-full max-w-[110rem] flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 lg:px-5">
         {children}
       </main>
     </div>
