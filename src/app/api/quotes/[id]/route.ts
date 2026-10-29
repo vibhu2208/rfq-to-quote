@@ -6,6 +6,7 @@ import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { parseQuoteDate } from "@/lib/quote-format";
+import { decimalToNumber } from "@/lib/quotes";
 
 const lineSchema = z.object({
   id: z.string().optional(),

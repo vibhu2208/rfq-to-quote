@@ -25,7 +25,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let bytes = row.data ? Buffer.from(row.data) : null;
+  let bytes: Uint8Array | null = row.data ? new Uint8Array(row.data) : null;
   if (!bytes || bytes.length === 0) {
     const stored = await prisma.$queryRaw<Array<{ storageKey: string }>>`
       SELECT "storageKey" FROM "QuoteAttachment" WHERE id = ${row.id}
