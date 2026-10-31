@@ -1,9 +1,22 @@
 import { ImapFlow } from "imapflow";
-import { simpleParser } from "mailparser";
+import { simpleParser, type ParsedMail } from "mailparser";
 import { prisma } from "@/lib/prisma";
 import { createRfqWithMessage, resolveEmailChannel } from "@/lib/rfq";
 import { handleVendorReplyEmail } from "@/lib/vendor-outreach";
 import { handleQuoteReplyEmail } from "@/lib/quote-thread";
+import {
+  getMailboxUser,
+  getMicrosoftGraphConfig,
+  shouldMarkMailSeen,
+} from "@/lib/mailbox";
+import {
+  getLatestInboxReceivedAt,
+  listOutlookAttachmentNames,
+  listOutlookInboxMessages,
+  markOutlookMessageRead,
+  outlookMessageToParsedMail,
+  searchOutlookMessages,
+} from "@/lib/outlook-graph";
 
 export type PolledEmail = {
   messageId: string;
@@ -15,13 +28,14 @@ export type PolledEmail = {
 };
 
 const GMAIL_LAST_UID_KEY = "gmail:last-inbox-uid";
+const OUTLOOK_LAST_RECEIVED_KEY = "outlook:last-inbox-received";
 
 function requireGmailConfig() {
-  const user = process.env.GMAIL_USER?.trim();
+  const user = getMailboxUser();
   const pass = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
   if (!user || !pass) {
     throw new Error(
-      "GMAIL_USER and GMAIL_APP_PASSWORD are required. Create a Google App Password and set them in .env"
+      "MAILBOX_USER (or GMAIL_USER) and GMAIL_APP_PASSWORD are required. Create a Google App Password and set them in .env"
     );
   }
   return {
@@ -29,7 +43,7 @@ function requireGmailConfig() {
     pass,
     host: process.env.GMAIL_IMAP_HOST || "imap.gmail.com",
     port: Number(process.env.GMAIL_IMAP_PORT || 993),
-    markSeen: process.env.GMAIL_MARK_SEEN !== "false",
+    markSeen: shouldMarkMailSeen(),
   };
 }
 
@@ -65,16 +79,7 @@ async function setLastSeenGmailUid(uid: number): Promise<void> {
   });
 }
 
-/**
- * Fetch unread INBOX messages from Gmail via IMAP (App Password).
- * Every message becomes an RFQ after AI parse + vendor matching on the UI.
- * By default, the first poll starts from the newest current email so old unread
- * mail does not flood the RFQ inbox.
- */
-export async function pollGmailInbox(options?: {
-  limit?: number;
-  includeExisting?: boolean;
-}): Promise<{
+type PollInboxResult = {
   fetched: number;
   created: number;
   skipped: number;
@@ -83,7 +88,86 @@ export async function pollGmailInbox(options?: {
   initialized: boolean;
   lastSeenUid: number;
   rfqs: Array<{ id: string; status: string; subject: string; fromEmail: string }>;
+};
+
+async function ingestInboundEmail(
+  parsed: ParsedMail,
+  fallbackMessageId: string,
+  attachmentNames?: Array<{ name: string; contentType?: string }>
+): Promise<{
+  kind: "vendor" | "quote" | "empty" | "duplicate" | "rfq";
+  rfq?: { id: string; status: string; subject: string; fromEmail: string };
 }> {
+  const vendorReply = await handleVendorReplyEmail(parsed);
+  if (vendorReply.handled) return { kind: "vendor" };
+
+  const quoteReply = await handleQuoteReplyEmail(parsed);
+  if (quoteReply.handled) return { kind: "quote" };
+
+  const fromRaw = parsed.from?.text || parsed.from?.value?.[0]?.address || "";
+  const { name: fromName, email: fromEmail } = parseAddress(
+    typeof fromRaw === "string" ? fromRaw : String(fromRaw)
+  );
+  const subject = parsed.subject || "(no subject)";
+  const text =
+    (parsed.text || "").trim() ||
+    (parsed.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const messageId = (parsed.messageId || fallbackMessageId)
+    .replace(/[<>]/g, "")
+    .slice(0, 240);
+
+  if (!text) return { kind: "empty" };
+
+  const existing = await prisma.rfq.findFirst({
+    where: { sourceRef: messageId },
+    select: { id: true },
+  });
+  if (existing) return { kind: "duplicate" };
+
+  const attachments =
+    attachmentNames ||
+    (parsed.attachments || []).map((attachment) => ({
+      name: attachment.filename || "attachment",
+      contentType: attachment.contentType,
+    }));
+
+  const channel = resolveEmailChannel(fromEmail);
+  const rfq = await createRfqWithMessage({
+    channel,
+    sourceRef: messageId,
+    subject,
+    rawText: text.slice(0, 20000),
+    rawAttachments: attachments,
+    customerName: fromName || fromEmail,
+    customerEmail: fromEmail,
+  });
+
+  return {
+    kind: "rfq",
+    rfq: {
+      id: rfq.id,
+      status: rfq.status,
+      subject,
+      fromEmail,
+    },
+  };
+}
+
+/**
+ * Fetch unread INBOX messages from the configured mailbox.
+ * Outlook uses Microsoft Graph; Gmail still uses IMAP when Graph is not set.
+ * Every unmatched message becomes an RFQ after AI parse + vendor matching on the UI.
+ * By default, the first poll starts from the newest current email so old unread
+ * mail does not flood the RFQ inbox.
+ */
+export async function pollGmailInbox(options?: {
+  limit?: number;
+  includeExisting?: boolean;
+}): Promise<PollInboxResult> {
+  if (getMicrosoftGraphConfig()) {
+    return pollOutlookInbox(options);
+  }
+
   const config = requireGmailConfig();
   const limit = Math.min(options?.limit ?? 20, 50);
   const includeExisting = options?.includeExisting ?? false;
@@ -146,84 +230,17 @@ export async function pollGmailInbox(options?: {
         const parsed = await simpleParser(downloaded.content);
         fetched += 1;
 
-        const vendorReply = await handleVendorReplyEmail(parsed);
-        if (vendorReply.handled) {
-          vendorReplies += 1;
+        const ingested = await ingestInboundEmail(parsed, `gmail-uid-${uid}`);
+        if (ingested.kind === "vendor") vendorReplies += 1;
+        if (ingested.kind === "quote") quoteReplies += 1;
+        if (ingested.kind === "rfq" && ingested.rfq) {
+          created += 1;
+          rfqs.push(ingested.rfq);
+        } else {
           skipped += 1;
-          if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-          lastSeenUid = Math.max(lastSeenUid, uid);
-          continue;
         }
 
-        const quoteReply = await handleQuoteReplyEmail(parsed);
-        if (quoteReply.handled) {
-          quoteReplies += 1;
-          skipped += 1;
-          if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-          lastSeenUid = Math.max(lastSeenUid, uid);
-          continue;
-        }
-
-        const fromRaw =
-          parsed.from?.text ||
-          parsed.from?.value?.[0]?.address ||
-          "";
-        const { name: fromName, email: fromEmail } = parseAddress(
-          typeof fromRaw === "string" ? fromRaw : String(fromRaw)
-        );
-        const subject = parsed.subject || "(no subject)";
-        const text =
-          (parsed.text || "").trim() ||
-          (parsed.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-        const messageId =
-          (parsed.messageId || `gmail-uid-${uid}`).replace(/[<>]/g, "").slice(0, 240);
-
-        if (!text) {
-          skipped += 1;
-          if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-          lastSeenUid = Math.max(lastSeenUid, uid);
-          continue;
-        }
-
-        const existing = await prisma.rfq.findFirst({
-          where: { sourceRef: messageId },
-          select: { id: true },
-        });
-        if (existing) {
-          skipped += 1;
-          if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-          lastSeenUid = Math.max(lastSeenUid, uid);
-          continue;
-        }
-
-        const attachments = (parsed.attachments || []).map((attachment) => ({
-          name: attachment.filename || "attachment",
-          contentType: attachment.contentType,
-        }));
-
-        const channel = resolveEmailChannel(fromEmail);
-        const rfq = await createRfqWithMessage({
-          channel,
-          sourceRef: messageId,
-          subject,
-          rawText: text.slice(0, 20000),
-          rawAttachments: attachments,
-          customerName: fromName || fromEmail,
-          customerEmail: fromEmail,
-        });
-
-        created += 1;
-        rfqs.push({
-          id: rfq.id,
-          status: rfq.status,
-          subject,
-          fromEmail,
-        });
-
-        if (config.markSeen) {
-          await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
-        }
-
+        if (config.markSeen) await client.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
         lastSeenUid = Math.max(lastSeenUid, uid);
       }
 
@@ -345,6 +362,16 @@ export async function checkQuoteEmailThread(quoteId: string): Promise<{
     : new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
   const after = formatGmailAfter(since);
 
+  if (getMicrosoftGraphConfig()) {
+    return checkQuoteEmailThreadOutlook({
+      quoteId,
+      quote,
+      candidateEmails,
+      knownOutboundIds,
+      threadRef,
+    });
+  }
+
   const config = requireGmailConfig();
   const client = new ImapFlow({
     host: config.host,
@@ -436,7 +463,7 @@ export async function checkQuoteEmailThread(quoteId: string): Promise<{
         if (
           isOwnOutboundCopy({
             fromEmail,
-            gmailUser: config.user,
+            gmailUser: config.user || getMailboxUser(),
             subject: parsed.subject || "",
             messageId,
             inReplyTo,
@@ -545,6 +572,10 @@ export async function checkVendorOutreachThread(rfqId: string): Promise<{
     ? new Date(earliest.getTime() - 24 * 60 * 60 * 1000)
     : new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
   const after = formatGmailAfter(since);
+
+  if (getMicrosoftGraphConfig()) {
+    return checkVendorOutreachThreadOutlook({ rfqId, outreaches, since });
+  }
 
   const config = requireGmailConfig();
   const client = new ImapFlow({
@@ -681,6 +712,310 @@ export async function checkVendorOutreachThread(rfqId: string): Promise<{
     }
   } finally {
     await client.logout().catch(() => undefined);
+  }
+
+  return {
+    scanned,
+    matched,
+    newReplies,
+    alreadyCaptured,
+    results,
+  };
+}
+
+async function getLastOutlookReceivedAt(): Promise<Date | null> {
+  const state = await prisma.appState.findUnique({
+    where: { key: OUTLOOK_LAST_RECEIVED_KEY },
+    select: { value: true },
+  });
+  if (!state?.value) return null;
+  const parsed = new Date(state.value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+async function setLastOutlookReceivedAt(at: Date): Promise<void> {
+  if (Number.isNaN(at.getTime())) return;
+  await prisma.appState.upsert({
+    where: { key: OUTLOOK_LAST_RECEIVED_KEY },
+    update: { value: at.toISOString() },
+    create: { key: OUTLOOK_LAST_RECEIVED_KEY, value: at.toISOString() },
+  });
+}
+
+async function pollOutlookInbox(options?: {
+  limit?: number;
+  includeExisting?: boolean;
+}): Promise<PollInboxResult> {
+  const limit = Math.min(options?.limit ?? 20, 50);
+  const includeExisting = options?.includeExisting ?? false;
+  const markSeen = shouldMarkMailSeen();
+
+  const rfqs: PollInboxResult["rfqs"] = [];
+  let fetched = 0;
+  let created = 0;
+  let skipped = 0;
+  let vendorReplies = 0;
+  let quoteReplies = 0;
+  let initialized = false;
+  let lastSeenUid = 0;
+
+  let lastSeen = await getLastOutlookReceivedAt();
+
+  if (!includeExisting && !lastSeen) {
+    const latest = await getLatestInboxReceivedAt();
+    const checkpoint = latest || new Date();
+    await setLastOutlookReceivedAt(checkpoint);
+    initialized = true;
+    return {
+      fetched,
+      created,
+      skipped,
+      vendorReplies,
+      quoteReplies,
+      initialized,
+      lastSeenUid,
+      rfqs,
+    };
+  }
+
+  const messages = await listOutlookInboxMessages({
+    unreadOnly: true,
+    since: includeExisting ? null : lastSeen,
+    top: limit,
+  });
+
+  for (const message of messages) {
+    fetched += 1;
+    const parsed = outlookMessageToParsedMail(message);
+    const attachments = message.hasAttachments
+      ? await listOutlookAttachmentNames(message.id)
+      : [];
+    const ingested = await ingestInboundEmail(
+      parsed,
+      `outlook-${message.id}`,
+      attachments
+    );
+
+    if (ingested.kind === "vendor") vendorReplies += 1;
+    if (ingested.kind === "quote") quoteReplies += 1;
+    if (ingested.kind === "rfq" && ingested.rfq) {
+      created += 1;
+      rfqs.push(ingested.rfq);
+    } else {
+      skipped += 1;
+    }
+
+    if (markSeen) {
+      await markOutlookMessageRead(message.id).catch(() => undefined);
+    }
+
+    const received = message.receivedDateTime
+      ? new Date(message.receivedDateTime)
+      : null;
+    if (received && !Number.isNaN(received.getTime())) {
+      if (!lastSeen || received > lastSeen) lastSeen = received;
+    }
+  }
+
+  if (lastSeen) await setLastOutlookReceivedAt(lastSeen);
+
+  return {
+    fetched,
+    created,
+    skipped,
+    vendorReplies,
+    quoteReplies,
+    initialized,
+    lastSeenUid,
+    rfqs,
+  };
+}
+
+async function checkQuoteEmailThreadOutlook(input: {
+  quoteId: string;
+  quote: {
+    quoteNumber: string;
+    outboundMsgId: string;
+    buyerEmail: string;
+  };
+  candidateEmails: Set<string>;
+  knownOutboundIds: Set<string>;
+  threadRef: string;
+}) {
+  const mailboxUser = getMailboxUser();
+  const queries = [input.quote.quoteNumber, input.threadRef];
+  for (const email of input.candidateEmails) queries.push(email);
+
+  const messages = await searchOutlookMessages(queries);
+  const results: Array<{
+    subject: string;
+    fromEmail: string;
+    intent?: string;
+    needsAssistance?: boolean;
+    autoReplied?: boolean;
+    alreadyCaptured?: boolean;
+  }> = [];
+  let scanned = 0;
+  let matched = 0;
+  let newReplies = 0;
+  let alreadyCaptured = 0;
+
+  for (const message of messages.slice(-40)) {
+    const parsed = outlookMessageToParsedMail(message);
+    scanned += 1;
+
+    const fromRaw = parsed.from?.text || parsed.from?.value?.[0]?.address || "";
+    const { email: fromEmail } = parseAddress(
+      typeof fromRaw === "string" ? fromRaw : String(fromRaw)
+    );
+    const messageId = normalizeMsgId(parsed.messageId);
+    const inReplyTo = normalizeMsgId(
+      typeof parsed.inReplyTo === "string"
+        ? parsed.inReplyTo
+        : Array.isArray(parsed.inReplyTo)
+          ? parsed.inReplyTo[0]
+          : ""
+    );
+
+    if (
+      isOwnOutboundCopy({
+        fromEmail,
+        gmailUser: mailboxUser,
+        subject: parsed.subject || "",
+        messageId,
+        inReplyTo,
+        outboundMsgId: input.quote.outboundMsgId,
+        knownOutboundIds: input.knownOutboundIds,
+      })
+    ) {
+      continue;
+    }
+
+    const reply = await handleQuoteReplyEmail(parsed, {
+      expectedQuoteId: input.quoteId,
+    });
+    if (!reply.handled) continue;
+
+    matched += 1;
+    if (reply.alreadyCaptured) {
+      alreadyCaptured += 1;
+    } else {
+      newReplies += 1;
+      if (shouldMarkMailSeen()) {
+        await markOutlookMessageRead(message.id).catch(() => undefined);
+      }
+    }
+
+    results.push({
+      subject: parsed.subject || "(no subject)",
+      fromEmail,
+      intent: reply.intent,
+      needsAssistance: reply.needsAssistance,
+      autoReplied: reply.autoReplied,
+      alreadyCaptured: reply.alreadyCaptured,
+    });
+  }
+
+  return {
+    scanned,
+    matched,
+    newReplies,
+    alreadyCaptured,
+    buyerEmail:
+      input.quote.buyerEmail.trim().toLowerCase() ||
+      [...input.candidateEmails][0] ||
+      "",
+    quoteNumber: input.quote.quoteNumber,
+    results,
+  };
+}
+
+async function checkVendorOutreachThreadOutlook(input: {
+  rfqId: string;
+  outreaches: Array<{
+    threadRef: string;
+    vendorId: string;
+    vendor: { id: string; name: string; email: string | null };
+  }>;
+  since: Date;
+}) {
+  const mailboxUser = getMailboxUser();
+  const queries: string[] = [];
+  for (const outreach of input.outreaches) {
+    queries.push(outreach.threadRef);
+    const vendorEmail = outreach.vendor.email?.trim().toLowerCase();
+    if (vendorEmail) queries.push(vendorEmail);
+  }
+
+  const messages = (await searchOutlookMessages(queries)).filter((message) => {
+    if (!message.receivedDateTime) return true;
+    const received = new Date(message.receivedDateTime);
+    return Number.isNaN(received.getTime()) || received >= input.since;
+  });
+
+  const results: Array<{
+    vendorId: string;
+    vendorName: string;
+    subject: string;
+    fromEmail: string;
+    quotedPrice: number | null;
+    lineCount: number;
+    alreadyCaptured?: boolean;
+  }> = [];
+  let scanned = 0;
+  let matched = 0;
+  let newReplies = 0;
+  let alreadyCaptured = 0;
+
+  for (const message of messages.slice(-60)) {
+    const parsed = outlookMessageToParsedMail(message);
+    scanned += 1;
+
+    const fromRaw = parsed.from?.text || parsed.from?.value?.[0]?.address || "";
+    const { email: fromEmail } = parseAddress(
+      typeof fromRaw === "string" ? fromRaw : String(fromRaw)
+    );
+    const subject = parsed.subject || "";
+    const isOutboundRecore =
+      /^Quote request —/i.test(subject) &&
+      !/^re\s*:/i.test(subject) &&
+      fromEmail === mailboxUser.trim().toLowerCase();
+    if (isOutboundRecore) continue;
+
+    const before = await prisma.vendorOutreach.findFirst({
+      where: {
+        rfqId: input.rfqId,
+        replyMsgId: normalizeMsgId(parsed.messageId).slice(0, 240) || "__none__",
+      },
+      select: { id: true },
+    });
+
+    const reply = await handleVendorReplyEmail(parsed);
+    if (!reply.handled || reply.rfqId !== input.rfqId) continue;
+
+    matched += 1;
+    const wasAlready = Boolean(before);
+    if (wasAlready) {
+      alreadyCaptured += 1;
+    } else {
+      newReplies += 1;
+      if (shouldMarkMailSeen()) {
+        await markOutlookMessageRead(message.id).catch(() => undefined);
+      }
+    }
+
+    const vendor =
+      input.outreaches.find((o) => o.vendorId === reply.vendorId)?.vendor || null;
+
+    results.push({
+      vendorId: reply.vendorId,
+      vendorName: vendor?.name || reply.vendorId,
+      subject,
+      fromEmail,
+      quotedPrice: reply.quotedPrice,
+      lineCount: reply.quotedLineItems.length,
+      alreadyCaptured: wasAlready,
+    });
   }
 
   return {

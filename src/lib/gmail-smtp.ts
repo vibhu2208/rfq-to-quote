@@ -1,4 +1,6 @@
 import nodemailer from "nodemailer";
+import { getMailboxUser, getMicrosoftGraphConfig } from "@/lib/mailbox";
+import { sendOutlookEmail } from "@/lib/outlook-graph";
 
 export type EmailAttachment = {
   filename: string;
@@ -35,25 +37,32 @@ function toReferencesHeader(refs: string): string {
 }
 
 function requireSmtpConfig() {
-  const user = process.env.GMAIL_USER?.trim();
+  const user = getMailboxUser();
   const pass = process.env.GMAIL_APP_PASSWORD?.replace(/\s+/g, "");
   if (!user || !pass) {
     throw new Error(
-      "GMAIL_USER and GMAIL_APP_PASSWORD are required to send emails."
+      "MAILBOX_USER (or GMAIL_USER) and GMAIL_APP_PASSWORD are required to send emails."
     );
   }
   return {
     user,
     pass,
-    host: process.env.GMAIL_SMTP_HOST || "smtp.gmail.com",
-    port: Number(process.env.GMAIL_SMTP_PORT || 587),
+    host:
+      process.env.MAIL_SMTP_HOST ||
+      process.env.GMAIL_SMTP_HOST ||
+      "smtp.gmail.com",
+    port: Number(process.env.MAIL_SMTP_PORT || process.env.GMAIL_SMTP_PORT || 587),
   };
 }
 
-/** Send outbound email via Gmail SMTP (same App Password as IMAP). */
+/** Send outbound email from the configured mailbox (Outlook Graph, else SMTP). */
 export async function sendGmailEmail(
   input: SendEmailInput
 ): Promise<SendEmailResult> {
+  if (getMicrosoftGraphConfig()) {
+    return sendOutlookEmail(input);
+  }
+
   const config = requireSmtpConfig();
   const transport = nodemailer.createTransport({
     host: config.host,

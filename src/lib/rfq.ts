@@ -100,17 +100,34 @@ export async function parseAndUpdateRfq(rfqId: string) {
   const result = await parseRfqWithAi(rfq.rawText, rfq.subject);
   const status = statusFromConfidence(result.confidence);
 
+  const existing =
+    rfq.parsedSpecs && typeof rfq.parsedSpecs === "object"
+      ? (rfq.parsedSpecs as Record<string, unknown>)
+      : {};
+  const existingMeta =
+    existing._meta && typeof existing._meta === "object"
+      ? (existing._meta as Record<string, unknown>)
+      : {};
+  const existingItems = Array.isArray(existing.items) ? existing.items : [];
+  const fromSpreadsheet =
+    typeof existingMeta.summary === "string" &&
+    /imported from spreadsheet/i.test(existingMeta.summary);
+  const items =
+    fromSpreadsheet && existingItems.length > 0 ? existingItems : result.items;
+
   return prisma.rfq.update({
     where: { id: rfqId },
     data: {
       parsedCategory: result.productCategory,
       parsedSpecs: {
         ...result.specs,
-        items: result.items,
+        items,
         _meta: {
           language: result.language,
-          summary: result.summary,
-          itemCount: result.items.length,
+          summary: fromSpreadsheet
+            ? String(existingMeta.summary)
+            : result.summary,
+          itemCount: items.length,
         },
       } as Prisma.InputJsonValue,
       parseConfidence: result.confidence,

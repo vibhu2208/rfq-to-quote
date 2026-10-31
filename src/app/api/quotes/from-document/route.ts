@@ -5,6 +5,7 @@ import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals } from "@/lib/tax";
 import { nextQuoteNumber, decimalToNumber } from "@/lib/quotes";
 import { catalogLinesFromExtractedItems } from "@/lib/quote-from-rfq";
+import { quoteLinePresentation } from "@/lib/quote-line-alias";
 import {
   assertAllowedDocument,
   extractQuoteFieldsFromDocument,
@@ -34,6 +35,10 @@ function filenameFromFile(file: File): string {
   };
   return byType[type] || name || "pasted-screenshot.png";
 }
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 /**
  * Upload a document/photo → Reducto extract (product, model, company, qty, price)
@@ -112,18 +117,26 @@ export async function POST(req: NextRequest) {
     const lines =
       matched.length > 0
         ? matched
-        : fields.lineItems.map((l) => ({
-            productId: null as string | null,
-            description: "",
-            aliasName:
-              [l.productName, l.model ? `Model: ${l.model}` : null]
-                .filter(Boolean)
-                .join(" — ") || "From document",
-            qty: l.quantity > 0 ? l.quantity : 1,
-            unit: l.unit || "pcs",
-            unitPrice: l.unitPrice,
-            taxRate: 18,
-          }));
+        : fields.lineItems.map((l) => {
+            const presented = quoteLinePresentation({
+              clientName: l.productName,
+              clientCode: l.code,
+              clientBrand: l.brand,
+              clientModel: l.model,
+              clientUnit: l.unit,
+              extraNotes: l.extraNotes,
+              catalogName: "From document",
+            });
+            return {
+              productId: null as string | null,
+              description: presented.description,
+              aliasName: presented.aliasName || "From document",
+              qty: l.quantity > 0 ? l.quantity : 1,
+              unit: presented.unit,
+              unitPrice: l.unitPrice,
+              taxRate: 18,
+            };
+          });
 
     const calc = calculateQuoteTotals({
       lines: lines.map((l) => ({

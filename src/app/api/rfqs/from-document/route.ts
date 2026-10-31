@@ -9,6 +9,7 @@ import {
   extractTextFromDocument,
   REDUCTO_MAX_BYTES,
 } from "@/lib/reducto";
+import { isQuoteSpreadsheet, parseQuoteSpreadsheet } from "@/lib/quote-csv";
 
 function formString(form: FormData, key: string): string {
   const v = form.get(key);
@@ -30,9 +31,16 @@ function filenameFromFile(file: File): string {
     "image/tiff": "pasted-screenshot.tiff",
     "image/bmp": "pasted-screenshot.bmp",
     "application/pdf": "document.pdf",
+    "text/csv": "requirement.csv",
+    "application/vnd.ms-excel": "requirement.xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "requirement.xlsx",
   };
   return byType[type] || name || "pasted-screenshot.png";
 }
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 /**
  * Screenshot / document → OCR + extract line items → RFQ on the suggested
@@ -57,11 +65,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    try {
-      assertAllowedDocument(filename, file.size);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Invalid file";
-      return NextResponse.json({ error: message }, { status: 400 });
+    const spreadsheet = isQuoteSpreadsheet(filename, file.type);
+    if (!spreadsheet) {
+      try {
+        assertAllowedDocument(filename, file.size);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Invalid file";
+        return NextResponse.json({ error: message }, { status: 400 });
+      }
     }
 
     let company = formString(form, "company");
@@ -75,36 +86,72 @@ export async function POST(req: NextRequest) {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     let ocrText = "";
-    try {
-      const extracted = await extractTextFromDocument(buffer, filename);
-      ocrText = extracted.text;
-    } catch (e) {
-      if (!pasted) throw e;
-    }
-
     let extractedItems: Array<{
       description: string;
       productName: string;
       model: string;
+      brand: string;
+      code: string;
+      extraNotes: string;
       quantity: number;
       unit: string;
     }> = [];
 
-    try {
-      const { fields } = await extractQuoteFieldsFromDocument(buffer, filename);
-      company = company || fields.company;
-      contactName = contactName || fields.contactName;
-      extractedItems = fields.lineItems
-        .map((l) => ({
-          description: [l.productName, l.model].filter(Boolean).join(" "),
-          productName: l.productName,
-          model: l.model,
-          quantity: l.quantity > 0 ? l.quantity : 1,
-          unit: l.unit || "pcs",
-        }))
-        .filter((l) => l.description);
-    } catch {
-      // OCR text is enough to create the requirement
+    if (spreadsheet) {
+      const parsed = parseQuoteSpreadsheet(buffer, filename);
+      company = company || parsed.company;
+      extractedItems = parsed.items.map((item) => ({
+        description: item.productName || item.code,
+        productName: item.productName,
+        model: item.model,
+        brand: item.brand,
+        code: item.code,
+        extraNotes: item.extraNotes,
+        quantity: item.quantity > 0 ? item.quantity : 1,
+        unit: item.unit,
+      }));
+      ocrText = extractedItems
+        .map(
+          (l) =>
+            `• ${l.description}${l.code ? ` [${l.code}]` : ""} – ${l.quantity} ${l.unit}`
+        )
+        .join("\n");
+      if (extractedItems.length === 0) {
+        return NextResponse.json(
+          {
+            error:
+              "No product rows found in this spreadsheet. Include columns like Product, SKU, and Qty.",
+          },
+          { status: 400 }
+        );
+      }
+    } else {
+      try {
+        const extracted = await extractTextFromDocument(buffer, filename);
+        ocrText = extracted.text;
+      } catch (e) {
+        if (!pasted) throw e;
+      }
+
+      try {
+        const { fields } = await extractQuoteFieldsFromDocument(buffer, filename);
+        company = company || fields.company;
+        contactName = contactName || fields.contactName;
+        extractedItems = fields.lineItems
+          .map((l) => ({
+            description: l.productName,
+            productName: l.productName,
+            model: l.model,
+            brand: l.brand,
+            code: l.code,
+            extraNotes: l.extraNotes,
+            quantity: l.quantity > 0 ? l.quantity : 1,
+            unit: l.unit,
+          }))
+          .filter((l) => l.productName);
+      } catch {
+        // OCR text is enough to create the requirement
+      }
     }
 
     const itemLines =
@@ -120,7 +167,7 @@ export async function POST(req: NextRequest) {
     const rawText = [
       pasted || null,
       `Document: ${filename}`,
-      "(Captured from document/photo)",
+      spreadsheet ? "(Imported from spreadsheet)" : "(Captured from document/photo)",
       contactName ? `Contact: ${contactName}` : null,
       company ? `Company: ${company}` : null,
       email ? `Email: ${email}` : null,
@@ -183,6 +230,7 @@ export async function POST(req: NextRequest) {
       customerEmail: email || "",
       customerPhone: phone || "",
       customerCompany: company || "",
+      autoParse: spreadsheet ? false : undefined,
     });
 
     if (extractedItems.length > 0) {
@@ -196,7 +244,18 @@ export async function POST(req: NextRequest) {
         data: {
           parsedSpecs: {
             ...existing,
-            items: existingItems.length >= extractedItems.length ? existingItems : extractedItems,
+            items:
+              spreadsheet || existingItems.length < extractedItems.length
+                ? extractedItems
+                : existingItems,
+            ...(spreadsheet
+              ? {
+                  _meta: {
+                    summary: `${extractedItems.length} line${extractedItems.length === 1 ? "" : "s"} imported from spreadsheet`,
+                    itemCount: extractedItems.length,
+                  },
+                }
+              : {}),
           } as Prisma.InputJsonValue,
         },
         include: { messages: { orderBy: { createdAt: "asc" } } },

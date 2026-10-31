@@ -49,23 +49,23 @@ export default function InboxPage() {
     return () => clearTimeout(t);
   }, [load]);
 
-  async function pollGmail() {
+  async function pollInbox() {
     setPolling(true);
-    setPollMsg("Checking Gmail…");
+    setPollMsg("Checking Outlook…");
     const res = await fetch("/api/cron/gmail-poll", { method: "POST" });
     const data = await res.json();
     setPolling(false);
     if (!res.ok) {
-      setPollMsg(typeof data.error === "string" ? data.error : "Gmail poll failed");
+      setPollMsg(typeof data.error === "string" ? data.error : "Outlook poll failed");
       return;
     }
     if (data.initialized) {
       setPollMsg(
-        "Gmail checkpoint initialized. Old unread mail was ignored; only newer messages will be imported now."
+        "Outlook checkpoint initialized. Old unread mail was ignored; only newer messages will be imported now."
       );
     } else {
       setPollMsg(
-        `Gmail: fetched ${data.fetched}, RFQs created ${data.created}, vendor replies ${data.vendorReplies ?? 0}, quote replies ${data.quoteReplies ?? 0}, skipped ${data.skipped}`
+        `Outlook: fetched ${data.fetched}, RFQs created ${data.created}, vendor replies ${data.vendorReplies ?? 0}, quote replies ${data.quoteReplies ?? 0}, skipped ${data.skipped}`
       );
     }
     await load();
@@ -77,7 +77,7 @@ export default function InboxPage() {
         <div>
           <h1 className="text-2xl font-semibold">RFQ Inbox</h1>
           <p className="mt-1 text-sm text-mid-green">
-            All leads — team capture, web form, Gmail, and marketplace
+            All leads — team capture, web form, Outlook, and marketplace
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -89,11 +89,11 @@ export default function InboxPage() {
           </Link>
           <button
             type="button"
-            onClick={pollGmail}
+            onClick={pollInbox}
             disabled={polling}
             className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm text-mid-green hover:bg-light-green/20 disabled:opacity-60"
           >
-            {polling ? "Polling…" : "Poll Gmail"}
+            {polling ? "Polling…" : "Poll Outlook"}
           </button>
           <Link
             href="/request"
@@ -176,7 +176,7 @@ export default function InboxPage() {
                   <Link href="/request" className="underline">
                     public form
                   </Link>
-                  , or poll Gmail.
+                  , or poll Outlook.
                 </td>
               </tr>
             ) : (

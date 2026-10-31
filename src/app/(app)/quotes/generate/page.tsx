@@ -8,9 +8,11 @@ import {
   contactFieldsFromClient,
   type ClientHit,
 } from "@/components/client-company-field";
+import { apiFetch, parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import { stabilizeIntakeFile } from "@/lib/intake-file";
 
 const ACCEPT =
-  ".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.heic,.gif,.bmp,.doc,.docx,.txt,.rtf,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  ".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.heic,.gif,.bmp,.doc,.docx,.txt,.rtf,.csv,.xlsx,.xls,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 function pickClipboardFile(files: FileList | File[]): File | null {
   const list = Array.from(files);
@@ -19,7 +21,7 @@ function pickClipboardFile(files: FileList | File[]): File | null {
       (f) =>
         f.type.startsWith("image/") ||
         f.type === "application/pdf" ||
-        /\.(pdf|png|jpe?g|webp|tif|tiff|heic|gif|bmp|docx?|txt|rtf)$/i.test(f.name)
+        /\.(pdf|png|jpe?g|webp|tif|tiff|heic|gif|bmp|docx?|txt|rtf|csv|xlsx|xls)$/i.test(f.name)
     ) || null
   );
 }
@@ -38,8 +40,20 @@ export default function GenerateQuotePage() {
   const [partyId, setPartyId] = useState("");
 
   const assignFile = useCallback((next: File | null) => {
-    setFile(next);
-    setError("");
+    if (!next) {
+      setFile(null);
+      setError("");
+      return;
+    }
+    void stabilizeIntakeFile(next)
+      .then((stable) => {
+        setFile(stable);
+        setError("");
+      })
+      .catch((err) => {
+        setFile(null);
+        setError(userFacingFetchError(err, "Could not read that file"));
+      });
   }, []);
 
   function onPaste(e: ClipboardEvent) {
@@ -69,56 +83,65 @@ export default function GenerateQuotePage() {
     const pasted = String(form.get("text") || "").trim();
 
     if (!pasted && !file) {
-      setError("Paste a requirement, or attach a photo, PDF, or document");
+      setError("Paste a requirement, or attach a photo, PDF, CSV, or document");
       setLoading(false);
       return;
     }
 
-    let res: Response;
-    if (file) {
-      const body = new FormData();
-      body.append("file", file);
-      body.append("text", pasted);
-      body.append("company", company);
-      body.append("contactName", contactName);
-      body.append("email", email);
-      body.append("phone", phone);
-      body.append("partyId", partyId);
-      body.append("subject", String(form.get("subject") || ""));
-      res = await fetch("/api/rfqs/from-document", { method: "POST", body });
-    } else {
-      res = await fetch("/api/rfqs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          company,
-          contactName: contactName || company || "From paste",
-          email,
-          phone,
-          productNeeded: pasted,
-          quantity: "",
-          notes: "",
-          subject: String(form.get("subject") || ""),
-        }),
-      });
-    }
-    const data = await res.json().catch(() => ({}));
-    setLoading(false);
+    try {
+      let res: Response;
+      if (file) {
+        const upload = await stabilizeIntakeFile(file);
+        const body = new FormData();
+        body.append("file", upload);
+        body.append("text", pasted);
+        body.append("company", company);
+        body.append("contactName", contactName);
+        body.append("email", email);
+        body.append("phone", phone);
+        body.append("partyId", partyId);
+        body.append("subject", String(form.get("subject") || ""));
+        res = await apiFetch("/api/rfqs/from-document", { method: "POST", body });
+      } else {
+        res = await apiFetch("/api/rfqs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            company,
+            contactName: contactName || company || "From paste",
+            email,
+            phone,
+            productNeeded: pasted,
+            quantity: "",
+            notes: "",
+            subject: String(form.get("subject") || ""),
+          }),
+        });
+      }
+      const data = await parseApiJson<{
+        id?: string;
+        error?: string | { fieldErrors?: Record<string, string[]> };
+      }>(res, "Could not capture this requirement");
 
-    if (!res.ok) {
-      setError(
-        typeof data.error === "string"
-          ? data.error
-          : data.error?.fieldErrors
-            ? Object.values(data.error.fieldErrors as Record<string, string[]>)
-                .flat()
-                .join(", ")
-            : "Could not capture this requirement"
-      );
-      return;
-    }
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : data.error?.fieldErrors
+              ? Object.values(data.error.fieldErrors as Record<string, string[]>)
+                  .flat()
+                  .join(", ")
+              : "Could not capture this requirement"
+        );
+        return;
+      }
 
-    router.push(`/rfq/${data.id}`);
+      router.push(`/rfq/${data.id}`);
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not capture this requirement"));
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -131,8 +154,8 @@ export default function GenerateQuotePage() {
         </p>
         <h1 className="mt-2 text-2xl font-semibold text-dark-primary">Generate quote</h1>
         <p className="mt-1 text-sm text-mid-green">
-          Paste text or a screenshot. We extract the requirement, then open suggested products and
-          vendors — same as typing it in.
+          Paste text, a screenshot, or a CSV of line items. We extract the requirement, match it to
+          the product catalog, then open suggested products and vendors.
         </p>
       </div>
 
@@ -152,7 +175,7 @@ export default function GenerateQuotePage() {
 
         <div>
           <span className="mb-1.5 block text-sm font-medium text-dark-secondary">
-            Or photo / PDF / document
+            Or photo / PDF / CSV / document
           </span>
           <div
             role="button"
@@ -198,7 +221,7 @@ export default function GenerateQuotePage() {
               </span>
             )}
             <span className="mt-1 text-xs text-mid-green">
-              PDF, photo (PNG/JPG/WEBP/HEIC), Word, or text — max 20MB
+              PDF, photo, Word, CSV, or Excel — columns like Product, SKU, Qty — max 20MB
             </span>
           </div>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -299,7 +322,9 @@ export default function GenerateQuotePage() {
         >
           {loading
             ? file
-              ? "Extracting requirement from screenshot…"
+              ? /\.(csv|xlsx|xls)$/i.test(file.name)
+                ? "Matching catalog from spreadsheet…"
+                : "Extracting requirement from screenshot…"
               : "Creating requirement…"
             : "Extract & continue"}
         </button>

@@ -46,6 +46,11 @@ import {
   todayQuoteDateIso,
 } from "@/lib/quote-format";
 import {
+  applyCatalogNamesToAliases,
+  restoreLineAliases,
+  snapshotLineAliases,
+} from "@/lib/quote-line-alias";
+import {
   ClientCompanyField,
   contactFieldsFromClient,
   type ClientContactHit,
@@ -271,6 +276,7 @@ function withDocumentDefaults(
 
 export function QuoteBuilder({ initial, sellerState, company, sendContext }: Props) {
   const router = useRouter();
+  const [aliasSnapshot, setAliasSnapshot] = useState<Record<string, string> | null>(null);
   const [form, setForm] = useState<QuoteFormState>(() =>
     withDocumentDefaults(initial || emptyQuote(), company)
   );
@@ -681,13 +687,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   }
 
   function copyProductNamesToAliases() {
+    setAliasSnapshot((prev) => prev ?? snapshotLineAliases(form.lineItems));
+    setForm((f) => ({ ...f, lineItems: applyCatalogNamesToAliases(f.lineItems) }));
+  }
+
+  function restoreProductAliases() {
+    if (!aliasSnapshot) return;
     setForm((f) => ({
       ...f,
-      lineItems: f.lineItems.map((l) => ({
-        ...l,
-        aliasName: (l.catalogName || l.aliasName).trim(),
-      })),
+      lineItems: restoreLineAliases(f.lineItems, aliasSnapshot),
     }));
+    setAliasSnapshot(null);
   }
 
   function removeLine(idx: number) {
@@ -1642,11 +1652,22 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     type="button"
                     onClick={copyProductNamesToAliases}
                     className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
-                    title="Copy each product name into the quote name"
+                    title="Copy each catalog product name onto the quote"
                   >
                     <Copy className="h-3 w-3" strokeWidth={1.5} />
                     Use names
                   </button>
+                  {aliasSnapshot ? (
+                    <button
+                      type="button"
+                      onClick={restoreProductAliases}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                      title="Restore the names that were on the quote before Use names"
+                    >
+                      <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
+                      Revert names
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={addLine}

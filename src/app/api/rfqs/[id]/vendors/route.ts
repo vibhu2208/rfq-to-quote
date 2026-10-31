@@ -7,6 +7,7 @@ import { getOutreachMapForRfq } from "@/lib/vendor-outreach";
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 /** Deterministic vendor matching from parsed RFQ fields — no AI call. */
 export async function GET(_request: NextRequest, { params }: Params) {

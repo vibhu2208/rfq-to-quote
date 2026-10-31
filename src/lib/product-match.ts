@@ -156,6 +156,29 @@ export type ProductMatch = {
   matchedTokens: string[];
 };
 
+function toProductMatch(p: Product, score: number, matchedTokens: string[]): ProductMatch {
+  return {
+    product: {
+      id: p.id,
+      code: p.code,
+      name: p.name,
+      description: p.description,
+      unit: p.unit,
+      offerPrice: catalogSellPrice(p),
+      lastPrice: decimalToNumber(p.lastPrice) || null,
+      taxRate: decimalToNumber(p.taxRate),
+    },
+    score,
+    matchedTokens,
+  };
+}
+
+function catalogIdentityCodes(p: Product): string[] {
+  return [p.code, p.sourceProductId, p.modelNo, p.partNo, p.popularCode, p.commCode]
+    .filter((v): v is string => Boolean(v && String(v).trim()))
+    .map((v) => v.trim().toLowerCase());
+}
+
 function productInCategory(code: string, category: string | null | undefined): boolean {
   if (!category || category === "General / Uncategorized") return true;
   const prefixes = CATEGORY_CODE_PREFIXES[category];
@@ -237,20 +260,7 @@ function scorePool(
     }
 
     if (score >= MIN_MATCH_SCORE) {
-      scored.push({
-        product: {
-          id: p.id,
-          code: p.code,
-          name: p.name,
-          description: p.description,
-          unit: p.unit,
-          offerPrice: catalogSellPrice(p),
-          lastPrice: decimalToNumber(p.lastPrice) || null,
-          taxRate: decimalToNumber(p.taxRate),
-        },
-        score,
-        matchedTokens: [...new Set(matchedTokens)],
-      });
+      scored.push(toProductMatch(p, score, [...new Set(matchedTokens)]));
     }
   }
 
@@ -314,16 +324,24 @@ function matchRequirementItem(
     parsedSpecs,
     rawText: searchText,
   });
+  const active = products.filter((p) => p.active);
+  const code = (item.code || "").trim().toLowerCase();
+  const exact = code
+    ? active.filter((p) => catalogIdentityCodes(p).includes(code)).map((p) =>
+        toProductMatch(p, 100, [item.code || p.code])
+      )
+    : [];
 
   if (keywords.length === 0) {
-    return { keywords: [], matches: [] };
+    return { keywords: exact.length ? [code] : [], matches: exact.slice(0, limit) };
   }
 
   const kwSet = new Set(keywords);
-  const active = products.filter((p) => p.active);
   const rfqBlob = searchText.toLowerCase();
   const category = item.category || fallbackCategory;
-  const matches = scorePool(active, keywords, kwSet, rfqBlob, category).slice(0, limit);
+  const scored = scorePool(active, keywords, kwSet, rfqBlob, category);
+  const seen = new Set(exact.map((m) => m.product.id));
+  const matches = [...exact, ...scored.filter((m) => !seen.has(m.product.id))].slice(0, limit);
 
   return { keywords, matches };
 }

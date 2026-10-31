@@ -14,6 +14,7 @@ import {
   type PickableProduct,
 } from "@/components/rfq-product-picker";
 import { extractRfqItems } from "@/lib/rfq-items";
+import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
 
 type ProductMatch = {
   score: number;
@@ -1213,9 +1214,21 @@ export default function RfqDetailPage() {
     setMatchesLoading(true);
     selectionsHydrated.current = false;
     skipNextSave.current = true;
-    const res = await fetch(`/api/rfqs/${id}/matches`);
-    if (res.ok) {
-      const data = await res.json();
+    try {
+      const res = await fetch(`/api/rfqs/${id}/matches`);
+      const data = await parseApiJson<{
+        keywords?: string[];
+        matches?: ProductMatch[];
+        itemMatches?: RequirementMatch[];
+        requirements?: RfqRequirementItem[];
+        error?: string;
+      }>(res, "Could not match catalog products");
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string" ? data.error : "Could not match catalog products"
+        );
+        return;
+      }
       setKeywords(data.keywords || []);
       const list: ProductMatch[] = data.matches || [];
       const perItem: RequirementMatch[] = data.itemMatches || [];
@@ -1226,8 +1239,11 @@ export default function RfqDetailPage() {
       applySavedSelections(saved, list, perItem);
       setExpandedSearchLine(null);
       selectionsHydrated.current = true;
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not match catalog products"));
+    } finally {
+      setMatchesLoading(false);
     }
-    setMatchesLoading(false);
   }, [id, applySavedSelections]);
 
   const load = useCallback(async () => {
@@ -1244,13 +1260,21 @@ export default function RfqDetailPage() {
 
   const loadVendorMatches = useCallback(async () => {
     setVendorsLoading(true);
-    const response = await fetch(`/api/rfqs/${id}/vendors`);
-    if (response.ok) {
-      const data = await response.json();
-      setVendorMatches(data.matches || []);
-      setVendorProductKey(data.productKey || "");
+    try {
+      const response = await fetch(`/api/rfqs/${id}/vendors`);
+      const data = await parseApiJson<{
+        matches?: VendorMatch[];
+        productKey?: string;
+      }>(response, "Could not match vendors");
+      if (response.ok) {
+        setVendorMatches(data.matches || []);
+        setVendorProductKey(data.productKey || "");
+      }
+    } catch {
+      // Catalog search still works if vendor matching is unavailable.
+    } finally {
+      setVendorsLoading(false);
     }
-    setVendorsLoading(false);
   }, [id]);
 
   const loadMarketplacePrices = useCallback(
@@ -1370,34 +1394,48 @@ export default function RfqDetailPage() {
   async function reparse() {
     setBusy("parse");
     setError("");
-    const res = await fetch(`/api/rfqs/${id}/parse`, { method: "POST" });
-    const data = await res.json();
-    setBusy("");
-    if (!res.ok) {
-      setError(data.error || "Parse failed");
-      return;
+    try {
+      const res = await fetch(`/api/rfqs/${id}/parse`, { method: "POST" });
+      const data = await parseApiJson<Partial<RfqDetail> & { error?: string }>(
+        res,
+        "Parse failed"
+      );
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Parse failed");
+        return;
+      }
+      setRfq((prev) => ({
+        ...prev!,
+        ...data,
+        productSelections: prev?.productSelections ?? data.productSelections ?? null,
+        messages: data.messages ?? prev?.messages ?? [],
+        quotes: data.quotes ?? prev?.quotes ?? [],
+      }));
+      await Promise.all([
+        loadMatches(data.productSelections ?? rfq?.productSelections),
+        loadVendorMatches(),
+      ]);
+      setMarketplaceFetched(false);
+      setMarketplace(null);
+      void loadMarketplacePrices();
+    } catch (err) {
+      setError(userFacingFetchError(err, "Parse failed"));
+    } finally {
+      setBusy("");
     }
-    setRfq((prev) => ({
-      ...prev!,
-      ...data,
-      productSelections: prev?.productSelections ?? data.productSelections ?? null,
-      messages: data.messages ?? prev?.messages ?? [],
-      quotes: data.quotes ?? prev?.quotes ?? [],
-    }));
-    await Promise.all([
-      loadMatches(data.productSelections ?? rfq?.productSelections),
-      loadVendorMatches(),
-    ]);
-    setMarketplaceFetched(false);
-    setMarketplace(null);
-    void loadMarketplacePrices();
   }
 
   async function convertToQuote() {
     setBusy("quote");
     setError("");
 
-    const lines: Array<{ productId: string; qty: number; unitPrice?: number }> = [];
+    const lines: Array<{
+      productId: string;
+      qty: number;
+      unitPrice?: number;
+      aliasName?: string;
+      unit?: string;
+    }> = [];
     const used = new Set<string>();
 
     function vendorUnitPriceForLine(lineNum: number): number | undefined {
@@ -1453,6 +1491,8 @@ export default function RfqDetailPage() {
           lines.push({
             productId: selectedPid,
             qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
+            aliasName: item.requirement.description,
+            unit: item.requirement.unit,
             ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
           });
           used.add(selectedPid);
@@ -1652,7 +1692,7 @@ export default function RfqDetailPage() {
 
   async function checkVendorReplies() {
     setCheckRepliesBusy(true);
-    setCheckRepliesMsg("Checking Gmail for vendor replies…");
+    setCheckRepliesMsg("Checking Outlook for vendor replies…");
     setError("");
     const res = await fetch(`/api/rfqs/${id}/vendors/check-replies`, {
       method: "POST",
@@ -1669,7 +1709,7 @@ export default function RfqDetailPage() {
     ).length;
     const reparseUpdated = data.reparseUpdated ?? 0;
     setCheckRepliesMsg(
-      `Gmail: scanned ${data.scanned ?? 0}, matched ${data.matched ?? 0}, new ${data.newReplies ?? 0}, priced ${priced}` +
+      `Outlook: scanned ${data.scanned ?? 0}, matched ${data.matched ?? 0}, new ${data.newReplies ?? 0}, priced ${priced}` +
         (reparseUpdated > 0 ? ` · AI re-parsed ${reparseUpdated}` : "")
     );
     await Promise.all([load(), loadVendorMatches()]);
@@ -1981,14 +2021,14 @@ export default function RfqDetailPage() {
             </button>
           </div>
 
-          {itemMatches.length === 0 ? (
-            <div className="mt-3">
-              <RfqProductSearch
-                inventoryMap={inventoryMap}
-                onSelect={pickCatalogProduct}
-              />
-            </div>
-          ) : null}
+          <div className="mt-3">
+            <RfqProductSearch
+              inventoryMap={inventoryMap}
+              onSelect={pickCatalogProduct}
+              placeholder="Search by product name or code…"
+              label="Search catalog"
+            />
+          </div>
 
         {matchesLoading ? (
           <p className="mt-4 text-sm text-mid-green">Matching catalog…</p>

@@ -4,16 +4,19 @@ import { authOptions } from "@/lib/auth";
 import { pollGmailInbox } from "@/lib/gmail-imap";
 
 function authorize(req: NextRequest): boolean {
-  const expected = process.env.GMAIL_POLL_SECRET;
+  const expected =
+    process.env.MAIL_POLL_SECRET || process.env.GMAIL_POLL_SECRET;
   const fromQuery = req.nextUrl.searchParams.get("secret");
-  const fromHeader = req.headers.get("x-gmail-poll-secret");
+  const fromHeader =
+    req.headers.get("x-mail-poll-secret") ||
+    req.headers.get("x-gmail-poll-secret");
   if (expected && (fromQuery === expected || fromHeader === expected)) return true;
   return false;
 }
 
 /**
- * Poll Gmail INBOX for unread mail and create RFQs.
- * Auth: logged-in session OR ?secret=GMAIL_POLL_SECRET
+ * Poll the configured mailbox (Outlook Graph or Gmail IMAP) and create RFQs.
+ * Auth: logged-in session OR ?secret=MAIL_POLL_SECRET
  */
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -27,7 +30,7 @@ export async function POST(req: NextRequest) {
     const result = await pollGmailInbox({ limit, includeExisting });
     return NextResponse.json({ ok: true, ...result });
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Gmail poll failed";
+    const message = e instanceof Error ? e.message : "Inbox poll failed";
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

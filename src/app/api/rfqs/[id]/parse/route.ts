@@ -5,6 +5,7 @@ import { parseAndUpdateRfq } from "@/lib/rfq";
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function POST(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();

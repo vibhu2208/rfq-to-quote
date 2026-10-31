@@ -162,6 +162,9 @@ export async function extractTextFromDocument(
 export type QuoteLineExtract = {
   productName: string;
   model: string;
+  brand: string;
+  code: string;
+  extraNotes: string;
   quantity: number;
   unit: string;
   unitPrice: number;
@@ -191,11 +194,25 @@ const QUOTE_EXTRACT_SCHEMA = {
     },
     productName: {
       type: "string",
-      description: "Primary product or item name requested",
+      description:
+        "ONLY the product or item name as the customer wrote it. Do not include company, brand, SKU, model, quantity, unit, or extra specs.",
     },
     model: {
       type: "string",
-      description: "Model number, SKU, or part code if present",
+      description: "Model number if present, separate from the item name",
+    },
+    brand: {
+      type: "string",
+      description: "Manufacturer, make, or brand of the item — not the buyer company",
+    },
+    code: {
+      type: "string",
+      description: "SKU, item code, or part number if distinct from the model",
+    },
+    extraNotes: {
+      type: "string",
+      description:
+        "Any remaining line text: extra description, specs, company printed beside the item, or other details that are not the item name",
     },
     quantity: {
       type: "number",
@@ -203,7 +220,8 @@ const QUOTE_EXTRACT_SCHEMA = {
     },
     unit: {
       type: "string",
-      description: "Unit of measure such as pcs, kg, tonne, box",
+      description:
+        "Exact unit of measure from the document (Nos, No's, box, pcs, mtr, etc.). Do not convert or replace it.",
     },
     unitPrice: {
       type: "number",
@@ -215,10 +233,31 @@ const QUOTE_EXTRACT_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          productName: { type: "string", description: "Product or item name" },
-          model: { type: "string", description: "Model / SKU if present" },
+          productName: {
+            type: "string",
+            description:
+              "ONLY the product or item name as the customer wrote it. Do not include company, brand, SKU, model, quantity, unit, or extra specs.",
+          },
+          model: { type: "string", description: "Model number if present" },
+          brand: {
+            type: "string",
+            description: "Manufacturer, make, or brand of the item",
+          },
+          code: {
+            type: "string",
+            description: "SKU, item code, or part number if distinct from the model",
+          },
+          extraNotes: {
+            type: "string",
+            description:
+              "Any remaining line text that is not the item name: extra description, specs, or company printed beside the item",
+          },
           quantity: { type: "number", description: "Quantity" },
-          unit: { type: "string", description: "Unit of measure" },
+          unit: {
+            type: "string",
+            description:
+              "Exact unit of measure from the document (Nos, No's, box, pcs, mtr, etc.). Do not convert or replace it.",
+          },
           unitPrice: { type: "number", description: "Unit price if shown" },
         },
       },
@@ -252,8 +291,11 @@ function normalizeLine(raw: Record<string, unknown>): QuoteLineExtract {
   return {
     productName: asString(raw.productName),
     model: asString(raw.model),
+    brand: asString(raw.brand),
+    code: asString(raw.code) || asString(raw.sku),
+    extraNotes: asString(raw.extraNotes) || asString(raw.notes) || asString(raw.description),
     quantity: asNumber(raw.quantity) || 1,
-    unit: asString(raw.unit) || "pcs",
+    unit: asString(raw.unit),
     unitPrice: Math.max(0, asNumber(raw.unitPrice)),
   };
 }
@@ -275,7 +317,19 @@ function normalizeExtract(raw: Record<string, unknown>): QuoteDocExtract {
     lineItems.length > 0
       ? lineItems
       : productName || model || unitPrice > 0
-        ? [{ productName, model, quantity, unit, unitPrice }]
+        ? [
+            {
+              productName,
+              model,
+              brand: asString(raw.brand),
+              code: asString(raw.code) || asString(raw.sku),
+              extraNotes:
+                asString(raw.extraNotes) || asString(raw.notes) || asString(raw.description),
+              quantity,
+              unit,
+              unitPrice,
+            },
+          ]
         : [];
 
   return {

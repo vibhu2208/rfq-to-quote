@@ -155,7 +155,7 @@ export const ADMIN_TOOL_DEFINITIONS = [
     function: {
       name: "send_quote_email",
       description:
-        "Send a follow-up email to the quote buyer via Gmail and store it on the quote thread. ONLY call this when the admin explicitly says to send. confirm must be true. Never send a draft-only request.",
+        "Send a follow-up email to the quote buyer via the company Outlook mailbox and store it on the quote thread. ONLY call this when the admin explicitly says to send. confirm must be true. Never send a draft-only request.",
       parameters: {
         type: "object",
         properties: {
@@ -456,7 +456,7 @@ async function draftQuoteEmail(quoteNumber: string): Promise<AdminToolResult> {
       subject: `Re: Quotation ${quote.quoteNumber} [${threadRef}]`,
       lastBuyerMessage: lastInbound?.body?.slice(0, 800) || null,
       suggestedBody: suggested,
-      note: `This is a DRAFT only. Call send_quote_email with confirm=true to send via ${company.email || "Gmail"}.`,
+      note: `This is a DRAFT only. Call send_quote_email with confirm=true to send via ${company.email || "Outlook"}.`,
     },
   };
 }

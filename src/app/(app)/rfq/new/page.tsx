@@ -15,6 +15,8 @@ import {
   contactFieldsFromClient,
   type ClientHit,
 } from "@/components/client-company-field";
+import { apiFetch, parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import { stabilizeIntakeFile } from "@/lib/intake-file";
 
 type IntakeMode = "text" | "document";
 
@@ -72,8 +74,20 @@ export default function CaptureRequirementPage() {
   }
 
   const assignFile = useCallback((next: File | null) => {
-    setFile(next);
-    setError("");
+    if (!next) {
+      setFile(null);
+      setError("");
+      return;
+    }
+    void stabilizeIntakeFile(next)
+      .then((stable) => {
+        setFile(stable);
+        setError("");
+      })
+      .catch((err) => {
+        setFile(null);
+        setError(userFacingFetchError(err, "Could not read that file"));
+      });
   }, []);
 
   useEffect(() => {
@@ -102,75 +116,85 @@ export default function CaptureRequirementPage() {
     const formEl = e.currentTarget;
     const form = new FormData(formEl);
 
-    if (mode === "document") {
-      if (!file) {
-        setError("Choose a document or photo to upload");
-        setLoading(false);
+    try {
+      if (mode === "document") {
+        if (!file) {
+          setError("Choose a document or photo to upload");
+          return;
+        }
+
+        const upload = await stabilizeIntakeFile(file);
+        const body = new FormData();
+        body.append("file", upload);
+        body.append("company", company);
+        body.append("contactName", contactName);
+        body.append("email", email);
+        body.append("phone", phone);
+        body.append("partyId", partyId);
+        body.append("notes", String(form.get("notes") || ""));
+
+        const res = await apiFetch("/api/rfqs/from-document", {
+          method: "POST",
+          body,
+        });
+        const data = await parseApiJson<{
+          id?: string;
+          error?: string;
+        }>(res, "Could not extract the requirement from this screenshot");
+
+        if (!res.ok) {
+          setError(
+            typeof data.error === "string"
+              ? data.error
+              : "Could not extract the requirement from this screenshot"
+          );
+          return;
+        }
+
+        router.push(`/rfq/${data.id}`);
         return;
       }
 
-      const body = new FormData();
-      body.append("file", file);
-      body.append("company", company);
-      body.append("contactName", contactName);
-      body.append("email", email);
-      body.append("phone", phone);
-      body.append("partyId", partyId);
-      body.append("notes", String(form.get("notes") || ""));
+      const payload = {
+        company,
+        contactName,
+        email,
+        phone,
+        productNeeded: String(form.get("productNeeded") || ""),
+        quantity: String(form.get("quantity") || ""),
+        notes: String(form.get("notes") || ""),
+        subject: String(form.get("subject") || ""),
+      };
 
-      const res = await fetch("/api/rfqs/from-document", {
+      const res = await apiFetch("/api/rfqs", {
         method: "POST",
-        body,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
-      const data = await res.json();
-      setLoading(false);
+      const data = await parseApiJson<{
+        id?: string;
+        error?: string | { fieldErrors?: Record<string, string[]> };
+      }>(res, "Could not capture requirement");
 
       if (!res.ok) {
-        setError(
+        const msg =
           typeof data.error === "string"
             ? data.error
-            : "Could not extract the requirement from this screenshot"
-        );
+            : data.error?.fieldErrors
+              ? Object.values(data.error.fieldErrors as Record<string, string[]>)
+                  .flat()
+                  .join(", ")
+              : "Could not capture requirement";
+        setError(msg);
         return;
       }
 
       router.push(`/rfq/${data.id}`);
-      return;
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not capture requirement"));
+    } finally {
+      setLoading(false);
     }
-
-    const payload = {
-      company,
-      contactName,
-      email,
-      phone,
-      productNeeded: String(form.get("productNeeded") || ""),
-      quantity: String(form.get("quantity") || ""),
-      notes: String(form.get("notes") || ""),
-      subject: String(form.get("subject") || ""),
-    };
-
-    const res = await fetch("/api/rfqs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await res.json();
-    setLoading(false);
-
-    if (!res.ok) {
-      const msg =
-        typeof data.error === "string"
-          ? data.error
-          : data.error?.fieldErrors
-            ? Object.values(data.error.fieldErrors as Record<string, string[]>)
-                .flat()
-                .join(", ")
-            : "Could not capture requirement";
-      setError(msg);
-      return;
-    }
-
-    router.push(`/rfq/${data.id}`);
   }
 
   return (

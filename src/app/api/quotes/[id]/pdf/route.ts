@@ -8,6 +8,7 @@ import { buildQuotePdfBuffer } from "@/lib/pdf/render-quote-buffer";
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();

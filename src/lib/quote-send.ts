@@ -2,6 +2,7 @@ import type { RfqChannel } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getCompanyConfig } from "@/lib/company";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
+import { getMailboxUser } from "@/lib/mailbox";
 import { buildQuotePdfBuffer } from "@/lib/pdf/render-quote-buffer";
 import { formatMoney } from "@/lib/tax";
 import { decimalToNumber, makeQuoteThreadRef } from "@/lib/quotes";
@@ -170,7 +171,7 @@ export async function sendQuoteToBuyer(
         body: text,
         messageId: sent.messageId,
         inReplyTo: inReplyTo || "",
-        fromEmail: process.env.GMAIL_USER?.trim() || "",
+        fromEmail: getMailboxUser(),
         toEmail: to,
         analysis: { kind: "quote_send", filename },
       },

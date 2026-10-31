@@ -518,7 +518,7 @@ export type VendorReplyResult =
       replyIntent?: string;
     };
 
-/** Match an inbound Gmail message to a vendor outreach reply. */
+/** Match an inbound mailbox message to a vendor outreach reply. */
 export async function handleVendorReplyEmail(
   parsed: ParsedMail
 ): Promise<VendorReplyResult> {

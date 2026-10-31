@@ -12,6 +12,7 @@ import { extractRfqItems } from "@/lib/rfq-items";
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 /** Deterministic catalog match from parsed RFQ — no AI. */
 export async function GET(_req: NextRequest, { params }: Params) {

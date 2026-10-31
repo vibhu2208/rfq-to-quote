@@ -6,11 +6,17 @@ import {
   matchProductsToRfq,
   matchProductsToRfqItems,
 } from "@/lib/product-match";
+import {
+  quoteLinePresentation,
+  requirementForProduct,
+} from "@/lib/quote-line-alias";
 
 export type QuoteFromRfqLine = {
   productId: string;
   qty: number;
   unitPrice?: number;
+  aliasName?: string;
+  unit?: string;
 };
 
 export type CreateQuoteFromRfqInput = {
@@ -65,16 +71,35 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     },
     qty: number,
     sortOrder: number,
-    unitPriceOverride?: number
+    unitPriceOverride?: number,
+    client?: {
+      name?: string;
+      code?: string | null;
+      brand?: string | null;
+      model?: string | null;
+      unit?: string | null;
+      extraNotes?: string | null;
+    }
   ): LineCreate => {
     const unitPrice = resolveQuoteUnitPrice(unitPriceOverride, p);
     const taxRate = decimalToNumber(p.taxRate);
+    const presented = quoteLinePresentation({
+      clientName: client?.name,
+      clientCode: client?.code,
+      clientBrand: client?.brand,
+      clientModel: client?.model,
+      clientUnit: client?.unit,
+      extraNotes: client?.extraNotes,
+      catalogName: p.name,
+      catalogDescription: p.description || "",
+      catalogUnit: p.unit,
+    });
     return {
       productId: p.id,
-      description: p.description || "",
-      aliasName: p.name,
+      description: presented.description,
+      aliasName: presented.aliasName,
       qty,
-      unit: p.unit,
+      unit: presented.unit,
       unitPrice,
       taxRate,
       lineTotal: Math.round(qty * unitPrice * 100) / 100,
@@ -102,28 +127,58 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
       products = [...products, ...extra];
     }
     const byId = new Map(products.map((p) => [p.id, p]));
+    const claimed = new Set<number>();
+    const topMatchProductIds =
+      lineRequests.length === requirementItems.length
+        ? lineRequests.map((req) => req.productId)
+        : [];
     lines = lineRequests
       .map((req, i) => {
         const p = byId.get(req.productId);
         if (!p) return null;
         const qty = req.qty > 0 ? req.qty : 1;
-        return buildLine(p, qty, i, req.unitPrice);
+        const fromRequirement = requirementForProduct({
+          productId: p.id,
+          lineIndex: i,
+          requirements: requirementItems,
+          topMatchProductIds,
+          claimed,
+        });
+        return buildLine(p, qty, i, req.unitPrice, {
+          name: req.aliasName || fromRequirement?.description,
+          code: fromRequirement?.code,
+          brand: fromRequirement?.brand,
+          model: fromRequirement?.model,
+          unit: req.unit || fromRequirement?.unit,
+          extraNotes: fromRequirement?.extraNotes,
+        });
       })
       .filter(Boolean) as LineCreate[];
   }
 
   if (lines.length === 0 && requirementItems.length > 1) {
-    lines = requirementItems.map((item, i) => ({
-      productId: null,
-      description: "",
-      aliasName: item.description,
-      qty: item.quantity,
-      unit: item.unit,
-      unitPrice: 0,
-      taxRate: 18,
-      lineTotal: 0,
-      sortOrder: i,
-    }));
+    lines = requirementItems.map((item, i) => {
+      const presented = quoteLinePresentation({
+        clientName: item.description,
+        clientCode: item.code,
+        clientBrand: item.brand,
+        clientModel: item.model,
+        clientUnit: item.unit,
+        extraNotes: item.extraNotes,
+        catalogName: item.description,
+      });
+      return {
+        productId: null,
+        description: presented.description,
+        aliasName: presented.aliasName,
+        qty: item.quantity,
+        unit: presented.unit,
+        unitPrice: 0,
+        taxRate: 18,
+        lineTotal: 0,
+        sortOrder: i,
+      };
+    });
   }
 
   if (lines.length === 0) {
@@ -209,6 +264,8 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
     lines.push({
       productId: top.product.id,
       qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
+      aliasName: item.requirement.description,
+      unit: item.requirement.unit,
     });
   }
 
@@ -228,6 +285,9 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
 export type ExtractedQuoteItem = {
   productName: string;
   model?: string;
+  brand?: string;
+  code?: string;
+  extraNotes?: string;
   quantity: number;
   unit: string;
   unitPrice?: number;
@@ -240,9 +300,12 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
   const products = await prisma.product.findMany({ where: { active: true } });
   const parsedSpecs = {
     items: items.map((item) => ({
-      description: [item.productName, item.model].filter(Boolean).join(" "),
+      description: item.productName || item.code || "",
       productName: item.productName,
       model: item.model,
+      brand: item.brand,
+      code: item.code,
+      extraNotes: item.extraNotes,
       quantity: item.quantity,
       unit: item.unit,
     })),
@@ -261,17 +324,29 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
   return items.map((item, i) => {
     const top = itemMatches[i]?.matches[0];
     const qty = item.quantity > 0 ? item.quantity : 1;
-    const extractedName = [item.productName, item.model].filter(Boolean).join(" — ") || "From document";
+    const presented = quoteLinePresentation({
+      clientName: item.productName,
+      clientCode: item.code,
+      clientBrand: item.brand,
+      clientModel: item.model,
+      clientUnit: item.unit,
+      extraNotes: item.extraNotes,
+      catalogName: top?.product.name || "From document",
+      catalogDescription: top
+        ? products.find((p) => p.id === top.product.id)?.description || ""
+        : "",
+      catalogUnit: top?.product.unit,
+    });
 
     if (top && top.score >= 6) {
       const full = products.find((p) => p.id === top.product.id);
       const unitPrice = full ? catalogSellPrice(full) : top.product.offerPrice;
       return {
         productId: top.product.id,
-        description: full?.description || "",
-        aliasName: top.product.name,
+        description: presented.description,
+        aliasName: presented.aliasName,
         qty,
-        unit: (full?.unit || top.product.unit || item.unit || "pcs") as string,
+        unit: presented.unit,
         unitPrice,
         taxRate: top.product.taxRate || 18,
       };
@@ -279,10 +354,10 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
 
     return {
       productId: null,
-      description: "",
-      aliasName: extractedName,
+      description: presented.description,
+      aliasName: presented.aliasName,
       qty,
-      unit: item.unit || "pcs",
+      unit: presented.unit,
       unitPrice: item.unitPrice && item.unitPrice > 0 ? item.unitPrice : 0,
       taxRate: 18,
     };

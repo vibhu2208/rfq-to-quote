@@ -5,7 +5,10 @@ export type RfqRequirementItem = {
   quantity: number;
   unit: string;
   brand?: string | null;
+  model?: string | null;
   category?: string | null;
+  code?: string | null;
+  extraNotes?: string | null;
 };
 
 function asString(v: unknown): string {
@@ -28,27 +31,36 @@ function normalizeItem(raw: unknown, lineNumber: number): RfqRequirementItem | n
   const item = raw as Record<string, unknown>;
 
   const brand = asString(item.brand) || null;
-  const description =
-    asString(item.description) ||
-    asString(item.productName) ||
-    asString(item.name) ||
-    "";
+  const code =
+    asString(item.code) || asString(item.sku) || asString(item.productCode) || null;
+  const productName = asString(item.productName) || asString(item.name);
+  const descriptionField = asString(item.description);
+  const named = productName || descriptionField;
   const model = asString(item.model);
   const quantity = asNumber(item.quantity, 1);
-  const unit = asString(item.unit) || "pcs";
+  const unit = asString(item.unit);
   const category = asString(item.category) || null;
+  const extraNotes =
+    asString(item.extraNotes) ||
+    asString(item.notes) ||
+    (productName && descriptionField && descriptionField !== productName
+      ? descriptionField
+      : "");
 
-  const parts = [brand, description, model].filter(Boolean);
-  const finalDescription = parts.join(" ").trim();
+  // Keep the wording the client wrote. Brand/model stay on the item for matching.
+  const finalDescription = named || model || brand || code || "";
   if (!finalDescription) return null;
 
   return {
     lineNumber,
     description: finalDescription,
     quantity,
-    unit,
+    unit: unit || "pcs",
     brand,
+    model: model || null,
     category,
+    code,
+    extraNotes: extraNotes || null,
   };
 }
 
@@ -113,7 +125,7 @@ export function extractRfqItems(parsedSpecs: unknown, rawText?: string): RfqRequ
 }
 
 export function requirementSearchText(item: RfqRequirementItem): string {
-  return [item.brand, item.description].filter(Boolean).join(" ");
+  return [item.brand, item.description, item.code].filter(Boolean).join(" ");
 }
 
 /** Bullet / numbered line: "• CCTV Cameras – 10 Units" */

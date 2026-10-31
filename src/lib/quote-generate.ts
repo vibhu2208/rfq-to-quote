@@ -96,9 +96,12 @@ export async function generateQuoteFromRequirement(input: GenerateQuoteInput) {
               parsedSpecs: {
                 ...existingSpecs,
                 items: input.extractedItems.map((item) => ({
-                  description: [item.productName, item.model].filter(Boolean).join(" "),
+                  description: item.productName || item.code || "",
                   productName: item.productName,
                   model: item.model,
+                  brand: item.brand,
+                  code: item.code,
+                  extraNotes: item.extraNotes,
                   quantity: item.quantity,
                   unit: item.unit,
                 })),

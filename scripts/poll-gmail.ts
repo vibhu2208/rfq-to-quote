@@ -6,7 +6,7 @@ async function main() {
   const limitArg = process.argv.find((arg) => /^\d+$/.test(arg));
   const limit = Number(limitArg || 20);
   console.log(
-    `Polling Gmail inbox (limit ${limit}, include existing unread: ${includeExisting})…`
+    `Polling mailbox (limit ${limit}, include existing unread: ${includeExisting})…`
   );
   const result = await pollGmailInbox({ limit, includeExisting });
   console.log(JSON.stringify(result, null, 2));

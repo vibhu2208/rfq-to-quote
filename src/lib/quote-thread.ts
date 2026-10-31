@@ -3,6 +3,7 @@ import type { Quote, QuoteReplyIntent, QuoteStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getCompanyConfig } from "@/lib/company";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
+import { getMailboxUser } from "@/lib/mailbox";
 import { decimalToNumber, makeQuoteThreadRef } from "@/lib/quotes";
 import {
   analyzeQuoteReply,
@@ -443,7 +444,7 @@ export async function handleQuoteReplyEmail(
         messageId,
         inReplyTo: referenceIds[0] || "",
         fromEmail,
-        toEmail: process.env.GMAIL_USER?.trim() || "",
+        toEmail: getMailboxUser(),
         intent: analysis.intent,
         analysis: {
           confidence: analysis.confidence,
@@ -472,7 +473,7 @@ export async function handleQuoteReplyEmail(
           body: autoBody || "",
           messageId: outboundAutoMsgId,
           inReplyTo: messageId,
-          fromEmail: process.env.GMAIL_USER?.trim() || "",
+          fromEmail: getMailboxUser(),
           toEmail: quote.buyerEmail,
           intent: analysis.intent,
           analysis: { kind: "auto_reply", forIntent: analysis.intent },
@@ -582,7 +583,7 @@ export async function sendQuoteFollowUpEmail(input: {
         body: text,
         messageId: sent.messageId,
         inReplyTo: inReplyTo || "",
-        fromEmail: process.env.GMAIL_USER?.trim() || "",
+        fromEmail: getMailboxUser(),
         toEmail: to,
         analysis: { kind: "manual_reply", via: "copilot_or_lifecycle" },
       },

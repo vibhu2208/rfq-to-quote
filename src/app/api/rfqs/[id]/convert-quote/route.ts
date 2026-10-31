@@ -6,6 +6,7 @@ import { createQuoteFromRfq } from "@/lib/quote-from-rfq";
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 const bodySchema = z.object({
   productIds: z.array(z.string()).optional(),
@@ -16,6 +17,8 @@ const bodySchema = z.object({
         productId: z.string().min(1),
         qty: z.coerce.number().optional(),
         unitPrice: z.coerce.number().optional(),
+        aliasName: z.string().optional(),
+        unit: z.string().optional(),
       })
     )
     .optional(),
@@ -34,7 +37,13 @@ export async function POST(req: NextRequest, { params }: Params) {
 
   let productIds: string[] = [];
   let quantities: Record<string, number> = {};
-  let lines: Array<{ productId: string; qty: number; unitPrice?: number }> = [];
+  let lines: Array<{
+    productId: string;
+    qty: number;
+    unitPrice?: number;
+    aliasName?: string;
+    unit?: string;
+  }> = [];
   try {
     const json = await req.json().catch(() => ({}));
     const parsed = bodySchema.safeParse(json);
@@ -45,6 +54,8 @@ export async function POST(req: NextRequest, { params }: Params) {
         productId: line.productId,
         qty: line.qty && line.qty > 0 ? line.qty : 1,
         unitPrice: line.unitPrice,
+        aliasName: line.aliasName?.trim() || undefined,
+        unit: line.unit?.trim() || undefined,
       }));
     }
   } catch {

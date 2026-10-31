@@ -85,6 +85,7 @@ Rules:
 - "specs" should mirror the first/primary item for backward compatibility.
 - Prefer the closest category from the list; use "General / Uncategorized" only if nothing fits.
 - Do not invent prices or product codes.
+- Keep each item "description" in the customer's original wording. Do not rename it to a catalog, SKU, or brand-model name.
 - confidence < ${PARSE_CONFIDENCE_THRESHOLD} if the message is vague or not a purchase request.
 
 Example input:
