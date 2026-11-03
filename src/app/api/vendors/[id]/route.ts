@@ -14,6 +14,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
     where: { id },
     include: {
       categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
+      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
       productHistory: { orderBy: { lastQuotedAt: "desc" } },
     },
   });
@@ -37,6 +38,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
   try {
     const vendor = await prisma.$transaction(async (transaction) => {
       await transaction.vendorCategory.deleteMany({ where: { vendorId: id } });
+      await transaction.vendorContact.deleteMany({ where: { vendorId: id } });
       return transaction.vendor.update({
         where: { id },
         data: {
@@ -53,8 +55,19 @@ export async function PATCH(request: NextRequest, { params }: Params) {
               keywords: category.keywords,
             })),
           },
+          contacts: {
+            create: data.contacts
+              .filter((contact) => contact.name || contact.email || contact.phone)
+              .map((contact, index) => ({
+                name: contact.name,
+                email: contact.email,
+                phone: contact.phone,
+                role: contact.role,
+                isPrimary: contact.isPrimary || index === 0,
+              })),
+          },
         },
-        include: { categories: true, productHistory: true },
+        include: { categories: true, contacts: true, productHistory: true },
       });
     });
     return NextResponse.json(serializeVendor(vendor));
@@ -71,7 +84,7 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   const vendor = await prisma.vendor.update({
     where: { id },
     data: { active: false },
-    include: { categories: true, productHistory: true },
+    include: { categories: true, contacts: true, productHistory: true },
   });
   return NextResponse.json(serializeVendor(vendor));
 }

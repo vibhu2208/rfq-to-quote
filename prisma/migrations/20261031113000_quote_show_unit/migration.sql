@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Quote" ADD COLUMN "showUnit" BOOLEAN NOT NULL DEFAULT true;

@@ -5,3 +5,4 @@ export default function NewQuotePage() {
   const company = getCompanyConfig();
   return <QuoteBuilder sellerState={company.sellerState} company={company} />;
 }
+

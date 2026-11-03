@@ -51,7 +51,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
   return NextResponse.json(defaults);
 }
 
-/** Send the quote PDF to the buyer via email (WhatsApp later). */
+/** Send the quote PDF to the buyer via email or WhatsApp. */
 export async function POST(req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;

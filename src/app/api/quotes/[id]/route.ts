@@ -16,6 +16,8 @@ const lineSchema = z.object({
   qty: z.coerce.number().nonnegative(),
   unit: z.string().default("nos"),
   unitPrice: z.coerce.number().nonnegative(),
+  costPrice: z.coerce.number().nonnegative().nullable().optional(),
+  costVendorName: z.string().optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
@@ -30,6 +32,7 @@ const quoteSchema = z.object({
   buyerGstin: z.string().optional(),
   withGst: z.boolean().optional(),
   showHsn: z.boolean().optional(),
+  showUnit: z.boolean().optional(),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional(),
   deliveryCharge: z.coerce.number().nonnegative().optional(),
   discountPercent: z.coerce.number().nonnegative().optional(),
@@ -90,6 +93,8 @@ function serializeQuote(quote: {
     qty: unknown;
     unit: string;
     unitPrice: unknown;
+    costPrice?: unknown;
+    costVendorName?: string;
     taxRate: unknown;
     lineTotal: unknown;
     sortOrder: number;
@@ -113,6 +118,8 @@ function serializeQuote(quote: {
       aliasName: li.aliasName || "",
       qty: decimalToNumber(li.qty),
       unitPrice: decimalToNumber(li.unitPrice),
+      costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
+      costVendorName: li.costVendorName || "",
       taxRate: decimalToNumber(li.taxRate),
       lineTotal: decimalToNumber(li.lineTotal),
     })),
@@ -159,7 +166,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const nextNumber = data.quoteNumber?.trim() || "";
   const issuedAt =
     data.quoteDate !== undefined ? parseQuoteDate(data.quoteDate) : undefined;
-  const status = data.status ?? "DRAFT";
+  const status = data.status ?? null;
 
   const calc = calculateQuoteTotals({
     lines: lineItems.map((l) => ({
@@ -195,6 +202,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
       qty: l.qty,
       unit: l.unit || "pcs",
       unitPrice: l.unitPrice,
+      costPrice: l.costPrice && l.costPrice > 0 ? l.costPrice : null,
+      costVendorName: l.costVendorName?.trim() || "",
       taxRate: l.taxRate,
       lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
       sortOrder: l.sortOrder ?? i,
@@ -237,9 +246,12 @@ export async function PUT(req: NextRequest, { params }: Params) {
           "termsText" = COALESCE(${data.termsText}, "termsText"),
           "closingText" = COALESCE(${data.closingText}, "closingText"),
           "issuedAt" = COALESCE(${issuedAt}, "issuedAt"),
-          "status" = CAST(${status} AS "QuoteStatus"),
+          "status" = CASE
+            WHEN ${status}::text IS NULL THEN "status"
+            ELSE CAST(${status} AS "QuoteStatus")
+          END,
           "sentAt" = CASE
-            WHEN CAST(${status} AS "QuoteStatus") = 'SENT' AND "sentAt" IS NULL THEN NOW()
+            WHEN ${status}::text = 'SENT' AND "sentAt" IS NULL THEN NOW()
             ELSE "sentAt"
           END,
           "updatedAt" = NOW()
@@ -252,7 +264,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
       ins AS (
         INSERT INTO "QuoteLineItem" (
           "id", "quoteId", "productId", "description", "aliasName",
-          "qty", "unit", "unitPrice", "taxRate", "lineTotal", "sortOrder"
+          "qty", "unit", "unitPrice", "costPrice", "costVendorName",
+          "taxRate", "lineTotal", "sortOrder"
         )
         SELECT
           COALESCE(NULLIF(e->>'id', ''), replace(gen_random_uuid()::text, '-', '')),
@@ -263,6 +276,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
           COALESCE((e->>'qty')::numeric, 0),
           COALESCE(e->>'unit', 'nos'),
           COALESCE((e->>'unitPrice')::numeric, 0),
+          NULLIF(e->>'costPrice', '')::numeric,
+          COALESCE(e->>'costVendorName', ''),
           COALESCE((e->>'taxRate')::numeric, 18),
           COALESCE((e->>'lineTotal')::numeric, 0),
           COALESCE((e->>'sortOrder')::int, 0)

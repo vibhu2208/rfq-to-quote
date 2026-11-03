@@ -214,6 +214,8 @@ model Quote {
   withGst         Boolean @default(true)
   /// When false the HSN column is omitted from the quotation
   showHsn         Boolean @default(true)
+  /// When false the unit (Nos, Pcs, etc.) is omitted from the quotation
+  showUnit        Boolean @default(true)
   gstMode         String  @default("AUTO") // AUTO | CGST_SGST | IGST
   subtotal        Decimal @default(0) @db.Decimal(14, 2)
   gstAmount       Decimal @default(0) @db.Decimal(14, 2)
@@ -368,10 +370,13 @@ model QuoteLineItem {
   aliasName   String  @default("")
   qty         Decimal @default(1) @db.Decimal(12, 3)
   unit        String  @default("pcs")
-  unitPrice   Decimal @default(0) @db.Decimal(12, 2)
-  taxRate     Decimal @default(18) @db.Decimal(5, 2)
-  lineTotal   Decimal @default(0) @db.Decimal(14, 2)
-  sortOrder   Int     @default(0)
+  unitPrice      Decimal  @default(0) @db.Decimal(12, 2)
+  /// Vendor / last-quoted cost, shown on the quote editor (not on the PDF)
+  costPrice      Decimal? @db.Decimal(12, 2)
+  costVendorName String   @default("")
+  taxRate        Decimal  @default(18) @db.Decimal(5, 2)
+  lineTotal      Decimal  @default(0) @db.Decimal(14, 2)
+  sortOrder      Int      @default(0)
 
   quote   Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
@@ -391,6 +396,7 @@ model Vendor {
   updatedAt        DateTime               @updatedAt
 
   categories     VendorCategory[]
+  contacts       VendorContact[]
   productHistory VendorProductHistory[]
   outreaches     VendorOutreach[]
 
@@ -398,6 +404,24 @@ model Vendor {
   @@index([phone])
   @@index([email])
   @@index([active])
+}
+
+/// Point of contact at a vendor — Recore can email one or many.
+model VendorContact {
+  id        String   @id @default(cuid())
+  vendorId  String
+  name      String   @default("")
+  email     String   @default("")
+  phone     String   @default("")
+  role      String   @default("")
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@index([vendorId])
+  @@index([email])
 }
 
 model VendorCategory {

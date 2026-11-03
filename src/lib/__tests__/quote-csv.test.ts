@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as XLSX from "xlsx";
 import { parseQuoteSpreadsheet } from "@/lib/quote-csv";
 import { matchProductsToRfqItems } from "@/lib/product-match";
 import type { Product } from "@prisma/client";
@@ -113,6 +114,86 @@ Network Switch 24 port,4`;
       code: "UPS-1KVA",
     });
     expect(parsed.items[1].quantity).toBe(4);
+  });
+
+  it("reads unit price, description, tax, HSN, and company for a full quote spreadsheet", () => {
+    const csv = `Client,Item Name,Description,SKU,Qty,Unit,Rate,GST %,HSN
+Acme Pvt Ltd,ZXQ Core Switch,48-port SFP+ HQ,ZX-91827,2,No's,12500,18,851762`;
+    const parsed = parseQuoteSpreadsheet(Buffer.from(csv), "quote.csv");
+    expect(parsed.company).toBe("Acme Pvt Ltd");
+    expect(parsed.items[0]).toMatchObject({
+      productName: "ZXQ Core Switch",
+      extraNotes: "48-port SFP+ HQ",
+      code: "ZX-91827",
+      quantity: 2,
+      unit: "No's",
+      unitPrice: 12500,
+      taxRate: 18,
+      hsnCode: "851762",
+    });
+  });
+
+  it("reads estimated unit price, amount, GST rate, and product code from a budgetary quote workbook", () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ["Description", "Amount (INR)"],
+        ["Estimated subtotal (ex GST)", 4111961],
+      ]),
+      "Summary"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        [
+          "SL.NO",
+          "MAKE",
+          "PRODUCT CODE / MODEL",
+          "PRODUCT / DESCRIPTION",
+          "QTY",
+          "EST. UNIT PRICE (INR, EX GST)",
+          "EST. AMOUNT (EX GST)",
+          "GST 18%",
+          "EST. TOTAL (INCL. GST)",
+        ],
+        [1, "Netgear", "XSM4328FV + APS250W", "24 Port SFP Core Switch", 2, 325000, 650000, 117000, 767000],
+        [2, "Netgear", "GS752TX", "48 Port Data Switch", 3, 85000, 255000, 45900, 300900],
+      ]),
+      "Estimated Prices"
+    );
+    const parsed = parseQuoteSpreadsheet(
+      Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" })),
+      "network_line_items_budgetary_prices.xlsx"
+    );
+    expect(parsed.items).toHaveLength(2);
+    expect(parsed.items[0]).toMatchObject({
+      productName: "24 Port SFP Core Switch",
+      brand: "Netgear",
+      code: "XSM4328FV + APS250W",
+      quantity: 2,
+      unit: "",
+      unitPrice: 325000,
+      taxRate: 18,
+    });
+    expect(parsed.items[0].unit).not.toBe("325000");
+    expect(parsed.items[1]).toMatchObject({
+      productName: "48 Port Data Switch",
+      quantity: 3,
+      unitPrice: 85000,
+      taxRate: 18,
+    });
+  });
+
+  it("derives unit price from line amount when rate is missing", () => {
+    const csv = `Particulars,Qty,Amount
+Cat6 UTP Cable,30,45000`;
+    const parsed = parseQuoteSpreadsheet(Buffer.from(csv), "quote.csv");
+    expect(parsed.items[0]).toMatchObject({
+      productName: "Cat6 UTP Cable",
+      quantity: 30,
+      unitPrice: 1500,
+    });
   });
 });
 

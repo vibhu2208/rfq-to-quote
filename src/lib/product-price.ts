@@ -1,6 +1,15 @@
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
 
+export type ProductQuotedPriceHistoryItem = {
+  quoteId: string;
+  quoteNumber: string;
+  clientName: string;
+  unitPrice: number;
+  quotedAt: string;
+  status: string;
+};
+
 export async function recordProductLastPrice(productId: string, price: number) {
   if (!Number.isFinite(price) || price < 0) {
     throw new Error("Price must be a number 0 or greater");
@@ -21,6 +30,88 @@ export async function recordProductLastPrice(productId: string, price: number) {
     lastPrice: decimalToNumber(product.lastPrice),
     lastPricedAt: product.lastPricedAt,
     offerPrice: decimalToNumber(product.offerPrice),
+  };
+}
+
+/** Recent sell prices for a catalog product from past quotes (newest first). */
+export async function getProductPriceHistory(
+  productId: string,
+  limit = 4
+): Promise<{
+  productId: string;
+  code: string;
+  name: string;
+  lastPrice: number | null;
+  lastPricedAt: string | null;
+  offerPrice: number;
+  history: ProductQuotedPriceHistoryItem[];
+}> {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      lastPrice: true,
+      lastPricedAt: true,
+      offerPrice: true,
+    },
+  });
+  if (!product) {
+    throw new Error("Product not found");
+  }
+
+  const lines = await prisma.quoteLineItem.findMany({
+    where: {
+      productId,
+      unitPrice: { gt: 0 },
+    },
+    orderBy: [{ quote: { updatedAt: "desc" } }, { sortOrder: "asc" }],
+    take: 40,
+    select: {
+      unitPrice: true,
+      quote: {
+        select: {
+          id: true,
+          quoteNumber: true,
+          buyerCompany: true,
+          buyerName: true,
+          status: true,
+          updatedAt: true,
+          createdAt: true,
+        },
+      },
+    },
+  });
+
+  const history: ProductQuotedPriceHistoryItem[] = [];
+  const seenQuotes = new Set<string>();
+  for (const line of lines) {
+    if (seenQuotes.has(line.quote.id)) continue;
+    seenQuotes.add(line.quote.id);
+    const clientName =
+      line.quote.buyerCompany.trim() ||
+      line.quote.buyerName.trim() ||
+      "Unknown client";
+    history.push({
+      quoteId: line.quote.id,
+      quoteNumber: line.quote.quoteNumber,
+      clientName,
+      unitPrice: decimalToNumber(line.unitPrice),
+      quotedAt: (line.quote.updatedAt || line.quote.createdAt).toISOString(),
+      status: line.quote.status,
+    });
+    if (history.length >= limit) break;
+  }
+
+  return {
+    productId: product.id,
+    code: product.code,
+    name: product.name,
+    lastPrice: decimalToNumber(product.lastPrice) || null,
+    lastPricedAt: product.lastPricedAt?.toISOString() || null,
+    offerPrice: decimalToNumber(product.offerPrice),
+    history,
   };
 }
 

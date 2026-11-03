@@ -46,6 +46,20 @@ export function formatAttachmentSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Parse /api/quotes/:quoteId/attachments/:attachmentId so nested route params cannot be swapped. */
+export function parseQuoteAttachmentApiPath(pathname: string): {
+  quoteId: string;
+  attachmentId: string;
+} | null {
+  const path = pathname.split("?")[0].replace(/\/+$/, "");
+  const match = path.match(/\/api\/quotes\/([^/]+)\/attachments\/([^/]+)$/);
+  if (!match) return null;
+  return {
+    quoteId: decodeURIComponent(match[1]),
+    attachmentId: decodeURIComponent(match[2]),
+  };
+}
+
 export function isPreviewableAttachment(contentType: string): boolean {
   return (
     contentType.startsWith("image/") ||

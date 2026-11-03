@@ -3,8 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { matchProductsToRfq } from "@/lib/product-match";
 import { buildMarketplaceQuery, extractBudget } from "@/lib/marketplace/query";
-import { searchFlipkartApify, searchIndiaMartApify } from "@/lib/marketplace/apify";
-import { searchAmazonIndia } from "@/lib/marketplace/serpapi";
+import { searchMarketplaces } from "@/lib/marketplace/search";
 import { loadStoredMarketplacePrices, normalizeMarketplaceComparison, saveMarketplacePrices } from "@/lib/marketplace/store";
 import type { MarketplaceComparison } from "@/lib/marketplace/types";
 
@@ -69,16 +68,7 @@ export async function GET(req: NextRequest, { params }: Params) {
   const catalogMatches = matchProductsToRfq(products, input, 1);
   const topMatch = catalogMatches[0];
 
-  const [amazonResult, flipkartResult, indiamartResult] = await Promise.all([
-    searchAmazonIndia(query),
-    searchFlipkartApify(query),
-    searchIndiaMartApify(query),
-  ]);
-
-  const errors: string[] = [];
-  if (amazonResult.error) errors.push(`Amazon: ${amazonResult.error}`);
-  if (flipkartResult.error) errors.push(`Flipkart: ${flipkartResult.error}`);
-  if (indiamartResult.error) errors.push(`IndiaMART: ${indiamartResult.error}`);
+  const searched = await searchMarketplaces(query);
 
   const result: MarketplaceComparison = normalizeMarketplaceComparison(
     {
@@ -86,10 +76,10 @@ export async function GET(req: NextRequest, { params }: Params) {
       budget: extractBudget(rfq.parsedSpecs),
       catalogPrice: topMatch?.product.offerPrice ?? null,
       catalogProductName: topMatch?.product.name ?? null,
-      amazon: amazonResult.data ?? [],
-      flipkart: flipkartResult.data ?? [],
-      indiamart: indiamartResult.data ?? [],
-      ...(errors.length > 0 ? { errors } : {}),
+      amazon: searched.amazon,
+      flipkart: searched.flipkart,
+      indiamart: searched.indiamart,
+      ...(searched.errors.length > 0 ? { errors: searched.errors } : {}),
     },
     new Date().toISOString()
   )!;

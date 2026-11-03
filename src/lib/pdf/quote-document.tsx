@@ -306,6 +306,7 @@ export type QuotePdfData = {
   status: string;
   withGst: boolean;
   showHsn?: boolean;
+  showUnit?: boolean;
   buyerName: string;
   buyerCompany: string;
   buyerEmail: string;
@@ -319,6 +320,7 @@ export type QuotePdfData = {
   closingText?: string;
   subtotal: number;
   discountAmount: number;
+  discountPercent?: number;
   gstAmount: number;
   cgstAmount: number;
   sgstAmount: number;
@@ -389,6 +391,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
     gstBuckets: Array.from(gstBuckets.entries()),
     gstAmount: data.gstAmount,
     discountAmount: data.discountAmount,
+    discountPercent: data.discountPercent,
     deliveryCharge: data.deliveryCharge,
     otherTaxAmount: data.otherTaxAmount,
     otherTaxLabel: data.otherTaxLabel,

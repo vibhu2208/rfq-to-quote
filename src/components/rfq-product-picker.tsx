@@ -10,7 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Package, Search, X } from "lucide-react";
+import { ChevronDown, Package, Plus, Search, X } from "lucide-react";
 import { Money } from "@/components/ui";
 
 export type PickableProduct = {
@@ -158,6 +158,7 @@ type ProductSearchProps = {
   autoFocus?: boolean;
   onClose?: () => void;
   label?: string;
+  onAddMissing?: (query: string) => void;
 };
 
 export function RfqProductSearch({
@@ -168,6 +169,7 @@ export function RfqProductSearch({
   autoFocus = false,
   onClose,
   label,
+  onAddMissing,
 }: ProductSearchProps) {
   const listId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -295,7 +297,24 @@ export function RfqProductSearch({
           ) : loading ? (
             <p className="px-3 py-4 text-sm text-mid-green">Searching…</p>
           ) : hits.length === 0 ? (
-            <p className="px-3 py-4 text-sm text-mid-green">No products found</p>
+            <div className="px-3 py-4">
+              <p className="text-sm text-mid-green">No products found</p>
+              {onAddMissing ? (
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    onAddMissing(q.trim());
+                    setOpen(false);
+                    onClose?.();
+                  }}
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-mid-green underline-offset-2 hover:text-dark-primary hover:underline"
+                >
+                  <Plus className="h-3.5 w-3.5" strokeWidth={1.5} />
+                  Add{q.trim() ? ` “${q.trim()}”` : " this item"} to catalog
+                </button>
+              ) : null}
+            </div>
           ) : (
             hits.map((h) => (
               <SearchResultRow

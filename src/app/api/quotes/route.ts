@@ -6,6 +6,7 @@ import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { decimalToNumber, nextQuoteNumber } from "@/lib/quotes";
 import { parseQuoteDate } from "@/lib/quote-format";
+import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
 
 const lineSchema = z.object({
   id: z.string().optional(),
@@ -15,6 +16,8 @@ const lineSchema = z.object({
   qty: z.coerce.number().nonnegative(),
   unit: z.string().default("nos"),
   unitPrice: z.coerce.number().nonnegative(),
+  costPrice: z.coerce.number().nonnegative().nullable().optional(),
+  costVendorName: z.string().optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
@@ -29,6 +32,7 @@ const quoteSchema = z.object({
   buyerGstin: z.string().optional().default(""),
   withGst: z.boolean().optional().default(true),
   showHsn: z.boolean().optional().default(true),
+  showUnit: z.boolean().optional().default(true),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional().default("AUTO"),
   deliveryCharge: z.coerce.number().nonnegative().optional().default(0),
   discountPercent: z.coerce.number().nonnegative().optional().default(0),
@@ -89,6 +93,8 @@ function serializeQuote(quote: {
     qty: unknown;
     unit: string;
     unitPrice: unknown;
+    costPrice?: unknown;
+    costVendorName?: string;
     taxRate: unknown;
     lineTotal: unknown;
     sortOrder: number;
@@ -112,6 +118,8 @@ function serializeQuote(quote: {
       aliasName: li.aliasName || "",
       qty: decimalToNumber(li.qty),
       unitPrice: decimalToNumber(li.unitPrice),
+      costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
+      costVendorName: li.costVendorName || "",
       taxRate: decimalToNumber(li.taxRate),
       lineTotal: decimalToNumber(li.lineTotal),
     })),
@@ -227,6 +235,16 @@ export async function POST(req: NextRequest) {
     },
     select: { id: true, quoteNumber: true, status: true },
   });
+
+  await persistQuoteLineVendorCosts(
+    prisma,
+    quote.id,
+    data.lineItems.map((l, i) => ({
+      sortOrder: l.sortOrder ?? i,
+      costPrice: l.costPrice,
+      costVendorName: l.costVendorName,
+    }))
+  );
 
   return NextResponse.json(quote, { status: 201 });
 }

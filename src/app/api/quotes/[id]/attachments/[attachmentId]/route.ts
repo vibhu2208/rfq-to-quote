@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
+import { parseQuoteAttachmentApiPath } from "@/lib/quote-attachments";
 import {
   deleteQuoteAttachmentFile,
   downloadQuoteAttachmentFile,
@@ -14,14 +15,21 @@ function dispositionName(name: string): string {
   return name.replace(/["\\]/g, "_");
 }
 
+async function idsForRequest(req: NextRequest, params: Params["params"]) {
+  const parsed = parseQuoteAttachmentApiPath(req.nextUrl.pathname);
+  if (parsed) return parsed;
+  const { id, attachmentId } = await params;
+  return { quoteId: id, attachmentId };
+}
+
 export async function GET(req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
 
-  const { id, attachmentId } = await params;
+  const { quoteId, attachmentId } = await idsForRequest(req, params);
   const inline = req.nextUrl.searchParams.get("inline") === "1";
   const row = await prisma.quoteAttachment.findFirst({
-    where: { id: attachmentId, quoteId: id },
+    where: { id: attachmentId, quoteId },
   });
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -58,16 +66,18 @@ export async function GET(req: NextRequest, { params }: Params) {
   });
 }
 
-export async function DELETE(_req: NextRequest, { params }: Params) {
+export async function DELETE(req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
 
-  const { id, attachmentId } = await params;
-  const row = await prisma.quoteAttachment.findFirst({
-    where: { id: attachmentId, quoteId: id },
-    select: { id: true },
+  const { quoteId, attachmentId } = await idsForRequest(req, params);
+  const row = await prisma.quoteAttachment.findUnique({
+    where: { id: attachmentId },
+    select: { id: true, quoteId: true },
   });
-  if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!row || row.quoteId !== quoteId) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
   const stored = await prisma.$queryRaw<Array<{ storageKey: string }>>`
     SELECT "storageKey" FROM "QuoteAttachment" WHERE id = ${row.id}
   `;

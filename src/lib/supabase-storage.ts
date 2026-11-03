@@ -1,11 +1,15 @@
-import { prisma } from "@/lib/prisma";
 import {
   getSupabaseAdmin,
   QUOTE_ATTACHMENT_BUCKET,
   supabaseStorageConfigured,
 } from "@/lib/supabase";
+import { deleteFromS3, downloadFromS3, s3ConfigFromEnv, uploadToS3 } from "@/lib/s3-storage";
 
 let bucketReady: Promise<void> | null = null;
+
+export function isQuoteStorageSetupError(message: string): boolean {
+  return /row-level security|already exists|must be owner|not allowed/i.test(message);
+}
 
 export async function ensureQuoteAttachmentBucket(): Promise<void> {
   if (!supabaseStorageConfigured()) return;
@@ -15,11 +19,9 @@ export async function ensureQuoteAttachmentBucket(): Promise<void> {
       if (!supabase) return;
       const { data: buckets, error: listError } = await supabase.storage.listBuckets();
       if (listError) {
-        await prisma.$executeRawUnsafe(`
-          INSERT INTO storage.buckets (id, name, public, file_size_limit)
-          VALUES ('${QUOTE_ATTACHMENT_BUCKET}', '${QUOTE_ATTACHMENT_BUCKET}', false, 20971520)
-          ON CONFLICT (id) DO NOTHING
-        `);
+        if (!isQuoteStorageSetupError(listError.message)) {
+          console.warn("Quote attachment bucket list skipped:", listError.message);
+        }
         return;
       }
       if (buckets?.some((b) => b.id === QUOTE_ATTACHMENT_BUCKET || b.name === QUOTE_ATTACHMENT_BUCKET)) {
@@ -29,20 +31,39 @@ export async function ensureQuoteAttachmentBucket(): Promise<void> {
         public: false,
         fileSizeLimit: "20MB",
       });
-      if (error && !/already exists/i.test(error.message)) {
-        throw new Error(error.message);
+      if (error && !isQuoteStorageSetupError(error.message)) {
+        console.warn("Quote attachment bucket create skipped:", error.message);
       }
     })().catch((e) => {
-      bucketReady = null;
-      throw e;
+      bucketReady = Promise.resolve();
+      const message = e instanceof Error ? e.message : String(e);
+      console.warn("Quote attachment storage setup skipped:", message);
     });
   }
   await bucketReady;
 }
 
+export function storageObjectFileName(fileName: string): string {
+  const trimmed = fileName.trim() || "file";
+  const dot = trimmed.lastIndexOf(".");
+  const ext = dot > 0 ? trimmed.slice(dot) : "";
+  const base = (dot > 0 ? trimmed.slice(0, dot) : trimmed)
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 80);
+  const safeExt = ext
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\w.]/g, "")
+    .slice(0, 12);
+  return `${base || "file"}${safeExt}`;
+}
+
 export function quoteAttachmentObjectPath(quoteId: string, attachmentId: string, fileName: string): string {
-  const safe = fileName.replace(/[/\\]/g, "_") || "file";
-  return `quotes/${quoteId}/${attachmentId}/${safe}`;
+  return `quotes/${quoteId}/${attachmentId}/${storageObjectFileName(fileName)}`;
 }
 
 export async function uploadQuoteAttachmentFile(input: {
@@ -52,28 +73,56 @@ export async function uploadQuoteAttachmentFile(input: {
   contentType: string;
   body: Buffer;
 }): Promise<string | null> {
+  const path = quoteAttachmentObjectPath(input.quoteId, input.attachmentId, input.fileName);
+  if (s3ConfigFromEnv()) {
+    return uploadToS3({
+      key: path,
+      body: input.body,
+      contentType: input.contentType,
+    });
+  }
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
   await ensureQuoteAttachmentBucket();
-  const path = quoteAttachmentObjectPath(input.quoteId, input.attachmentId, input.fileName);
-  const { error } = await supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).upload(path, input.body, {
-    contentType: input.contentType || "application/octet-stream",
-    upsert: true,
-  });
-  if (error) throw new Error(error.message);
+  const { error } = await Promise.race([
+    supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).upload(path, input.body, {
+      contentType: input.contentType || "application/octet-stream",
+      upsert: true,
+    }),
+    new Promise<{ error: { message: string } }>((resolve) => {
+      setTimeout(() => resolve({ error: { message: "Storage upload timed out" } }), 8000);
+    }),
+  ]);
+  if (error) {
+    if (isQuoteStorageSetupError(error.message) || /not found|bucket/i.test(error.message)) {
+      console.warn("Quote attachment storage upload skipped:", error.message);
+      return null;
+    }
+    throw new Error(error.message);
+  }
   return path;
 }
 
 export async function downloadQuoteAttachmentFile(storageKey: string): Promise<Buffer | null> {
+  if (!storageKey) return null;
+  if (s3ConfigFromEnv()) {
+    const fromS3 = await downloadFromS3(storageKey);
+    if (fromS3) return fromS3;
+  }
   const supabase = getSupabaseAdmin();
-  if (!supabase || !storageKey) return null;
+  if (!supabase) return null;
   const { data, error } = await supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).download(storageKey);
   if (error || !data) return null;
   return Buffer.from(await data.arrayBuffer());
 }
 
 export async function deleteQuoteAttachmentFile(storageKey: string): Promise<void> {
+  if (!storageKey) return;
+  if (s3ConfigFromEnv()) {
+    await deleteFromS3(storageKey);
+    return;
+  }
   const supabase = getSupabaseAdmin();
-  if (!supabase || !storageKey) return;
+  if (!supabase) return;
   await supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).remove([storageKey]);
 }

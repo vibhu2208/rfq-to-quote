@@ -10,11 +10,14 @@ import {
   quoteLinePresentation,
   requirementForProduct,
 } from "@/lib/quote-line-alias";
+import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
 
 export type QuoteFromRfqLine = {
   productId: string;
   qty: number;
   unitPrice?: number;
+  costPrice?: number;
+  costVendorName?: string;
   aliasName?: string;
   unit?: string;
 };
@@ -52,6 +55,8 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     qty: number;
     unit: string;
     unitPrice: number;
+    costPrice?: number | null;
+    costVendorName?: string;
     taxRate: number;
     lineTotal: number;
     sortOrder: number;
@@ -79,6 +84,10 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
       model?: string | null;
       unit?: string | null;
       extraNotes?: string | null;
+    },
+    cost?: {
+      price?: number;
+      vendorName?: string;
     }
   ): LineCreate => {
     const unitPrice = resolveQuoteUnitPrice(unitPriceOverride, p);
@@ -101,6 +110,11 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
       qty,
       unit: presented.unit,
       unitPrice,
+      costPrice:
+        cost?.price != null && Number.isFinite(cost.price) && cost.price > 0
+          ? cost.price
+          : null,
+      costVendorName: cost?.vendorName?.trim() || "",
       taxRate,
       lineTotal: Math.round(qty * unitPrice * 100) / 100,
       sortOrder,
@@ -144,14 +158,24 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           topMatchProductIds,
           claimed,
         });
-        return buildLine(p, qty, i, req.unitPrice, {
-          name: req.aliasName || fromRequirement?.description,
-          code: fromRequirement?.code,
-          brand: fromRequirement?.brand,
-          model: fromRequirement?.model,
-          unit: req.unit || fromRequirement?.unit,
-          extraNotes: fromRequirement?.extraNotes,
-        });
+        return buildLine(
+          p,
+          qty,
+          i,
+          req.unitPrice,
+          {
+            name: req.aliasName || fromRequirement?.description,
+            code: fromRequirement?.code,
+            brand: fromRequirement?.brand,
+            model: fromRequirement?.model,
+            unit: req.unit || fromRequirement?.unit,
+            extraNotes: fromRequirement?.extraNotes,
+          },
+          {
+            price: req.costPrice,
+            vendorName: req.costVendorName,
+          }
+        );
       })
       .filter(Boolean) as LineCreate[];
   }
@@ -208,37 +232,57 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     Math.round(lines.reduce((s, l) => s + (l.lineTotal * l.taxRate) / 100, 0) * 100) / 100;
   const grandTotal = Math.round((subtotal + gstAmount) * 100) / 100;
 
-  return prisma.$transaction(async (tx) => {
-    const created = await tx.quote.create({
-      data: {
-        quoteNumber,
-        status: "DRAFT",
-        rfqId: rfq.id,
-        buyerName: rfq.customerName,
-        buyerCompany: rfq.customerCompany,
-        buyerEmail: rfq.customerEmail,
-        buyerPhone: rfq.customerPhone,
-        buyerGstin: input.buyerGstin || "",
-        buyerAddress: input.buyerAddress || "",
-        buyerState: input.buyerState || "",
-        withGst: true,
-        subtotal,
-        gstAmount,
-        cgstAmount: Math.round((gstAmount / 2) * 100) / 100,
-        sgstAmount: Math.round((gstAmount / 2) * 100) / 100,
-        grandTotal,
-        notes: "",
-        lineItems: { create: lines },
-      },
-    });
+  return prisma.$transaction(
+    async (tx) => {
+      const created = await tx.quote.create({
+        data: {
+          quoteNumber,
+          status: "DRAFT",
+          rfqId: rfq.id,
+          buyerName: rfq.customerName,
+          buyerCompany: rfq.customerCompany,
+          buyerEmail: rfq.customerEmail,
+          buyerPhone: rfq.customerPhone,
+          buyerGstin: input.buyerGstin || "",
+          buyerAddress: input.buyerAddress || "",
+          buyerState: input.buyerState || "",
+          withGst: true,
+          subtotal,
+          gstAmount,
+          cgstAmount: Math.round((gstAmount / 2) * 100) / 100,
+          sgstAmount: Math.round((gstAmount / 2) * 100) / 100,
+          grandTotal,
+          notes: "",
+        },
+      });
 
-    await tx.rfq.update({
-      where: { id: rfq.id },
-      data: { status: "QUOTED" },
-    });
+      if (lines.length > 0) {
+        await tx.quoteLineItem.createMany({
+          data: lines.map((line) => ({
+            quoteId: created.id,
+            productId: line.productId,
+            description: line.description,
+            aliasName: line.aliasName,
+            qty: line.qty,
+            unit: line.unit,
+            unitPrice: line.unitPrice,
+            taxRate: line.taxRate,
+            lineTotal: line.lineTotal,
+            sortOrder: line.sortOrder,
+          })),
+        });
+        await persistQuoteLineVendorCosts(tx, created.id, lines);
+      }
 
-    return created;
-  });
+      await tx.rfq.update({
+        where: { id: rfq.id },
+        data: { status: "QUOTED" },
+      });
+
+      return created;
+    },
+    { maxWait: 10_000, timeout: 20_000 }
+  );
 }
 
 export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLine[]> {

@@ -22,7 +22,18 @@ export default async function EditQuotePage({ params }: Props) {
     include: {
       lineItems: {
         orderBy: { sortOrder: "asc" },
-        include: { product: { select: { hsnCode: true, name: true, description: true } } },
+        include: {
+          product: {
+            select: {
+              hsnCode: true,
+              name: true,
+              description: true,
+              lastPrice: true,
+              offerPrice: true,
+              mrp: true,
+            },
+          },
+        },
       },
       rfq: {
         select: {
@@ -49,6 +60,7 @@ export default async function EditQuotePage({ params }: Props) {
     buyerGstin: quote.buyerGstin,
     withGst: quote.withGst,
     showHsn: quote.showHsn !== false,
+    showUnit: quote.showUnit !== false,
     gstMode: (quote.gstMode as QuoteFormState["gstMode"]) || "AUTO",
     deliveryCharge: decimalToNumber(quote.deliveryCharge),
     discountPercent: decimalToNumber(quote.discountPercent),
@@ -77,6 +89,12 @@ export default async function EditQuotePage({ params }: Props) {
       qty: decimalToNumber(li.qty),
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),
+      costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
+      costVendorName: li.costVendorName || "",
+      catalogLastPrice: li.product?.lastPrice != null ? decimalToNumber(li.product.lastPrice) : null,
+      catalogOfferPrice:
+        li.product?.offerPrice != null ? decimalToNumber(li.product.offerPrice) : null,
+      catalogMrp: li.product?.mrp != null ? decimalToNumber(li.product.mrp) : null,
       taxRate: decimalToNumber(li.taxRate),
       hsnCode: li.product?.hsnCode || "",
     })),
@@ -93,6 +111,9 @@ export default async function EditQuotePage({ params }: Props) {
         initial={initial}
         sellerState={company.sellerState}
         company={company}
+        quoteStatus={quote.status}
+        lastReplyIntent={quote.lastReplyIntent}
+        rfqId={quote.rfqId || undefined}
         sendContext={{
           rfqChannel: quote.rfq?.channel ?? null,
           customerEmail: quote.rfq?.customerEmail,

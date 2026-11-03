@@ -10,6 +10,8 @@ export type QuoteCsvItem = {
   quantity: number;
   unit: string;
   unitPrice: number;
+  taxRate: number | null;
+  hsnCode: string;
 };
 
 export type QuoteCsvParseResult = {
@@ -20,14 +22,16 @@ export type QuoteCsvParseResult = {
 type SourceRow = Record<string, unknown>;
 
 const NAME_KEYS = [
-  "product",
+  "product description",
+  "item description",
   "product name",
   "productname",
-  "item",
   "item name",
   "itemname",
   "particulars",
   "material",
+  "product",
+  "item",
   "name",
   "title",
   "goods",
@@ -58,7 +62,6 @@ const CODE_KEYS = [
   "model",
   "model no",
   "modelno",
-  "hsn",
 ];
 
 const QTY_KEYS = [
@@ -73,8 +76,32 @@ const QTY_KEYS = [
   "units",
 ];
 
-const UNIT_KEYS = ["unit", "uom", "uom name", "nos", "no s"];
-const PRICE_KEYS = ["rate", "price", "unit price", "unitprice", "offer price", "mrp"];
+const UNIT_KEYS = ["unit", "uom", "uom name", "unit name", "nos", "no s"];
+const PRICE_KEYS = [
+  "est unit price",
+  "unit price",
+  "unitprice",
+  "unit rate",
+  "basic rate",
+  "list price",
+  "offer price",
+  "selling price",
+  "rate",
+  "price",
+  "mrp",
+];
+const AMOUNT_KEYS = [
+  "est amount",
+  "amount ex gst",
+  "taxable value",
+  "taxable",
+  "line total",
+  "line amount",
+  "amount",
+  "value",
+];
+const TAX_KEYS = ["gst %", "gst%", "gst rate", "tax %", "tax%", "tax rate", "taxrate", "gst", "tax"];
+const HSN_KEYS = ["hsn", "hsn code", "hsncode", "sac", "sac code"];
 const BRAND_KEYS = ["brand", "make", "manufacturer"];
 const COMPANY_KEYS = ["company", "client", "customer", "buyer", "party"];
 const SKIP_KEYS = new Set(["s no", "sr no", "srno", "sno", "sl no", "slno", "serial", "#"]);
@@ -88,21 +115,132 @@ function normKey(key: string): string {
     .trim();
 }
 
-function pick(row: SourceRow, aliases: string[]): string {
-  const entries = Object.entries(row).map(([k, v]) => [normKey(k), v] as const);
-  for (const alias of aliases) {
-    const found = entries.find(([k]) => k === alias);
-    if (found && found[1] != null && String(found[1]).trim() !== "") {
-      return String(found[1]).trim();
+function headerAliasScore(header: string, alias: string): number {
+  if (!header || !alias) return 0;
+  if (header === alias) return 100 + alias.length;
+  if (header.startsWith(`${alias} `)) return 80 + alias.length;
+  if (` ${header} `.includes(` ${alias} `)) return 50 + alias.length;
+  const aliasTokens = alias.split(/\s+/).filter(Boolean);
+  const headerTokens = new Set(header.split(/\s+/).filter(Boolean));
+  if (aliasTokens.length > 0 && aliasTokens.every((token) => headerTokens.has(token))) {
+    return 30 + alias.length;
+  }
+  return 0;
+}
+
+function bestHeader(
+  keys: string[],
+  aliases: string[],
+  exclude?: (header: string) => boolean
+): string {
+  let bestKey = "";
+  let bestScore = 0;
+  for (const key of keys) {
+    const header = normKey(key);
+    if (!header || exclude?.(header)) continue;
+    for (const alias of aliases) {
+      const score = headerAliasScore(header, alias);
+      if (score > bestScore) {
+        bestScore = score;
+        bestKey = key;
+      }
     }
   }
-  return "";
+  return bestKey;
+}
+
+function pick(
+  row: SourceRow,
+  aliases: string[],
+  exclude?: (header: string) => boolean
+): string {
+  const key = bestHeader(Object.keys(row), aliases, exclude);
+  if (!key) return "";
+  const value = row[key];
+  if (value == null || String(value).trim() === "") return "";
+  return String(value).trim();
+}
+
+function isTotalHeader(header: string): boolean {
+  if (header.includes("unit price")) return false;
+  if (/\brate\b/.test(header) && !header.includes("amount") && !header.includes("total")) {
+    return false;
+  }
+  return header.includes("amount") || header.includes("total") || header.includes("value");
+}
+
+/** Price/amount columns must never be treated as UOM — "unit" matches "EST. UNIT PRICE". */
+function isNotUomHeader(header: string): boolean {
+  return (
+    header.includes("price") ||
+    header.includes("amount") ||
+    header.includes("total") ||
+    header.includes("rate") ||
+    header.includes("gst") ||
+    header.includes("tax") ||
+    header.includes("mrp") ||
+    header.includes("value") ||
+    header.includes("qty") ||
+    header.includes("quantity")
+  );
+}
+
+function looksLikeAmount(value: string): boolean {
+  const t = value.replace(/,/g, "").replace(/^[₹$€£]\s*/, "").trim();
+  if (!t) return true;
+  return /^\d+(\.\d+)?$/.test(t);
+}
+
+function headerMatchesAny(header: string, aliases: string[]): boolean {
+  return aliases.some((alias) => headerAliasScore(header, alias) > 0);
+}
+
+function sheetScore(keys: string[]): number {
+  const headers = keys.map(normKey).filter(Boolean);
+  let score = 0;
+  if (headers.some((h) => headerMatchesAny(h, QTY_KEYS))) score += 3;
+  if (headers.some((h) => headerMatchesAny(h, PRICE_KEYS) && !isTotalHeader(h))) score += 5;
+  if (headers.some((h) => headerMatchesAny(h, NAME_KEYS) || headerMatchesAny(h, NOTES_KEYS))) {
+    score += 2;
+  }
+  if (headers.some((h) => isTotalHeader(h))) score += 1;
+  return score;
+}
+
+function taxRateFromHeaders(keys: string[]): number | null {
+  for (const key of keys) {
+    const header = normKey(key);
+    const matched =
+      header.match(/\b(?:gst|tax|igst|cgst|sgst)\b[^\d]*(\d{1,2}(?:\.\d+)?)/) ||
+      header.match(/(\d{1,2}(?:\.\d+)?)\s*%/);
+    if (!matched) continue;
+    const rate = Number(matched[1]);
+    if (rate > 0 && rate <= 40) return rate;
+  }
+  return null;
+}
+
+function rowTaxRate(row: SourceRow): number | null {
+  const fromHeader = taxRateFromHeaders(Object.keys(row));
+  if (fromHeader != null) return fromHeader;
+  const raw = pick(row, TAX_KEYS, (header) => isTotalHeader(header) || header.includes("amount"));
+  const parsed = parseTaxRate(raw);
+  if (parsed != null && parsed <= 40) return parsed;
+  return null;
 }
 
 function num(value: string, fallback = 0): number {
   if (!value) return fallback;
   const n = Number(String(value).replace(/,/g, "").replace(/[^\d.-]/g, ""));
   return Number.isFinite(n) ? n : fallback;
+}
+
+function parseTaxRate(value: string): number | null {
+  if (!value.trim()) return null;
+  const n = num(value, Number.NaN);
+  if (!Number.isFinite(n) || n < 0) return null;
+  if (n > 0 && n <= 1) return Math.round(n * 10000) / 100;
+  return n;
 }
 
 export function isQuoteSpreadsheet(filename: string, mime = ""): boolean {
@@ -115,10 +253,11 @@ function recognizedHeader(keys: string[]): boolean {
   const norms = keys.map(normKey).filter(Boolean);
   return norms.some(
     (k) =>
-      NAME_KEYS.includes(k) ||
-      NOTES_KEYS.includes(k) ||
-      CODE_KEYS.includes(k) ||
-      QTY_KEYS.includes(k)
+      headerMatchesAny(k, NAME_KEYS) ||
+      headerMatchesAny(k, NOTES_KEYS) ||
+      headerMatchesAny(k, CODE_KEYS) ||
+      headerMatchesAny(k, QTY_KEYS) ||
+      headerMatchesAny(k, PRICE_KEYS)
   );
 }
 
@@ -149,13 +288,26 @@ function rowsFromCsv(text: string): SourceRow[] {
 
 function rowsFromWorkbook(buffer: Buffer): SourceRow[] {
   const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  if (!sheet) return [];
-  const withHeader = XLSX.utils.sheet_to_json<SourceRow>(sheet, { defval: "" });
-  if (withHeader.length > 0 && recognizedHeader(Object.keys(withHeader[0] || {}))) {
-    return withHeader;
+  let bestRows: SourceRow[] = [];
+  let bestScore = -1;
+  for (const name of workbook.SheetNames) {
+    const sheet = workbook.Sheets[name];
+    if (!sheet) continue;
+    const withHeader = XLSX.utils.sheet_to_json<SourceRow>(sheet, { defval: "" });
+    if (withHeader.length === 0) continue;
+    const keys = Object.keys(withHeader[0] || {});
+    if (!recognizedHeader(keys)) continue;
+    const score = sheetScore(keys);
+    if (score > bestScore) {
+      bestScore = score;
+      bestRows = withHeader;
+    }
   }
-  const matrix = XLSX.utils.sheet_to_json<(string | number)[]>(sheet, {
+  if (bestRows.length > 0) return bestRows;
+
+  const fallback = workbook.Sheets[workbook.SheetNames[0]];
+  if (!fallback) return [];
+  const matrix = XLSX.utils.sheet_to_json<(string | number)[]>(fallback, {
     header: 1,
     defval: "",
   });
@@ -182,6 +334,18 @@ function rowToItem(row: SourceRow): QuoteCsvItem | null {
 
   const qtyRaw = pick(row, QTY_KEYS);
   const quantity = Math.max(1, num(qtyRaw, 1));
+  const unitPriceRaw = num(pick(row, PRICE_KEYS, isTotalHeader), 0);
+  const lineAmount = num(
+    pick(row, AMOUNT_KEYS, (header) => header.includes("unit price") || header.includes("incl")),
+    0
+  );
+  const unitPrice =
+    unitPriceRaw > 0
+      ? unitPriceRaw
+      : lineAmount > 0
+        ? Math.round((lineAmount / quantity) * 100) / 100
+        : 0;
+  const unitRaw = pick(row, UNIT_KEYS, isNotUomHeader);
   return {
     productName: productName || code,
     model: pick(row, ["model", "model no", "modelno"]),
@@ -189,8 +353,10 @@ function rowToItem(row: SourceRow): QuoteCsvItem | null {
     code,
     extraNotes: name && notes && notes !== name ? notes : "",
     quantity,
-    unit: pick(row, UNIT_KEYS),
-    unitPrice: num(pick(row, PRICE_KEYS), 0),
+    unit: looksLikeAmount(unitRaw) ? "" : unitRaw,
+    unitPrice,
+    taxRate: rowTaxRate(row),
+    hsnCode: pick(row, HSN_KEYS),
   };
 }
 

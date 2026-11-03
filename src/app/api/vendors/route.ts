@@ -33,6 +33,17 @@ export async function GET(request: NextRequest) {
                     },
                   },
                 },
+                {
+                  contacts: {
+                    some: {
+                      OR: [
+                        { name: { contains: q, mode: "insensitive" } },
+                        { email: { contains: q, mode: "insensitive" } },
+                        { phone: { contains: q } },
+                      ],
+                    },
+                  },
+                },
               ],
             }
           : {},
@@ -40,6 +51,7 @@ export async function GET(request: NextRequest) {
     },
     include: {
       categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
+      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
       productHistory: { orderBy: { lastQuotedAt: "desc" }, take: 1 },
       outreaches: {
         where: { status: "DECLINED" },
@@ -101,8 +113,23 @@ export async function POST(request: NextRequest) {
           keywords: category.keywords,
         })),
       },
+      contacts: {
+        create: data.contacts
+          .filter((contact) => contact.name || contact.email || contact.phone)
+          .map((contact, index) => ({
+            name: contact.name,
+            email: contact.email,
+            phone: contact.phone,
+            role: contact.role,
+            isPrimary: contact.isPrimary || index === 0,
+          })),
+      },
     },
-    include: { categories: true, productHistory: true },
+    include: {
+      categories: true,
+      contacts: true,
+      productHistory: true,
+    },
   });
 
   return NextResponse.json(serializeVendor(vendor), { status: 201 });

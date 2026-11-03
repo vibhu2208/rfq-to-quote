@@ -65,10 +65,13 @@ function identityKey(vendor: Pick<VendorInput, "name" | "phone" | "email">): str
 function rowToVendor(row: SourceRow): VendorInput {
   const preferredRaw = pick(row, ["preferredChannel", "preferred_channel", "channel"]);
   const preferredChannel = preferredRaw.toUpperCase() || "EMAIL";
+  const name = pick(row, ["name", "vendor", "vendor_name"]);
+  const phone = pick(row, ["phone", "mobile", "phone_number"]);
+  const email = pick(row, ["email", "email_address"]).toLowerCase();
   return {
-    name: pick(row, ["name", "vendor", "vendor_name"]),
-    phone: pick(row, ["phone", "mobile", "phone_number"]),
-    email: pick(row, ["email", "email_address"]).toLowerCase(),
+    name,
+    phone,
+    email,
     whatsappId: pick(row, ["whatsappId", "whatsapp_id", "whatsapp"]),
     preferredChannel: preferredChannel as "EMAIL" | "WHATSAPP",
     active: true,
@@ -81,6 +84,18 @@ function rowToVendor(row: SourceRow): VendorInput {
         keywords: normalizeKeywords(pick(row, ["keywords", "keyword", "tags"])),
       },
     ],
+    contacts:
+      email || phone
+        ? [
+            {
+              name,
+              email,
+              phone,
+              role: "",
+              isPrimary: true,
+            },
+          ]
+        : [],
   };
 }
 
@@ -163,6 +178,7 @@ export async function buildVendorImportPreview(
       preferredChannel: vendor.preferredChannel,
       active: vendor.active,
       categories: vendor.categories,
+      contacts: vendor.contacts || [],
     };
     return {
       ...data,
@@ -238,6 +254,27 @@ export async function commitVendorImport(items: VendorImportPreviewItem[]) {
             keywords: category.keywords,
           },
         });
+      }
+
+      const contacts = item.data.contacts.filter(
+        (contact) => contact.name || contact.email || contact.phone
+      );
+      if (contacts.length > 0) {
+        const existingContacts = await transaction.vendorContact.count({
+          where: { vendorId },
+        });
+        if (existingContacts === 0) {
+          await transaction.vendorContact.createMany({
+            data: contacts.map((contact, index) => ({
+              vendorId,
+              name: contact.name,
+              email: contact.email,
+              phone: contact.phone,
+              role: contact.role,
+              isPrimary: contact.isPrimary || index === 0,
+            })),
+          });
+        }
       }
     }
 

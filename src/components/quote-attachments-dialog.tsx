@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Download,
   Eye,
@@ -74,6 +75,11 @@ export function QuoteAttachmentsDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<QuoteAttachmentMeta | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<QuoteAttachmentMeta | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
+  const onCountChangeRef = useRef(onCountChange);
+  onCountChangeRef.current = onCountChange;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,13 +95,13 @@ export function QuoteAttachmentsDialog({
       }
       const next = data?.attachments ?? [];
       setItems(next);
-      onCountChange?.(next.length);
+      onCountChangeRef.current?.(next.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load attachments");
     } finally {
       setLoading(false);
     }
-  }, [onCountChange, quoteId]);
+  }, [quoteId]);
 
   useEffect(() => {
     if (!open) return;
@@ -103,6 +109,9 @@ export function QuoteAttachmentsDialog({
     setFile(null);
     setError("");
     setPreview(null);
+    setPendingDelete(null);
+    setDeleting(false);
+    deletingRef.current = false;
     void load();
     const t = window.setTimeout(() => pasteZoneRef.current?.focus(), 50);
     return () => window.clearTimeout(t);
@@ -164,13 +173,21 @@ export function QuoteAttachmentsDialog({
         method: "POST",
         body,
       });
-      const { data, parseError } = await readJsonResponse<{ error?: string }>(res);
+      const { data, parseError } = await readJsonResponse<QuoteAttachmentMeta & { error?: string }>(
+        res
+      );
       if (!res.ok) {
         throw new Error(errorMessageFromJson(data, parseError || "Upload failed"));
       }
       setNote("");
       setFile(null);
-      await load();
+      if (data?.id) {
+        const next = [data, ...items.filter((item) => item.id !== data.id)];
+        setItems(next);
+        onCountChange?.(next.length);
+      } else {
+        await load();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -179,7 +196,10 @@ export function QuoteAttachmentsDialog({
   }
 
   async function remove(item: QuoteAttachmentMeta) {
+    if (deletingRef.current) return;
+    deletingRef.current = true;
     setError("");
+    setDeleting(true);
     try {
       const res = await fetch(`/api/quotes/${quoteId}/attachments/${item.id}`, {
         method: "DELETE",
@@ -188,15 +208,23 @@ export function QuoteAttachmentsDialog({
         const { data, parseError } = await readJsonResponse<{ error?: string }>(res);
         throw new Error(errorMessageFromJson(data, parseError || "Delete failed"));
       }
-      setItems((prev) => {
-        const next = prev.filter((a) => a.id !== item.id);
-        onCountChange?.(next.length);
-        return next;
-      });
+      const remaining = items.filter((a) => a.id !== item.id);
+      setItems(remaining);
+      onCountChange?.(remaining.length);
       if (preview?.id === item.id) setPreview(null);
+      setPendingDelete(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
     }
+  }
+
+  function attachmentLabel(item: QuoteAttachmentMeta): string {
+    if (item.hasFile && item.fileName) return item.fileName;
+    if (item.note?.trim()) return "this note";
+    return "this attachment";
   }
 
   if (!open) return null;
@@ -361,7 +389,8 @@ export function QuoteAttachmentsDialog({
                         type="button"
                         className="rounded-lg p-1 text-mid-green hover:bg-light-green/20"
                         title="Delete"
-                        onClick={() => void remove(item)}
+                        aria-label={`Delete ${attachmentLabel(item)}`}
+                        onClick={() => setPendingDelete(item)}
                       >
                         <Trash2 className="h-4 w-4" strokeWidth={1.5} />
                       </button>
@@ -392,6 +421,56 @@ export function QuoteAttachmentsDialog({
           </button>
         </div>
       </div>
+
+      {pendingDelete
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[80] flex items-center justify-center bg-dark-primary/45 px-4"
+              onClick={() => {
+                if (!deleting) setPendingDelete(null);
+              }}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="attach-delete-title"
+                className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <h2 id="attach-delete-title" className="text-lg font-semibold">
+                  Delete this attachment?
+                </h2>
+                <p className="mt-2 text-sm text-mid-green">
+                  This will permanently remove{" "}
+                  <span className="font-medium text-dark-primary">
+                    {attachmentLabel(pendingDelete)}
+                  </span>{" "}
+                  from the quote, including the file and any note or details
+                  saved with it. This cannot be undone.
+                </p>
+                <div className="mt-6 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    disabled={deleting}
+                    onClick={() => setPendingDelete(null)}
+                    className="rounded-lg border border-light-green/50 px-3 py-2 text-sm hover:bg-light-green/20 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={deleting}
+                    onClick={() => void remove(pendingDelete)}
+                    className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+                  >
+                    {deleting ? "Deleting…" : "Delete"}
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
 
       {preview ? (
         <div

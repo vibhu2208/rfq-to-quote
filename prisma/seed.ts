@@ -275,7 +275,8 @@ const ELECTRONICS_VENDORS = [
     name: "NetWire Solutions",
     phone: "+919810000104",
     email: "orders@netwire.example",
-    preferredChannel: "EMAIL" as const,
+    whatsappId: "+919810000104",
+    preferredChannel: "WHATSAPP" as const,
     categories: [
       {
         category: "Networking & Cables",
@@ -647,6 +648,12 @@ async function main() {
         OR: [{ phone: seed.phone }, { email: seed.email }],
       },
     });
+    const whatsappId =
+      "whatsappId" in seed && typeof seed.whatsappId === "string"
+        ? seed.whatsappId
+        : seed.preferredChannel === "WHATSAPP"
+          ? seed.phone
+          : null;
     const vendor = existing
       ? await prisma.vendor.update({
           where: { id: existing.id },
@@ -654,6 +661,7 @@ async function main() {
             name: seed.name,
             phone: seed.phone,
             email: seed.email,
+            whatsappId,
             preferredChannel: seed.preferredChannel,
             active: true,
           },
@@ -663,6 +671,7 @@ async function main() {
             name: seed.name,
             phone: seed.phone,
             email: seed.email,
+            whatsappId,
             preferredChannel: seed.preferredChannel,
           },
         });

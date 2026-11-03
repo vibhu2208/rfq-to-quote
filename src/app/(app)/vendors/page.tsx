@@ -12,6 +12,15 @@ type VendorCategory = {
   keywords: string[];
 };
 
+type VendorContact = {
+  id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  isPrimary: boolean;
+};
+
 type Vendor = {
   id: string;
   name: string;
@@ -21,6 +30,7 @@ type Vendor = {
   preferredChannel: "EMAIL" | "WHATSAPP";
   active: boolean;
   categories: VendorCategory[];
+  contacts: VendorContact[];
   declinedCount?: number;
 };
 
@@ -32,6 +42,14 @@ const emptyCategory = (): VendorCategory => ({
   keywords: [],
 });
 
+const emptyContact = (): VendorContact => ({
+  name: "",
+  email: "",
+  phone: "",
+  role: "",
+  isPrimary: false,
+});
+
 const emptyForm = (): VendorForm => ({
   name: "",
   phone: "",
@@ -40,6 +58,7 @@ const emptyForm = (): VendorForm => ({
   preferredChannel: "EMAIL",
   active: true,
   categories: [emptyCategory()],
+  contacts: [emptyContact()],
 });
 
 function apiError(value: unknown): string {
@@ -74,7 +93,7 @@ export default function VendorsPage() {
   }, [q, activeFilter]);
 
   useEffect(() => {
-    const timeout = setTimeout(load, 200);
+    const timeout = setTimeout(load, 300);
     return () => clearTimeout(timeout);
   }, [load]);
 
@@ -99,6 +118,24 @@ export default function VendorsPage() {
         subcategory: category.subcategory,
         keywords: category.keywords,
       })),
+      contacts:
+        vendor.contacts?.length > 0
+          ? vendor.contacts.map((contact) => ({
+              name: contact.name,
+              email: contact.email,
+              phone: contact.phone,
+              role: contact.role,
+              isPrimary: contact.isPrimary,
+            }))
+          : [
+              {
+                name: vendor.name,
+                email: vendor.email,
+                phone: vendor.phone,
+                role: "",
+                isPrimary: true,
+              },
+            ],
     });
     setMessage("");
     setModalOpen(true);
@@ -113,19 +150,53 @@ export default function VendorsPage() {
     }));
   }
 
+  function updateContact(index: number, patch: Partial<VendorContact>) {
+    setForm((current) => ({
+      ...current,
+      contacts: current.contacts.map((contact, contactIndex) =>
+        contactIndex === index ? { ...contact, ...patch } : contact
+      ),
+    }));
+  }
+
   async function save(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
     setMessage("");
+    const contacts = form.contacts
+      .map((contact) => ({
+        ...contact,
+        name: contact.name.trim(),
+        email: contact.email.trim(),
+        phone: contact.phone.trim(),
+        role: contact.role.trim(),
+      }))
+      .filter((contact) => contact.name || contact.email || contact.phone);
+    const primaryIndex = contacts.findIndex((contact) => contact.isPrimary);
+    const normalizedContacts =
+      contacts.length === 0
+        ? []
+        : contacts.map((contact, index) => ({
+            ...contact,
+            isPrimary: primaryIndex >= 0 ? index === primaryIndex : index === 0,
+          }));
+    const payload = {
+      ...form,
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
+      whatsappId: form.whatsappId.trim(),
+      contacts: normalizedContacts,
+    };
     const response = await fetch(
       editingId ? `/api/vendors/${editingId}` : "/api/vendors",
       {
         method: editingId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify(payload),
       }
     );
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
     setSaving(false);
     if (!response.ok) {
       setMessage(apiError(data.error));
@@ -175,7 +246,7 @@ export default function VendorsPage() {
           <input
             value={q}
             onChange={(event) => setQ(event.target.value)}
-            placeholder="Search name, phone, email, category…"
+            placeholder="Search vendor, POC, phone, email, category…"
             className="w-full rounded-lg border border-light-green/40 bg-white/50 py-2 pl-9 pr-3 text-sm outline-none focus:border-mid-green"
           />
         </div>
@@ -225,10 +296,32 @@ export default function VendorsPage() {
                   <td className="px-4 py-3">
                     <div>{vendor.phone || "—"}</div>
                     <div className="text-xs text-mid-green">{vendor.email}</div>
+                    {vendor.whatsappId ? (
+                      <div className="mt-0.5 text-[11px] text-mid-green">
+                        WA {vendor.whatsappId}
+                      </div>
+                    ) : null}
+                    {(vendor.contacts || []).filter(
+                      (contact) => contact.email || contact.phone
+                    ).length > 0 ? (
+                      <div className="mt-1 text-[11px] text-mid-green">
+                        {
+                          (vendor.contacts || []).filter(
+                            (contact) => contact.email || contact.phone
+                          ).length
+                        }{" "}
+                        POC
+                        {(vendor.contacts || []).filter(
+                          (contact) => contact.email || contact.phone
+                        ).length === 1
+                          ? ""
+                          : "s"}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3">
                     <span className="rounded bg-light-green/25 px-2 py-0.5 text-xs">
-                      {vendor.preferredChannel}
+                      {vendor.preferredChannel === "WHATSAPP" ? "WhatsApp" : "Email"}
                     </span>
                   </td>
                   <td className="px-4 py-3">
@@ -341,20 +434,32 @@ export default function VendorsPage() {
                 <span className="mb-1 block text-mid-green">Preferred channel</span>
                 <select
                   value={form.preferredChannel}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const preferredChannel = event.target
+                      .value as "EMAIL" | "WHATSAPP";
                     setForm((current) => ({
                       ...current,
-                      preferredChannel: event.target.value as "EMAIL" | "WHATSAPP",
-                    }))
-                  }
+                      preferredChannel,
+                      // Prefill WhatsApp from phone when switching channel.
+                      whatsappId:
+                        preferredChannel === "WHATSAPP" &&
+                        !current.whatsappId.trim() &&
+                        current.phone.trim()
+                          ? current.phone.trim()
+                          : current.whatsappId,
+                    }));
+                  }}
                   className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2"
                 >
                   <option value="EMAIL">Email</option>
-                  <option value="WHATSAPP">WhatsApp (future)</option>
+                  <option value="WHATSAPP">WhatsApp</option>
                 </select>
+                <span className="mt-1 block text-[11px] text-mid-green/80">
+                  Recore defaults to this channel when requesting products.
+                </span>
               </label>
               <label className="text-sm">
-                <span className="mb-1 block text-mid-green">WhatsApp ID</span>
+                <span className="mb-1 block text-mid-green">WhatsApp number</span>
                 <input
                   value={form.whatsappId}
                   onChange={(event) =>
@@ -363,9 +468,105 @@ export default function VendorsPage() {
                       whatsappId: event.target.value,
                     }))
                   }
+                  placeholder="+919876543210"
                   className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
                 />
+                <span className="mt-1 block text-[11px] text-mid-green/80">
+                  E.164 with country code. Used for product Recore via WhatsApp.
+                </span>
               </label>
+            </div>
+
+            <div className="mt-6">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-mid-green">Points of contact</h3>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setForm((current) => ({
+                      ...current,
+                      contacts: [...current.contacts, emptyContact()],
+                    }))
+                  }
+                  className="text-xs text-mid-green hover:underline"
+                >
+                  + Add POC
+                </button>
+              </div>
+              <div className="mt-2 space-y-3">
+                {form.contacts.map((contact, index) => (
+                  <div
+                    key={index}
+                    className="grid gap-2 rounded-lg bg-white/50 p-3 sm:grid-cols-2"
+                  >
+                    <input
+                      value={contact.name}
+                      onChange={(event) =>
+                        updateContact(index, { name: event.target.value })
+                      }
+                      placeholder="Name"
+                      className="rounded-lg border border-light-green/40 bg-background px-2 py-2 text-sm"
+                    />
+                    <input
+                      value={contact.role}
+                      onChange={(event) =>
+                        updateContact(index, { role: event.target.value })
+                      }
+                      placeholder="Role, e.g. Sales"
+                      className="rounded-lg border border-light-green/40 bg-background px-2 py-2 text-sm"
+                    />
+                    <input
+                      type="email"
+                      value={contact.email}
+                      onChange={(event) =>
+                        updateContact(index, { email: event.target.value })
+                      }
+                      placeholder="Email"
+                      className="rounded-lg border border-light-green/40 bg-background px-2 py-2 text-sm"
+                    />
+                    <input
+                      value={contact.phone}
+                      onChange={(event) =>
+                        updateContact(index, { phone: event.target.value })
+                      }
+                      placeholder="WhatsApp / phone (+91…)"
+                      className="rounded-lg border border-light-green/40 bg-background px-2 py-2 text-sm"
+                    />
+                    <label className="flex items-center gap-2 text-xs text-mid-green">
+                      <input
+                        type="checkbox"
+                        checked={contact.isPrimary}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            contacts: current.contacts.map((row, rowIndex) => ({
+                              ...row,
+                              isPrimary: rowIndex === index ? event.target.checked : false,
+                            })),
+                          }))
+                        }
+                      />
+                      Primary
+                    </label>
+                    {form.contacts.length > 1 ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            contacts: current.contacts.filter(
+                              (_, contactIndex) => contactIndex !== index
+                            ),
+                          }))
+                        }
+                        className="justify-self-start text-xs text-mid-green hover:underline"
+                      >
+                        Remove
+                      </button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="mt-6">

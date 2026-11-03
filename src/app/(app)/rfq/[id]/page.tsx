@@ -2,11 +2,25 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { format } from "date-fns";
-import { ChevronDown, RefreshCw, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  Mail,
+  MessageCircle,
+  PenLine,
+  Plus,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Users,
+  X,
+} from "lucide-react";
 import { StatusBadge, Money } from "@/components/ui";
 import { ProductLastPriceInput } from "@/components/product-last-price-input";
+import { AddCatalogProductDialog } from "@/components/add-catalog-product-dialog";
 import {
   ProductStockCell,
   RfqProductSearch,
@@ -14,7 +28,20 @@ import {
   type PickableProduct,
 } from "@/components/rfq-product-picker";
 import { extractRfqItems } from "@/lib/rfq-items";
+import {
+  vendorCostTotal,
+  vendorPricedLineNumbers,
+  vendorUnitCostForLine,
+  vendorsWithPriceForLine,
+} from "@/lib/vendor-line-price";
+import type { CatalogRequirementInput } from "@/lib/catalog-product-draft";
 import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import {
+  clearRecoreDraft,
+  loadRecoreDraft,
+  saveRecoreDraft,
+  type RecoreChannel,
+} from "@/lib/recore-draft";
 
 type ProductMatch = {
   score: number;
@@ -81,6 +108,9 @@ type RfqRequirementItem = {
   unit: string;
   brand?: string | null;
   category?: string | null;
+  model?: string | null;
+  code?: string | null;
+  extraNotes?: string | null;
 };
 
 type RequirementMatch = {
@@ -109,6 +139,15 @@ type VendorLineQuote = {
   productKey: string;
 };
 
+type VendorContact = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  isPrimary: boolean;
+};
+
 type VendorMatch = {
   vendor: {
     id: string;
@@ -117,6 +156,7 @@ type VendorMatch = {
     email: string;
     whatsappId: string;
     preferredChannel: "EMAIL" | "WHATSAPP";
+    contacts?: VendorContact[];
   };
   category: string;
   subcategory: string;
@@ -144,6 +184,123 @@ type VendorMatch = {
     errorMessage: string;
   } | null;
 };
+
+type VendorDirectoryRow = {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  whatsappId: string;
+  preferredChannel: "EMAIL" | "WHATSAPP";
+  contacts?: VendorContact[];
+  categories?: Array<{ category: string; subcategory?: string }>;
+  productHistory?: Array<{
+    productKey?: string;
+    lastPrice?: number | null;
+    lastQuotedAt?: string | null;
+  }>;
+};
+
+function buildContactsForVendor(vendor: {
+  id: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  whatsappId?: string;
+  contacts?: VendorContact[];
+}): VendorContact[] {
+  const mapped =
+    vendor.contacts && vendor.contacts.length > 0
+      ? vendor.contacts.map((contact) => ({
+          id: contact.id,
+          name: contact.name || "",
+          email: contact.email || "",
+          phone: contact.phone || "",
+          role: contact.role || "",
+          isPrimary: Boolean(contact.isPrimary),
+        }))
+      : [];
+  const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
+  const hasPhone = mapped.some((contact) => Boolean(contact.phone?.trim()));
+  if (vendorWa && !hasPhone) {
+    mapped.push({
+      id: `vendor-${vendor.id}-wa`,
+      name: vendor.name,
+      email: vendor.email || "",
+      phone: vendorWa,
+      role: "WhatsApp",
+      isPrimary: mapped.length === 0,
+    });
+  } else if (mapped.length === 0 && (vendor.email || vendorWa)) {
+    mapped.push({
+      id: `vendor-${vendor.id}`,
+      name: vendor.name,
+      email: vendor.email || "",
+      phone: vendorWa,
+      role: "",
+      isPrimary: true,
+    });
+  }
+  return mapped;
+}
+
+/** Manual intake from the vendors directory when auto-match misses. */
+function vendorDirectoryToMatch(
+  vendor: VendorDirectoryRow,
+  options?: {
+    productKey?: string;
+    lines?: Array<{
+      lineNumber: number;
+      description: string;
+      quantity: number;
+      unit: string;
+    }>;
+  }
+): VendorMatch {
+  const category = vendor.categories?.[0]?.category || "Manual";
+  const subcategory = vendor.categories?.[0]?.subcategory || "";
+  const productKey = options?.productKey || "manual";
+  const history = vendor.productHistory?.[0];
+  const lastPrice =
+    history?.lastPrice != null && Number.isFinite(Number(history.lastPrice))
+      ? Number(history.lastPrice)
+      : null;
+  const matchedLines = (options?.lines || []).map((line) => ({
+    lineNumber: line.lineNumber,
+    description: line.description,
+    quantity: line.quantity,
+    unit: line.unit,
+    unitPrice: lastPrice,
+    lineTotal:
+      lastPrice != null ? lastPrice * (line.quantity > 0 ? line.quantity : 1) : null,
+    productKey,
+  }));
+  return {
+    vendor: {
+      id: vendor.id,
+      name: vendor.name,
+      phone: vendor.phone || "",
+      email: vendor.email || "",
+      whatsappId: vendor.whatsappId || "",
+      preferredChannel: vendor.preferredChannel || "EMAIL",
+      contacts: buildContactsForVendor(vendor),
+    },
+    category,
+    subcategory,
+    matchedKeywords: ["manual"],
+    score: 0,
+    productKey,
+    lastPrice,
+    lastQuotedAt: history?.lastQuotedAt || null,
+    matchedLines,
+    estimatedTotal:
+      matchedLines.length > 0 &&
+      matchedLines.every((line) => line.lineTotal != null)
+        ? matchedLines.reduce((sum, line) => sum + (line.lineTotal || 0), 0)
+        : lastPrice,
+    outreach: null,
+  };
+}
 
 function vendorDisplayPrice(match: VendorMatch): {
   amount: number | null;
@@ -211,50 +368,6 @@ function vendorDisplayPrice(match: VendorMatch): {
     };
   }
   return { amount: null, source: null, lines: match.matchedLines || [] };
-}
-
-/** Vendors that have a usable unit price for a given RFQ line number. */
-function vendorsWithPriceForLine(
-  vendorMatches: VendorMatch[],
-  lineNumber: number
-): Array<{ vendorId: string; vendorName: string; unitPrice: number }> {
-  const options: Array<{ vendorId: string; vendorName: string; unitPrice: number }> = [];
-  for (const match of vendorMatches) {
-    if (!match.outreach || match.outreach.status === "DECLINED") continue;
-    const quotedLines = match.outreach.quotedLineItems || [];
-    const line = quotedLines.find((l) => l.lineNumber === lineNumber);
-    if (line != null && Number.isFinite(line.unitPrice) && line.unitPrice > 0) {
-      options.push({
-        vendorId: match.vendor.id,
-        vendorName: match.vendor.name,
-        unitPrice: line.unitPrice,
-      });
-      continue;
-    }
-    if (
-      quotedLines.length === 0 &&
-      match.outreach.quotedPrice != null &&
-      Number.isFinite(match.outreach.quotedPrice) &&
-      match.outreach.quotedPrice > 0
-    ) {
-      const requested = match.outreach.requestedLineNumbers;
-      const singleRequested =
-        requested != null &&
-        requested.length === 1 &&
-        requested[0] === lineNumber;
-      const singleMatch =
-        (requested == null || requested.length === 0) &&
-        (match.matchedLines?.length ?? 0) <= 1;
-      if (singleRequested || singleMatch) {
-        options.push({
-          vendorId: match.vendor.id,
-          vendorName: match.vendor.name,
-          unitPrice: match.outreach.quotedPrice,
-        });
-      }
-    }
-  }
-  return options;
 }
 
 type MarketplaceListing = {
@@ -581,6 +694,40 @@ function VendorPriceDetailModal({
   );
 }
 
+type NegotiateSendPayload =
+  | { mode: "ai"; plainNote: string }
+  | { mode: "manual"; subject: string; body: string; plainNote?: string };
+
+function buildManualNegotiationDraft(match: VendorMatch) {
+  const company = "QuoteFlow";
+  const threadRef = match.outreach?.threadRef || "";
+  const baseSubject =
+    match.outreach?.threadRef
+      ? match.outreach.quotedPrice != null ||
+        (match.outreach.quotedLineItems && match.outreach.quotedLineItems.length > 0)
+        ? `Re: Quote negotiation [REF:${threadRef}]`
+        : `Re: Quote request [REF:${threadRef}]`
+      : "Re: Quote negotiation";
+  const display = vendorDisplayPrice(match);
+  const priceLine =
+    display.amount != null
+      ? `Your current quote totals about Rs.${Number(display.amount).toLocaleString("en-IN")}.\n\n`
+      : "";
+  const body = `Hello ${match.vendor.name},
+
+Thank you for your quotation. We would like to negotiate as follows:
+
+${priceLine}[Write your ask here]
+
+Please reply with your best revised unit prices (INR) for each line, or let us know if you cannot revise.
+
+Reference: [REF:${threadRef || "—"}]
+
+Thanks,
+${company}`;
+  return { subject: baseSubject, body };
+}
+
 function VendorNegotiateModal({
   match,
   busy,
@@ -590,125 +737,429 @@ function VendorNegotiateModal({
   match: VendorMatch;
   busy: boolean;
   onClose: () => void;
-  onSend: (plainNote: string) => Promise<void>;
+  onSend: (payload: NegotiateSendPayload) => Promise<void>;
 }) {
   const display = vendorDisplayPrice(match);
+  const manualSeed = useMemo(() => buildManualNegotiationDraft(match), [match]);
+  const [mode, setMode] = useState<"ai" | "manual">("ai");
   const [note, setNote] = useState("");
+  const [subject, setSubject] = useState(manualSeed.subject);
+  const [body, setBody] = useState(manualSeed.body);
   const [localError, setLocalError] = useState("");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const main = document.querySelector("main");
+    const scrollTop = main instanceof HTMLElement ? main.scrollTop : 0;
+    const locked: Array<{ el: HTMLElement; overflow: string }> = [];
+    for (const el of [document.documentElement, document.body, main]) {
+      if (!(el instanceof HTMLElement)) continue;
+      locked.push({ el, overflow: el.style.overflow });
+      el.style.overflow = "hidden";
+    }
+    if (main instanceof HTMLElement) main.scrollTop = scrollTop;
+    return () => {
+      for (const entry of locked) entry.el.style.overflow = entry.overflow;
+      if (main instanceof HTMLElement) main.scrollTop = scrollTop;
+    };
+  }, []);
 
   async function submit() {
     setLocalError("");
-    if (note.trim().length < 3) {
-      setLocalError("Write a short note in your own words.");
-      return;
-    }
     try {
-      await onSend(note.trim());
+      if (mode === "ai") {
+        if (note.trim().length < 3) {
+          setLocalError("Write a short note in your own words.");
+          return;
+        }
+        await onSend({ mode: "ai", plainNote: note.trim() });
+        return;
+      }
+      if (!subject.trim()) {
+        setLocalError("Add an email subject.");
+        return;
+      }
+      if (body.trim().length < 10) {
+        setLocalError("Write the full email body before sending.");
+        return;
+      }
+      await onSend({
+        mode: "manual",
+        subject: subject.trim(),
+        body: body.trim(),
+        plainNote: note.trim() || undefined,
+      });
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : "Could not send");
     }
   }
 
-  return (
+  if (!mounted) return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 p-4"
+      className="fixed inset-0 z-[80] flex items-center justify-center overscroll-none bg-dark-primary/50 p-3 backdrop-blur-[2px] sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="negotiate-title"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl"
+        className="flex max-h-[min(92vh,860px)] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-light-green/30 bg-white shadow-[0_24px_80px_rgba(11,43,38,0.22)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div>
+        <header className="flex shrink-0 items-start justify-between gap-3 border-b border-light-green/25 px-5 py-4">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-mid-green/10 px-2.5 py-1 text-[11px] font-medium text-mid-green">
+              <Mail className="h-3 w-3" strokeWidth={1.75} />
+              Same Recore thread
+            </div>
             <h3
               id="negotiate-title"
-              className="text-base font-semibold text-dark-primary"
+              className="mt-2 text-lg font-semibold tracking-tight text-dark-primary"
             >
-              Negotiate with {match.vendor.name}
+              Negotiate · {match.vendor.name}
             </h3>
-            <p className="mt-0.5 text-xs text-mid-green">
-              Write casually — AI will polish and send on the same email thread.
+            <p className="mt-1 text-sm text-mid-green">
               {display.amount != null ? (
                 <>
-                  {" "}
-                  Current sum: <Money value={display.amount} />
+                  Current quote sum <Money value={display.amount} /> ·{" "}
                 </>
               ) : null}
+              Choose AI polish or write the email yourself.
             </p>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md p-1 text-mid-green hover:bg-dark-secondary/10"
+            className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
+        </header>
+
+        <div className="shrink-0 px-5 pt-4">
+          <div className="inline-flex rounded-full bg-dark-secondary/[0.05] p-1">
+            <button
+              type="button"
+              onClick={() => setMode("ai")}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition ${
+                mode === "ai"
+                  ? "bg-mid-green text-background shadow-sm"
+                  : "text-mid-green hover:bg-light-green/20"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
+              Write with AI
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("manual")}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition ${
+                mode === "manual"
+                  ? "bg-mid-green text-background shadow-sm"
+                  : "text-mid-green hover:bg-light-green/20"
+              }`}
+            >
+              <PenLine className="h-3.5 w-3.5" strokeWidth={1.75} />
+              Write manually
+            </button>
+          </div>
         </div>
 
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          rows={5}
-          placeholder="e.g. price too high, ask 10% less on monitors and UPS, need best rate this week"
-          className="mt-4 w-full rounded-lg border border-light-green/40 bg-white/80 px-3 py-2 text-sm outline-none focus:border-mid-green"
-        />
-        {localError ? (
-          <p className="mt-2 text-xs text-dark-primary">{localError}</p>
-        ) : null}
-
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded-lg px-3 py-1.5 text-xs text-mid-green hover:bg-dark-secondary/5"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy}
-            className="rounded-lg bg-mid-green px-3 py-1.5 text-xs font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
-          >
-            {busy ? "Sending…" : "Format & send"}
-          </button>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          {mode === "ai" ? (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-light-green/25 bg-light-green/10 px-3 py-2.5 text-xs text-mid-green">
+                Type a casual note. AI will turn it into a polite business email and send
+                it on the same thread.
+              </div>
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  Your note
+                </span>
+                <textarea
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  rows={8}
+                  placeholder="e.g. price too high, ask 10% less on monitors and UPS, need best rate this week"
+                  className="w-full resize-none rounded-xl border border-light-green/35 bg-white px-3 py-3 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                />
+              </label>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-xl border border-light-green/25 bg-light-green/10 px-3 py-2.5 text-xs text-mid-green">
+                Edit the subject and full email. Thread reference is kept automatically.
+              </div>
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  Subject
+                </span>
+                <input
+                  value={subject}
+                  onChange={(e) => setSubject(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  Message
+                </span>
+                <textarea
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
+                  rows={12}
+                  className="w-full resize-none rounded-xl border border-light-green/35 bg-white px-3 py-3 font-mono text-[12px] leading-relaxed text-dark-primary outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                />
+              </label>
+            </div>
+          )}
+          {localError ? (
+            <p className="mt-3 text-xs text-red-700">{localError}</p>
+          ) : null}
         </div>
+
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-light-green/25 px-5 py-3.5">
+          <p className="text-xs text-mid-green">
+            {mode === "ai"
+              ? "AI formats your note, then sends"
+              : "Sends your email exactly as written"}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={busy}
+              className="rounded-xl px-3.5 py-2 text-sm font-medium text-mid-green transition hover:bg-dark-secondary/5 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={busy}
+              className="inline-flex items-center gap-2 rounded-xl bg-mid-green px-4 py-2 text-sm font-medium text-background shadow-[0_8px_20px_rgba(45,106,79,0.25)] transition hover:bg-dark-secondary disabled:opacity-60"
+            >
+              {mode === "ai" ? (
+                <Sparkles className="h-3.5 w-3.5" strokeWidth={1.75} />
+              ) : (
+                <Mail className="h-3.5 w-3.5" strokeWidth={1.75} />
+              )}
+              {busy
+                ? "Sending…"
+                : mode === "ai"
+                  ? "Format & send"
+                  : "Send email"}
+            </button>
+          </div>
+        </footer>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 function VendorRecoreLinePickerModal({
   match,
+  rfqId,
   items,
   busy,
   onClose,
   onSend,
 }: {
   match: VendorMatch;
+  rfqId: string;
   items: RfqRequirementItem[];
   busy: boolean;
   onClose: () => void;
-  onSend: (lineNumbers: number[]) => Promise<void>;
+  onSend: (input: {
+    channel: RecoreChannel;
+    lineNumbers: number[];
+    contactIds: string[];
+    subject: string;
+    body: string;
+  }) => Promise<void>;
 }) {
-  const matchedSet = new Set(
-    (match.matchedLines || []).map((line) => line.lineNumber)
+  const matchedSet = useMemo(
+    () => new Set((match.matchedLines || []).map((line) => line.lineNumber)),
+    [match.matchedLines]
   );
-  const defaultChecked =
-    items.length === 0
-      ? []
-      : items
-          .filter((item) => matchedSet.size === 0 || matchedSet.has(item.lineNumber))
-          .map((item) => item.lineNumber);
+  const savedDraft = useMemo(
+    () => loadRecoreDraft(rfqId, match.vendor.id),
+    [rfqId, match.vendor.id]
+  );
+  const defaultChecked = useMemo(
+    () =>
+      items.length === 0
+        ? []
+        : items
+            .filter(
+              (item) => matchedSet.size === 0 || matchedSet.has(item.lineNumber)
+            )
+            .map((item) => item.lineNumber),
+    [items, matchedSet]
+  );
+
+  function contactReachable(contact: VendorContact, channel: RecoreChannel) {
+    return channel === "WHATSAPP"
+      ? Boolean(contact.phone?.trim())
+      : Boolean(contact.email?.trim());
+  }
+
+  function buildVendorContacts(vendor: VendorMatch["vendor"]): VendorContact[] {
+    let list =
+      vendor.contacts && vendor.contacts.length > 0 ? [...vendor.contacts] : [];
+    const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
+    const hasWa = list.some((contact) => Boolean(contact.phone?.trim()));
+    if (vendorWa && !hasWa) {
+      list = [
+        ...list,
+        {
+          id: `vendor-${vendor.id}-wa`,
+          name: vendor.name,
+          email: vendor.email || "",
+          phone: vendorWa,
+          role: "WhatsApp",
+          isPrimary: list.length === 0,
+        },
+      ];
+    } else if (list.length === 0 && (vendor.email || vendorWa)) {
+      list = [
+        {
+          id: `vendor-${vendor.id}`,
+          name: vendor.name,
+          email: vendor.email || "",
+          phone: vendorWa,
+          role: "",
+          isPrimary: true,
+        },
+      ];
+    }
+    return list;
+  }
+
+  function pickDefaultChannel(
+    list: VendorContact[],
+    vendor: VendorMatch["vendor"],
+    draftChannel?: RecoreChannel
+  ): RecoreChannel {
+    const hasEmail = list.some((contact) => Boolean(contact.email?.trim()));
+    const hasPhone = list.some((contact) => Boolean(contact.phone?.trim()));
+    if (draftChannel === "WHATSAPP" && hasPhone) return "WHATSAPP";
+    if (draftChannel === "EMAIL" && hasEmail) return "EMAIL";
+    if (vendor.preferredChannel === "WHATSAPP" && hasPhone) return "WHATSAPP";
+    if (vendor.preferredChannel === "EMAIL" && hasEmail) return "EMAIL";
+    // Phone-only vendors (e.g. NetWire without email) must open on WhatsApp.
+    if (hasPhone && !hasEmail) return "WHATSAPP";
+    if (hasEmail) return "EMAIL";
+    if (hasPhone) return "WHATSAPP";
+    return "EMAIL";
+  }
+
+  const fallbackContacts: VendorContact[] = useMemo(
+    () => buildVendorContacts(match.vendor),
+    [match.vendor]
+  );
+  const defaultChannel: RecoreChannel = pickDefaultChannel(
+    fallbackContacts,
+    match.vendor,
+    savedDraft?.channel
+  );
+
+  function seedContactIds(
+    list: VendorContact[],
+    channel: RecoreChannel,
+    preferredIds?: string[]
+  ): Set<string> {
+    if (preferredIds && preferredIds.length > 0) {
+      const kept = preferredIds.filter((id) => {
+        const contact = list.find((row) => row.id === id);
+        return contact ? contactReachable(contact, channel) : false;
+      });
+      if (kept.length > 0) return new Set(kept);
+    }
+    if (channel === "WHATSAPP") {
+      const primary = list.find(
+        (contact) => contact.isPrimary && contact.phone?.trim()
+      );
+      const first = list.find((contact) => contact.phone?.trim());
+      const seed = primary || first;
+      return new Set(seed ? [seed.id] : []);
+    }
+    const primary = list.find(
+      (contact) => contact.isPrimary && contact.email?.trim()
+    );
+    const first = list.find((contact) => contact.email?.trim());
+    const seed = primary || first;
+    return new Set(seed ? [seed.id] : []);
+  }
+
+  const initialLines =
+    savedDraft && savedDraft.lineNumbers.length > 0
+      ? savedDraft.lineNumbers.filter((lineNumber) =>
+          items.length === 0
+            ? true
+            : items.some((item) => item.lineNumber === lineNumber)
+        )
+      : defaultChecked.length > 0
+        ? defaultChecked
+        : items.map((item) => item.lineNumber);
+
+  const [channel, setChannel] = useState<RecoreChannel>(defaultChannel);
   const [checked, setChecked] = useState<Set<number>>(
-    () => new Set(defaultChecked.length > 0 ? defaultChecked : items.map((i) => i.lineNumber))
+    () => new Set(initialLines)
   );
+  const [contacts, setContacts] = useState<VendorContact[]>(fallbackContacts);
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<string>>(
+    () =>
+      seedContactIds(
+        fallbackContacts,
+        defaultChannel,
+        savedDraft?.contactIds
+      )
+  );
+  const hasRestoredEmail = Boolean(
+    savedDraft?.draftTouched && (savedDraft.subject || savedDraft.body)
+  );
+  const [subject, setSubject] = useState(savedDraft?.subject || "");
+  const [body, setBody] = useState(savedDraft?.body || "");
+  const [draftBusy, setDraftBusy] = useState(false);
+  const [draftTick, setDraftTick] = useState(0);
   const [localError, setLocalError] = useState("");
+  const [addRecipientOpen, setAddRecipientOpen] = useState(false);
+  const [addingRecipient, setAddingRecipient] = useState(false);
+  const [newRecipient, setNewRecipient] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    role: "",
+    isPrimary: false,
+  });
+  const draftTouchedRef = useRef(Boolean(savedDraft?.draftTouched));
+  const contactsLoadedRef = useRef(fallbackContacts.length > 0);
+  const lastDraftKeyRef = useRef(hasRestoredEmail ? "restored" : "");
+  const skipPreviewOnceRef = useRef(hasRestoredEmail);
+  const channelRef = useRef(channel);
+  const checkedRef = useRef(checked);
+  const selectedContactIdsRef = useRef(selectedContactIds);
+  const subjectRef = useRef(subject);
+  const bodyRef = useRef(body);
+  channelRef.current = channel;
+  checkedRef.current = checked;
+  selectedContactIdsRef.current = selectedContactIds;
+  subjectRef.current = subject;
+  bodyRef.current = body;
+
+  const lineKey = useMemo(
+    () => [...checked].sort((a, b) => a - b).join(","),
+    [checked]
+  );
 
   function toggle(lineNumber: number) {
     setChecked((prev) => {
@@ -719,6 +1170,254 @@ function VendorRecoreLinePickerModal({
     });
   }
 
+  function toggleContact(contactId: string) {
+    setSelectedContactIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(contactId)) next.delete(contactId);
+      else next.add(contactId);
+      return next;
+    });
+  }
+
+  function markDraftEdited() {
+    draftTouchedRef.current = true;
+  }
+
+  function persistDraft() {
+    saveRecoreDraft(rfqId, match.vendor.id, {
+      channel: channelRef.current,
+      lineNumbers: [...checkedRef.current].sort((a, b) => a - b),
+      contactIds: [...selectedContactIdsRef.current],
+      subject: subjectRef.current,
+      body: bodyRef.current,
+      draftTouched: draftTouchedRef.current,
+    });
+  }
+
+  function switchChannel(next: RecoreChannel) {
+    if (next === channel) return;
+    setChannel(next);
+    setSelectedContactIds((prev) => {
+      const kept = [...prev].filter((id) => {
+        const contact = contacts.find((row) => row.id === id);
+        if (!contact) return false;
+        return next === "WHATSAPP" ? Boolean(contact.phone) : Boolean(contact.email);
+      });
+      if (kept.length > 0) return new Set(kept);
+      return seedContactIds(contacts, next);
+    });
+    setLocalError("");
+  }
+
+  function resetNewRecipientForm() {
+    setNewRecipient({
+      name: "",
+      email: "",
+      phone: "",
+      role: "",
+      isPrimary: false,
+    });
+  }
+
+  async function saveNewRecipient() {
+    setLocalError("");
+    const name = newRecipient.name.trim();
+    const email = newRecipient.email.trim();
+    const phone = newRecipient.phone.trim();
+    const role = newRecipient.role.trim();
+    if (!name && !email && !phone) {
+      setLocalError("Enter a name, email, or phone for the recipient.");
+      return;
+    }
+    if (channel === "EMAIL" && !email) {
+      setLocalError("Add an email address to send Recore by email.");
+      return;
+    }
+    if (channel === "WHATSAPP" && !phone) {
+      setLocalError("Add a WhatsApp / phone number to send Recore by WhatsApp.");
+      return;
+    }
+    setAddingRecipient(true);
+    try {
+      const res = await fetch(`/api/vendors/${match.vendor.id}/contacts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          email,
+          phone,
+          role,
+          isPrimary: newRecipient.isPrimary,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const message =
+          typeof data.error === "string"
+            ? data.error
+            : data.error?.formErrors?.[0] ||
+              "Could not save recipient on this vendor.";
+        setLocalError(message);
+        return;
+      }
+      const created: VendorContact = {
+        id: String(data.id),
+        name: String(data.name || name),
+        email: String(data.email || email),
+        phone: String(data.phone || phone),
+        role: String(data.role || role),
+        isPrimary: Boolean(data.isPrimary),
+      };
+      setContacts((prev) => {
+        const withoutSynthetic = prev.filter(
+          (contact) => !String(contact.id).startsWith(`vendor-${match.vendor.id}`)
+        );
+        const next = created.isPrimary
+          ? withoutSynthetic.map((contact) => ({ ...contact, isPrimary: false }))
+          : withoutSynthetic;
+        return [...next, created];
+      });
+      setSelectedContactIds((prev) => new Set([...prev, created.id]));
+      resetNewRecipientForm();
+      setAddRecipientOpen(false);
+    } catch (error) {
+      setLocalError(
+        error instanceof Error ? error.message : "Could not save recipient"
+      );
+    } finally {
+      setAddingRecipient(false);
+    }
+  }
+
+  function handleClose() {
+    persistDraft();
+    onClose();
+  }
+
+  function reloadDraft() {
+    draftTouchedRef.current = false;
+    lastDraftKeyRef.current = "";
+    skipPreviewOnceRef.current = false;
+    setDraftTick((tick) => tick + 1);
+  }
+
+  // Autosave while editing + flush on tab hide / unload.
+  useEffect(() => {
+    const timer = window.setTimeout(persistDraft, 400);
+    return () => window.clearTimeout(timer);
+  }, [channel, checked, selectedContactIds, subject, body, rfqId, match.vendor.id]);
+
+  useEffect(() => {
+    const flush = () => persistDraft();
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", flush);
+      persistDraft();
+    };
+  }, [rfqId, match.vendor.id]);
+
+  useEffect(() => {
+    // Restored drafts already have subject/body — skip the first preview when
+    // contacts are already available from the vendor match payload.
+    if (skipPreviewOnceRef.current && contactsLoadedRef.current) {
+      skipPreviewOnceRef.current = false;
+      lastDraftKeyRef.current = `${lineKey}::${draftTick}`;
+      return;
+    }
+    skipPreviewOnceRef.current = false;
+
+    const draftKey = `${lineKey}::${draftTick}`;
+    let cancelled = false;
+    const controller = new AbortController();
+    const lineNumbers = lineKey
+      ? lineKey
+          .split(",")
+          .map((value) => Number(value))
+          .filter((n) => n > 0)
+      : [];
+
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return;
+      if (lastDraftKeyRef.current === draftKey) return;
+      setDraftBusy(true);
+      try {
+        const res = await fetch(
+          `/api/rfqs/${rfqId}/vendors/${match.vendor.id}/recore`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              preview: true,
+              productKey: match.productKey,
+              ...(lineNumbers.length > 0 ? { lineNumbers } : {}),
+            }),
+          }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!res.ok) {
+          setLocalError(
+            typeof data.error === "string"
+              ? data.error
+              : "Could not load email draft"
+          );
+          return;
+        }
+        lastDraftKeyRef.current = draftKey;
+        setLocalError("");
+        if (Array.isArray(data.contacts) && data.contacts.length > 0) {
+          contactsLoadedRef.current = true;
+          const nextContacts = data.contacts as VendorContact[];
+          setContacts(nextContacts);
+          const nextChannel = pickDefaultChannel(
+            nextContacts,
+            {
+              ...match.vendor,
+              preferredChannel:
+                data.preferredChannel === "WHATSAPP" ? "WHATSAPP" : match.vendor.preferredChannel,
+              whatsappId:
+                typeof data.whatsappId === "string"
+                  ? data.whatsappId
+                  : match.vendor.whatsappId,
+              phone:
+                typeof data.phone === "string" ? data.phone : match.vendor.phone,
+            },
+            channelRef.current
+          );
+          if (nextChannel !== channelRef.current) {
+            setChannel(nextChannel);
+          }
+          setSelectedContactIds((prev) =>
+            seedContactIds(nextContacts, nextChannel, [...prev])
+          );
+        }
+        if (!draftTouchedRef.current) {
+          setSubject(typeof data.subject === "string" ? data.subject : "");
+          setBody(typeof data.body === "string" ? data.body : "");
+        }
+      } catch (error) {
+        if (
+          cancelled ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
+        setLocalError("Could not load email draft");
+      } finally {
+        if (!cancelled) setDraftBusy(false);
+      }
+    }, draftTick > 0 ? 0 : 450);
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [lineKey, draftTick, match.productKey, match.vendor.id, rfqId]);
+
   async function submit() {
     setLocalError("");
     const lineNumbers = [...checked].sort((a, b) => a - b);
@@ -726,107 +1425,541 @@ function VendorRecoreLinePickerModal({
       setLocalError("Select at least one line to request from this vendor.");
       return;
     }
+    const contactIds = [...selectedContactIds];
+    if (contactIds.length === 0) {
+      setLocalError(
+        channel === "WHATSAPP"
+          ? "Select at least one WhatsApp contact."
+          : "Select at least one POC to email."
+      );
+      return;
+    }
+    if (!body.trim()) {
+      setLocalError("Write the message body before sending.");
+      return;
+    }
+    if (channel === "EMAIL" && !subject.trim()) {
+      setLocalError("Write the email subject and body before sending.");
+      return;
+    }
     try {
-      await onSend(lineNumbers);
+      await onSend({
+        channel,
+        lineNumbers,
+        contactIds,
+        subject: subject.trim(),
+        body: body.trim(),
+      });
+      clearRecoreDraft(rfqId, match.vendor.id);
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : "Could not send");
     }
   }
 
-  return (
+  const selectedRecipients = contacts.filter((contact) =>
+    selectedContactIds.has(contact.id)
+  );
+  const reachableContacts = contacts.filter((contact) =>
+    channel === "WHATSAPP" ? Boolean(contact.phone) : Boolean(contact.email)
+  );
+  const allLinesSelected = items.length > 0 && checked.size === items.length;
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // Keep the RFQ page from scrolling/jumping while the overlay is open.
+  // Modals are portaled to body because the RFQ layout uses a CSS transform
+  // (which traps position:fixed inside the scroll container).
+  useEffect(() => {
+    const main = document.querySelector("main");
+    const scrollTop = main instanceof HTMLElement ? main.scrollTop : 0;
+    const locked: Array<{ el: HTMLElement; overflow: string }> = [];
+    for (const el of [document.documentElement, document.body, main]) {
+      if (!(el instanceof HTMLElement)) continue;
+      locked.push({ el, overflow: el.style.overflow });
+      el.style.overflow = "hidden";
+    }
+    if (main instanceof HTMLElement) main.scrollTop = scrollTop;
+
+    return () => {
+      for (const entry of locked) {
+        entry.el.style.overflow = entry.overflow;
+      }
+      if (main instanceof HTMLElement) main.scrollTop = scrollTop;
+    };
+  }, []);
+
+  if (!mounted) return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 p-4"
+      className="fixed inset-0 z-[80] flex items-center justify-center overscroll-none bg-dark-primary/50 p-3 backdrop-blur-[2px] sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="recore-lines-title"
-      onClick={onClose}
+      onClick={handleClose}
+      onWheel={(event) => event.stopPropagation()}
+      onTouchMove={(event) => event.stopPropagation()}
     >
       <div
-        className="max-h-[85vh] w-full max-w-md overflow-auto rounded-xl bg-white p-5 shadow-xl"
+        className="flex max-h-[min(92vh,920px)] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-light-green/30 bg-white shadow-[0_24px_80px_rgba(11,43,38,0.22)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3
-              id="recore-lines-title"
-              className="text-base font-semibold text-dark-primary"
-            >
-              Recore — {match.vendor.name}
-            </h3>
-            <p className="mt-0.5 text-xs text-mid-green">
-              Choose which RFQ lines to request. Matched lines are checked by default —
-              uncheck anything you already stock or sell yourself.
-            </p>
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-light-green/25 bg-[linear-gradient(180deg,rgba(232,242,236,0.55),rgba(255,255,255,0.95))] px-5 py-4 sm:px-6">
+          <div className="min-w-0 flex-1">
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-mid-green/10 px-2.5 py-1 text-[11px] font-medium text-mid-green">
+              {channel === "WHATSAPP" ? (
+                <MessageCircle className="h-3 w-3" strokeWidth={1.75} />
+              ) : (
+                <Mail className="h-3 w-3" strokeWidth={1.75} />
+              )}
+              Vendor request
+            </div>
+            <div className="mt-2 flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3
+                  id="recore-lines-title"
+                  className="text-lg font-semibold tracking-tight text-dark-primary"
+                >
+                  Recore · {match.vendor.name}
+                </h3>
+                <p className="mt-1 text-sm text-mid-green">
+                  Choose channel, recipients, and lines — then refine the draft.
+                </p>
+              </div>
+              <div className="inline-flex shrink-0 rounded-xl border border-light-green/35 bg-white p-1">
+                <button
+                  type="button"
+                  onClick={() => switchChannel("EMAIL")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    channel === "EMAIL"
+                      ? "bg-mid-green text-background shadow-sm"
+                      : "text-mid-green hover:bg-light-green/30"
+                  }`}
+                >
+                  <Mail className="h-3 w-3" strokeWidth={1.75} />
+                  Email
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchChannel("WHATSAPP")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                    channel === "WHATSAPP"
+                      ? "bg-mid-green text-background shadow-sm"
+                      : "text-mid-green hover:bg-light-green/30"
+                  }`}
+                >
+                  <MessageCircle className="h-3 w-3" strokeWidth={1.75} />
+                  WhatsApp
+                </button>
+              </div>
+            </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-mid-green hover:bg-dark-secondary/10"
+            onClick={handleClose}
+            className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
             aria-label="Close"
           >
             <X className="h-4 w-4" />
           </button>
-        </div>
+        </header>
 
-        {items.length === 0 ? (
-          <p className="mt-4 text-sm text-mid-green">
-            No structured line items — the full RFQ text will be emailed.
-          </p>
-        ) : (
-          <ul className="mt-4 space-y-2">
-            {items.map((item) => {
-              const matched = matchedSet.has(item.lineNumber);
-              return (
-                <li key={item.lineNumber}>
-                  <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-dark-secondary/10 px-3 py-2 hover:bg-light-green/10">
+        <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,17.5rem)_minmax(0,1fr)_minmax(0,1.35fr)]">
+          <section className="flex min-h-0 flex-col border-b border-light-green/20 lg:border-b-0 lg:border-r">
+            <div className="flex items-center justify-between gap-2 border-b border-light-green/15 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-dark-primary">
+                <Users className="h-3.5 w-3.5 text-mid-green" strokeWidth={1.75} />
+                Recipients
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="rounded-full bg-dark-secondary/5 px-2 py-0.5 text-[11px] tabular-nums text-mid-green">
+                  {selectedRecipients.length}/{reachableContacts.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddRecipientOpen((open) => !open);
+                    setLocalError("");
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-light-green/35 bg-white px-2 py-1 text-[11px] font-medium text-mid-green transition hover:bg-light-green/20"
+                >
+                  <Plus className="h-3 w-3" strokeWidth={1.75} />
+                  Add
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {addRecipientOpen ? (
+                <div className="mb-3 space-y-2 rounded-xl border border-mid-green/25 bg-mid-green/[0.04] p-3">
+                  <div className="text-[11px] font-medium text-dark-primary">
+                    New recipient · saved on {match.vendor.name}
+                  </div>
+                  <input
+                    value={newRecipient.name}
+                    onChange={(event) =>
+                      setNewRecipient((current) => ({
+                        ...current,
+                        name: event.target.value,
+                      }))
+                    }
+                    placeholder="Name"
+                    className="h-9 w-full rounded-lg border border-light-green/35 bg-white px-2.5 text-sm outline-none focus:border-mid-green"
+                  />
+                  <input
+                    value={newRecipient.role}
+                    onChange={(event) =>
+                      setNewRecipient((current) => ({
+                        ...current,
+                        role: event.target.value,
+                      }))
+                    }
+                    placeholder="Role (optional)"
+                    className="h-9 w-full rounded-lg border border-light-green/35 bg-white px-2.5 text-sm outline-none focus:border-mid-green"
+                  />
+                  <input
+                    type="email"
+                    value={newRecipient.email}
+                    onChange={(event) =>
+                      setNewRecipient((current) => ({
+                        ...current,
+                        email: event.target.value,
+                      }))
+                    }
+                    placeholder="Email"
+                    className="h-9 w-full rounded-lg border border-light-green/35 bg-white px-2.5 text-sm outline-none focus:border-mid-green"
+                  />
+                  <input
+                    value={newRecipient.phone}
+                    onChange={(event) =>
+                      setNewRecipient((current) => ({
+                        ...current,
+                        phone: event.target.value,
+                      }))
+                    }
+                    placeholder="WhatsApp / phone (+91…)"
+                    className="h-9 w-full rounded-lg border border-light-green/35 bg-white px-2.5 text-sm outline-none focus:border-mid-green"
+                  />
+                  <label className="flex items-center gap-2 text-[11px] text-mid-green">
                     <input
                       type="checkbox"
-                      className="mt-1"
-                      checked={checked.has(item.lineNumber)}
-                      onChange={() => toggle(item.lineNumber)}
+                      checked={newRecipient.isPrimary}
+                      onChange={(event) =>
+                        setNewRecipient((current) => ({
+                          ...current,
+                          isPrimary: event.target.checked,
+                        }))
+                      }
                     />
-                    <span className="min-w-0">
-                      <span className="text-xs font-medium text-mid-green">
-                        Line {item.lineNumber}
-                        {matched ? " · matched" : ""}
-                        {" · "}
-                        qty {item.quantity} {item.unit}
-                      </span>
-                      <span className="mt-0.5 block text-sm text-dark-primary">
-                        {item.description}
-                      </span>
-                    </span>
+                    Set as primary POC
                   </label>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                  <div className="flex items-center justify-end gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      disabled={addingRecipient}
+                      onClick={() => {
+                        resetNewRecipientForm();
+                        setAddRecipientOpen(false);
+                      }}
+                      className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-mid-green hover:bg-white/80 disabled:opacity-60"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={addingRecipient}
+                      onClick={() => void saveNewRecipient()}
+                      className="inline-flex items-center gap-1 rounded-lg bg-mid-green px-2.5 py-1.5 text-[11px] font-medium text-background disabled:opacity-60"
+                    >
+                      <Plus className="h-3 w-3" strokeWidth={1.75} />
+                      {addingRecipient ? "Saving…" : "Save recipient"}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {contacts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-light-green/40 bg-light-green/10 px-3 py-6 text-center text-xs leading-relaxed text-mid-green">
+                  No POCs yet. Use <span className="font-medium">Add</span> to save a
+                  recipient on this vendor
+                  {channel === "WHATSAPP"
+                    ? " (include a WhatsApp number)."
+                    : " (include an email)."}
+                </div>
+              ) : reachableContacts.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-light-green/40 bg-light-green/10 px-3 py-6 text-center text-xs leading-relaxed text-mid-green">
+                  {channel === "WHATSAPP"
+                    ? "No WhatsApp numbers on file. Add a recipient with a phone number."
+                    : "No emails on file. Add a recipient with an email address."}
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {contacts.map((contact) => {
+                    const reachable =
+                      channel === "WHATSAPP"
+                        ? Boolean(contact.phone)
+                        : Boolean(contact.email);
+                    const selected = selectedContactIds.has(contact.id);
+                    return (
+                      <li key={contact.id}>
+                        <label
+                          className={`flex cursor-pointer gap-3 rounded-xl border px-3 py-2.5 transition ${
+                            selected
+                              ? "border-mid-green/40 bg-mid-green/10 shadow-[inset_0_0_0_1px_rgba(45,106,79,0.08)]"
+                              : "border-light-green/25 bg-white hover:border-mid-green/25 hover:bg-light-green/10"
+                          } ${!reachable ? "cursor-not-allowed opacity-55" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={selected}
+                            disabled={!reachable}
+                            onChange={() => toggleContact(contact.id)}
+                          />
+                          <span className="min-w-0">
+                            <span className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-sm font-medium text-dark-primary">
+                                {contact.name || "Contact"}
+                              </span>
+                              {contact.isPrimary ? (
+                                <span className="rounded-full bg-dark-secondary/8 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                                  Primary
+                                </span>
+                              ) : null}
+                            </span>
+                            {contact.role ? (
+                              <span className="mt-0.5 block text-[11px] text-mid-green">
+                                {contact.role}
+                              </span>
+                            ) : null}
+                            <span className="mt-1 block truncate text-xs text-dark-primary/80">
+                              {channel === "WHATSAPP"
+                                ? contact.phone || "No WhatsApp number"
+                                : contact.email || "No email"}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </section>
 
-        {localError ? (
-          <p className="mt-2 text-xs text-dark-primary">{localError}</p>
-        ) : null}
+          <section className="flex min-h-0 flex-col border-b border-light-green/20 lg:border-b-0 lg:border-r">
+            <div className="flex items-center justify-between gap-2 border-b border-light-green/15 px-4 py-3">
+              <div className="text-sm font-medium text-dark-primary">Lines</div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-dark-secondary/5 px-2 py-0.5 text-[11px] tabular-nums text-mid-green">
+                  {checked.size}/{items.length || 0}
+                </span>
+                {items.length > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setChecked(
+                        allLinesSelected
+                          ? new Set()
+                          : new Set(items.map((item) => item.lineNumber))
+                      )
+                    }
+                    className="text-[11px] font-medium text-mid-green underline-offset-2 hover:underline"
+                  >
+                    {allLinesSelected ? "Clear" : "Select all"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
+              {items.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-light-green/40 bg-light-green/10 px-3 py-6 text-center text-xs leading-relaxed text-mid-green">
+                  No structured lines — the full RFQ text will go in the message.
+                </div>
+              ) : (
+                <ul className="space-y-2">
+                  {items.map((item) => {
+                    const matched = matchedSet.has(item.lineNumber);
+                    const selected = checked.has(item.lineNumber);
+                    return (
+                      <li key={item.lineNumber}>
+                        <label
+                          className={`flex cursor-pointer gap-3 rounded-xl border px-3 py-2.5 transition ${
+                            selected
+                              ? "border-mid-green/40 bg-mid-green/10"
+                              : "border-light-green/25 bg-white hover:border-mid-green/25 hover:bg-light-green/10"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1"
+                            checked={selected}
+                            onChange={() => toggle(item.lineNumber)}
+                          />
+                          <span className="min-w-0">
+                            <span className="flex flex-wrap items-center gap-1.5 text-[11px] text-mid-green">
+                              <span className="font-medium">Line {item.lineNumber}</span>
+                              <span>·</span>
+                              <span>
+                                qty {item.quantity} {item.unit}
+                              </span>
+                              {matched ? (
+                                <span className="rounded-full bg-mid-green/15 px-1.5 py-0.5 text-[10px] font-medium text-dark-primary">
+                                  matched
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="mt-1 block text-sm leading-snug text-dark-primary">
+                              {item.description}
+                            </span>
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </section>
 
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="rounded-lg px-3 py-1.5 text-xs text-mid-green hover:bg-dark-secondary/5"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy}
-            className="rounded-lg bg-mid-green px-3 py-1.5 text-xs font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
-          >
-            {busy ? "Sending…" : "Send Recore"}
-          </button>
+          <section className="flex min-h-0 flex-col bg-[#f7faf8]/70">
+            <div className="flex items-center justify-between gap-2 border-b border-light-green/15 px-4 py-3">
+              <div className="text-sm font-medium text-dark-primary">
+                {channel === "WHATSAPP" ? "WhatsApp draft" : "Email draft"}
+              </div>
+              <button
+                type="button"
+                disabled={draftBusy}
+                onClick={reloadDraft}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-light-green/35 bg-white px-2.5 py-1 text-[11px] font-medium text-mid-green transition hover:bg-light-green/20 disabled:opacity-50"
+              >
+                <RefreshCw
+                  className={`h-3 w-3 ${draftBusy ? "animate-spin" : ""}`}
+                  strokeWidth={1.75}
+                />
+                {draftBusy ? "Updating…" : "Reload draft"}
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+              <div className="rounded-xl border border-light-green/30 bg-white px-3 py-2.5">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  To
+                </div>
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {selectedRecipients.length > 0 ? (
+                    selectedRecipients.map((contact) => (
+                      <span
+                        key={contact.id}
+                        className="inline-flex max-w-full items-center gap-1 rounded-full bg-mid-green/10 px-2.5 py-1 text-[11px] text-dark-primary"
+                      >
+                        <span className="truncate font-medium">
+                          {contact.name ||
+                            (channel === "WHATSAPP" ? contact.phone : contact.email)}
+                        </span>
+                        {channel === "WHATSAPP" ? (
+                          contact.phone ? (
+                            <span className="truncate text-mid-green">
+                              {contact.phone}
+                            </span>
+                          ) : null
+                        ) : contact.email ? (
+                          <span className="truncate text-mid-green">{contact.email}</span>
+                        ) : null}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-mid-green">No recipients selected</span>
+                  )}
+                </div>
+              </div>
+              {channel === "EMAIL" ? (
+                <label className="block">
+                  <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                    Subject
+                  </span>
+                  <input
+                    value={subject}
+                    onChange={(event) => {
+                      markDraftEdited();
+                      setSubject(event.target.value);
+                    }}
+                    className="h-10 w-full rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                  />
+                </label>
+              ) : (
+                <div className="rounded-xl border border-light-green/25 bg-white/80 px-3 py-2 text-[11px] leading-relaxed text-mid-green">
+                  Subject is folded into the WhatsApp message as a bold first line.
+                  {subject.trim() ? (
+                    <span className="mt-1 block truncate text-dark-primary/80">
+                      *{subject.trim()}*
+                    </span>
+                  ) : null}
+                </div>
+              )}
+              <label className="flex min-h-[18rem] flex-1 flex-col">
+                <span className="mb-1.5 block text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  Message
+                </span>
+                <textarea
+                  value={body}
+                  onChange={(event) => {
+                    markDraftEdited();
+                    setBody(event.target.value);
+                  }}
+                  className="min-h-[18rem] flex-1 resize-none rounded-xl border border-light-green/35 bg-white px-3 py-3 font-mono text-[12px] leading-relaxed text-dark-primary outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                />
+              </label>
+            </div>
+          </section>
         </div>
+
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-light-green/25 bg-white px-5 py-3.5 sm:px-6">
+          <div className="min-w-0 text-xs text-mid-green">
+            {localError ? (
+              <span className="text-red-700">{localError}</span>
+            ) : (
+              <span>
+                {channel === "WHATSAPP" ? "WhatsApp" : "Email"} to{" "}
+                {selectedRecipients.length} contact
+                {selectedRecipients.length === 1 ? "" : "s"}
+                {items.length > 0
+                  ? ` · ${checked.size} line${checked.size === 1 ? "" : "s"}`
+                  : ""}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClose}
+              disabled={busy}
+              className="rounded-xl px-3.5 py-2 text-sm font-medium text-mid-green transition hover:bg-dark-secondary/5 disabled:opacity-60"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={busy || draftBusy}
+              className="inline-flex items-center gap-2 rounded-xl bg-mid-green px-4 py-2 text-sm font-medium text-background shadow-[0_8px_20px_rgba(45,106,79,0.25)] transition hover:bg-dark-secondary disabled:opacity-60"
+            >
+              {channel === "WHATSAPP" ? (
+                <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.75} />
+              ) : (
+                <Mail className="h-3.5 w-3.5" strokeWidth={1.75} />
+              )}
+              {busy
+                ? "Sending…"
+                : channel === "WHATSAPP"
+                  ? "Send WhatsApp"
+                  : "Send Recore"}
+            </button>
+          </div>
+        </footer>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1079,6 +2212,13 @@ export default function RfqDetailPage() {
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [vendorsLoading, setVendorsLoading] = useState(false);
+  const [addVendorOpen, setAddVendorOpen] = useState(false);
+  const [vendorSearch, setVendorSearch] = useState("");
+  const [vendorSearchResults, setVendorSearchResults] = useState<
+    VendorDirectoryRow[]
+  >([]);
+  const [vendorSearchBusy, setVendorSearchBusy] = useState(false);
+  const manualVendorIdsRef = useRef<Set<string>>(new Set());
   const [recoreBusy, setRecoreBusy] = useState("");
   const [recoreVendor, setRecoreVendor] = useState<VendorMatch | null>(null);
   const [checkRepliesBusy, setCheckRepliesBusy] = useState(false);
@@ -1106,7 +2246,12 @@ export default function RfqDetailPage() {
   const [linkedQuotesOpen, setLinkedQuotesOpen] = useState(false);
   const [rawMessageOpen, setRawMessageOpen] = useState(false);
   const [requestedProductsOpen, setRequestedProductsOpen] = useState(false);
+  const [summaryPanelOpen, setSummaryPanelOpen] = useState(false);
   const [expandedSearchLine, setExpandedSearchLine] = useState<number | null>(null);
+  const [catalogDraft, setCatalogDraft] = useState<{
+    lineNumber?: number;
+    requirement: CatalogRequirementInput;
+  } | null>(null);
   const selectionsHydrated = useRef(false);
   const skipNextSave = useRef(true);
 
@@ -1246,20 +2391,24 @@ export default function RfqDetailPage() {
     }
   }, [id, applySavedSelections]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const res = await fetch(`/api/rfqs/${id}`);
-    if (!res.ok) {
-      setError("RFQ not found");
-      setLoading(false);
-      return;
+  const load = useCallback(async (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
+    if (!soft) setLoading(true);
+    try {
+      const res = await fetch(`/api/rfqs/${id}`);
+      if (!res.ok) {
+        setError("RFQ not found");
+        return;
+      }
+      setRfq(await res.json());
+    } finally {
+      if (!soft) setLoading(false);
     }
-    setRfq(await res.json());
-    setLoading(false);
   }, [id]);
 
-  const loadVendorMatches = useCallback(async () => {
-    setVendorsLoading(true);
+  const loadVendorMatches = useCallback(async (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft);
+    if (!soft) setVendorsLoading(true);
     try {
       const response = await fetch(`/api/rfqs/${id}/vendors`);
       const data = await parseApiJson<{
@@ -1267,15 +2416,78 @@ export default function RfqDetailPage() {
         productKey?: string;
       }>(response, "Could not match vendors");
       if (response.ok) {
-        setVendorMatches(data.matches || []);
+        const incoming = data.matches || [];
         setVendorProductKey(data.productKey || "");
+        setVendorMatches((prev) => {
+          const ids = new Set(incoming.map((match) => match.vendor.id));
+          const keptManual = prev.filter(
+            (match) =>
+              manualVendorIdsRef.current.has(match.vendor.id) &&
+              !ids.has(match.vendor.id)
+          );
+          return [...incoming, ...keptManual];
+        });
       }
     } catch {
       // Catalog search still works if vendor matching is unavailable.
     } finally {
-      setVendorsLoading(false);
+      if (!soft) setVendorsLoading(false);
     }
   }, [id]);
+
+  useEffect(() => {
+    if (!addVendorOpen) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setVendorSearchBusy(true);
+      try {
+        const params = new URLSearchParams({ active: "true" });
+        if (vendorSearch.trim()) params.set("q", vendorSearch.trim());
+        const res = await fetch(`/api/vendors?${params}`);
+        const data = await res.json().catch(() => []);
+        if (cancelled) return;
+        setVendorSearchResults(Array.isArray(data) ? data : []);
+      } catch {
+        if (!cancelled) setVendorSearchResults([]);
+      } finally {
+        if (!cancelled) setVendorSearchBusy(false);
+      }
+    }, vendorSearch.trim() ? 220 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [addVendorOpen, vendorSearch]);
+
+  function intakeVendorFromDirectory(vendor: VendorDirectoryRow) {
+    if (vendorMatches.some((match) => match.vendor.id === vendor.id)) {
+      setAddVendorOpen(false);
+      setVendorSearch("");
+      return;
+    }
+    const lines =
+      (requirements.length > 0
+        ? requirements
+        : rfq
+          ? extractRfqItems(rfq.parsedSpecs, rfq.rawText)
+          : []
+      ).map((item) => ({
+        lineNumber: item.lineNumber,
+        description: item.description,
+        quantity: item.quantity,
+        unit: item.unit,
+      }));
+    const match = vendorDirectoryToMatch(vendor, {
+      productKey: vendorProductKey || "manual",
+      lines,
+    });
+    manualVendorIdsRef.current.add(vendor.id);
+    setVendorMatches((prev) => [...prev, match]);
+    setAddVendorOpen(false);
+    setVendorSearch("");
+    setVendorSearchResults([]);
+    setError("");
+  }
 
   const loadMarketplacePrices = useCallback(
     async (refresh = false) => {
@@ -1297,21 +2509,111 @@ export default function RfqDetailPage() {
     [id]
   );
 
+  // Parallel boot: RFQ + catalog matches + vendors open together (no waterfall).
   useEffect(() => {
-    const timeout = setTimeout(() => void load(), 0);
-    return () => clearTimeout(timeout);
-  }, [load]);
+    let cancelled = false;
+    const controller = new AbortController();
 
-  useEffect(() => {
-    if (!rfq) return;
-    const timeout = setTimeout(() => {
-      void loadMatches(rfq.productSelections);
-      void loadVendorMatches();
-    }, 0);
-    return () => clearTimeout(timeout);
-    // Only re-fetch when the RFQ identity changes — not when selections are saved back onto rfq.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rfq?.id, loadMatches, loadVendorMatches]);
+    async function boot() {
+      setLoading(true);
+      setMatchesLoading(true);
+      setVendorsLoading(true);
+      setError("");
+      setMarketplace(null);
+      setMarketplaceFetched(false);
+      setMarketplaceError("");
+      selectionsHydrated.current = false;
+      skipNextSave.current = true;
+
+      try {
+        const [rfqRes, matchesRes, vendorsRes] = await Promise.all([
+          fetch(`/api/rfqs/${id}`, { signal: controller.signal }),
+          fetch(`/api/rfqs/${id}/matches`, { signal: controller.signal }),
+          fetch(`/api/rfqs/${id}/vendors`, { signal: controller.signal }),
+        ]);
+        if (cancelled) return;
+
+        if (!rfqRes.ok) {
+          setError("RFQ not found");
+          setRfq(null);
+          setLoading(false);
+          setMatchesLoading(false);
+          setVendorsLoading(false);
+          return;
+        }
+
+        const rfqData = (await rfqRes.json()) as RfqDetail;
+        if (cancelled) return;
+        setRfq(rfqData);
+        setLoading(false);
+
+        try {
+          const matchData = await parseApiJson<{
+            keywords?: string[];
+            matches?: ProductMatch[];
+            itemMatches?: RequirementMatch[];
+            requirements?: RfqRequirementItem[];
+            error?: string;
+          }>(matchesRes, "Could not match catalog products");
+          if (cancelled) return;
+          if (matchesRes.ok) {
+            const list: ProductMatch[] = matchData.matches || [];
+            const perItem: RequirementMatch[] = matchData.itemMatches || [];
+            const reqs: RfqRequirementItem[] = matchData.requirements || [];
+            setKeywords(matchData.keywords || []);
+            setMatches(list);
+            setItemMatches(perItem);
+            setRequirements(reqs);
+            applySavedSelections(rfqData.productSelections, list, perItem);
+            setExpandedSearchLine(null);
+            selectionsHydrated.current = true;
+          } else {
+            setError(
+              typeof matchData.error === "string"
+                ? matchData.error
+                : "Could not match catalog products"
+            );
+          }
+        } catch (err) {
+          if (!cancelled) {
+            setError(userFacingFetchError(err, "Could not match catalog products"));
+          }
+        } finally {
+          if (!cancelled) setMatchesLoading(false);
+        }
+
+        try {
+          const vendorData = await parseApiJson<{
+            matches?: VendorMatch[];
+            productKey?: string;
+          }>(vendorsRes, "Could not match vendors");
+          if (cancelled) return;
+          if (vendorsRes.ok) {
+            setVendorMatches(vendorData.matches || []);
+            setVendorProductKey(vendorData.productKey || "");
+          }
+        } catch {
+          // Catalog search still works if vendor matching is unavailable.
+        } finally {
+          if (!cancelled) setVendorsLoading(false);
+        }
+      } catch (err) {
+        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) {
+          return;
+        }
+        setError(userFacingFetchError(err, "Could not open RFQ"));
+        setLoading(false);
+        setMatchesLoading(false);
+        setVendorsLoading(false);
+      }
+    }
+
+    void boot();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [id, applySavedSelections]);
 
   useEffect(() => {
     if (!selectionsHydrated.current || !id) return;
@@ -1433,41 +2735,12 @@ export default function RfqDetailPage() {
       productId: string;
       qty: number;
       unitPrice?: number;
+      costPrice?: number;
+      costVendorName?: string;
       aliasName?: string;
       unit?: string;
     }> = [];
     const used = new Set<string>();
-
-    function vendorUnitPriceForLine(lineNum: number): number | undefined {
-      const vendorId = lineVendorSelection[lineNum];
-      if (!vendorId) return undefined;
-      const match = vendorMatches.find((m) => m.vendor.id === vendorId);
-      if (!match?.outreach) return undefined;
-      const quotedLines = match.outreach.quotedLineItems || [];
-      const line = quotedLines.find((l) => l.lineNumber === lineNum);
-      if (line != null && Number.isFinite(line.unitPrice) && line.unitPrice > 0) {
-        return line.unitPrice;
-      }
-      if (
-        quotedLines.length === 0 &&
-        match.outreach.quotedPrice != null &&
-        Number.isFinite(match.outreach.quotedPrice) &&
-        match.outreach.quotedPrice > 0
-      ) {
-        const requested = match.outreach.requestedLineNumbers;
-        const singleRequested =
-          requested != null &&
-          requested.length === 1 &&
-          requested[0] === lineNum;
-        const singleMatch =
-          (requested == null || requested.length === 0) &&
-          (match.matchedLines?.length ?? 0) <= 1;
-        if (singleRequested || singleMatch) {
-          return match.outreach.quotedPrice;
-        }
-      }
-      return undefined;
-    }
 
     if (itemMatches.length > 0) {
       for (const item of itemMatches) {
@@ -1482,18 +2755,31 @@ export default function RfqDetailPage() {
           : undefined;
 
         if (selectedPid) {
-          const vendorPrice = vendorUnitPriceForLine(lineNum);
+          const vendorIdSelected = lineVendorSelection[lineNum];
+          const vendorMatch = vendorIdSelected
+            ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
+            : undefined;
+          const vendorPriceOptions = vendorsWithPriceForLine(vendorMatches, lineNum);
+          const vendorLineCost =
+            (vendorMatch ? vendorUnitCostForLine(vendorMatch, lineNum) : null) ??
+            [...vendorPriceOptions].sort((a, b) => a.unitPrice - b.unitPrice)[0];
           const last = picked?.product.lastPrice;
           const offer = picked?.product.offerPrice;
           const catalogPrice =
             last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
-          const unitPrice = vendorPrice ?? catalogPrice;
+          const unitPrice = catalogPrice ?? vendorLineCost?.unitPrice;
           lines.push({
             productId: selectedPid,
             qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
             aliasName: item.requirement.description,
             unit: item.requirement.unit,
             ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
+            ...(vendorLineCost
+              ? {
+                  costPrice: vendorLineCost.unitPrice,
+                  costVendorName: vendorLineCost.vendorName,
+                }
+              : {}),
           });
           used.add(selectedPid);
         }
@@ -1572,6 +2858,24 @@ export default function RfqDetailPage() {
       name: match.product.name,
       offerPrice: last != null && last > 0 ? last : offer,
     };
+  }
+
+  function selectVendorCosts(match: VendorMatch) {
+    const lineNumbers = vendorPricedLineNumbers(match);
+    if (lineNumbers.length === 0) return;
+    setLineVendorSelection((prev) => {
+      const alreadySelected = lineNumbers.every((line) => prev[line] === match.vendor.id);
+      if (alreadySelected) {
+        const next = { ...prev };
+        for (const line of lineNumbers) {
+          if (next[line] === match.vendor.id) delete next[line];
+        }
+        return next;
+      }
+      const next = { ...prev };
+      for (const line of lineNumbers) next[line] = match.vendor.id;
+      return next;
+    });
   }
 
   function toggleProduct(productId: string) {
@@ -1666,7 +2970,38 @@ export default function RfqDetailPage() {
     selectProductForLine(undefined, product);
   }
 
-  async function sendRecore(vendorId: string, productKey: string, lineNumbers: number[]) {
+  function openCatalogDraft(input: {
+    lineNumber?: number;
+    requirement?: CatalogRequirementInput | null;
+    query?: string;
+  }) {
+    const query = input.query?.trim() || "";
+    const requirement = input.requirement;
+    setCatalogDraft({
+      lineNumber: input.lineNumber,
+      requirement: {
+        description: query || requirement?.description || "New product",
+        unit: requirement?.unit,
+        brand: requirement?.brand,
+        model: requirement?.model,
+        code: requirement?.code,
+        extraNotes: requirement?.extraNotes,
+        category: requirement?.category,
+      },
+    });
+  }
+
+  async function sendRecore(
+    vendorId: string,
+    productKey: string,
+    input: {
+      channel: RecoreChannel;
+      lineNumbers: number[];
+      contactIds: string[];
+      subject: string;
+      body: string;
+    }
+  ) {
     setRecoreBusy(vendorId);
     setError("");
     const res = await fetch(`/api/rfqs/${id}/vendors/${vendorId}/recore`, {
@@ -1674,70 +3009,126 @@ export default function RfqDetailPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         productKey,
-        ...(lineNumbers.length > 0 ? { lineNumbers } : {}),
+        channel: input.channel,
+        subject: input.subject,
+        body: input.body,
+        contactIds: input.contactIds,
+        ...(input.lineNumbers.length > 0 ? { lineNumbers: input.lineNumbers } : {}),
       }),
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     setRecoreBusy("");
     if (!res.ok) {
       const message =
         typeof data.error === "string"
           ? data.error
-          : "Could not send Recore email";
+          : input.channel === "WHATSAPP"
+            ? "Could not send WhatsApp Recore"
+            : "Could not send Recore email";
       throw new Error(message);
     }
+    clearRecoreDraft(id, vendorId);
     setRecoreVendor(null);
-    await Promise.all([load(), loadVendorMatches()]);
+    // Soft refresh — keep page mounted; only refresh vendor outreach state.
+    await Promise.all([load({ soft: true }), loadVendorMatches({ soft: true })]);
   }
 
   async function checkVendorReplies() {
     setCheckRepliesBusy(true);
     setCheckRepliesMsg("Checking Outlook for vendor replies…");
     setError("");
-    const res = await fetch(`/api/rfqs/${id}/vendors/check-replies`, {
-      method: "POST",
-    });
-    const data = await res.json();
-    setCheckRepliesBusy(false);
-    if (!res.ok) {
-      setCheckRepliesMsg("");
-      setError(data.error || "Could not check vendor replies");
-      return;
+    try {
+      const res = await fetch(`/api/rfqs/${id}/vendors/check-replies`, {
+        method: "POST",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setCheckRepliesMsg("");
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "Could not check vendor replies"
+        );
+        return;
+      }
+      const priced = (data.results || []).filter(
+        (r: { quotedPrice: number | null }) => r.quotedPrice != null
+      ).length;
+      const reparseUpdated = data.reparseUpdated ?? 0;
+      setCheckRepliesMsg(
+        `Outlook: scanned ${data.scanned ?? 0}, matched ${data.matched ?? 0}, new ${data.newReplies ?? 0}, priced ${priced}` +
+          (reparseUpdated > 0 ? ` · AI re-parsed ${reparseUpdated}` : "")
+      );
+      // Soft vendor-only refresh — do not remount the RFQ page.
+      await loadVendorMatches({ soft: true });
+      if ((data.newReplies ?? 0) > 0 || priced > 0 || reparseUpdated > 0) {
+        void load({ soft: true });
+      }
+    } finally {
+      setCheckRepliesBusy(false);
     }
-    const priced = (data.results || []).filter(
-      (r: { quotedPrice: number | null }) => r.quotedPrice != null
-    ).length;
-    const reparseUpdated = data.reparseUpdated ?? 0;
-    setCheckRepliesMsg(
-      `Outlook: scanned ${data.scanned ?? 0}, matched ${data.matched ?? 0}, new ${data.newReplies ?? 0}, priced ${priced}` +
-        (reparseUpdated > 0 ? ` · AI re-parsed ${reparseUpdated}` : "")
-    );
-    await Promise.all([load(), loadVendorMatches()]);
   }
 
-  async function sendNegotiation(plainNote: string) {
+  async function sendNegotiation(payload: NegotiateSendPayload) {
     if (!negotiateVendor) return;
+    const vendorId = negotiateVendor.vendor.id;
     setNegotiateBusy(true);
     setError("");
-    const res = await fetch(
-      `/api/rfqs/${id}/vendors/${negotiateVendor.vendor.id}/negotiate`,
-      {
+    try {
+      const res = await fetch(`/api/rfqs/${id}/vendors/${vendorId}/negotiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plainNote }),
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const flat = data.error?.fieldErrors;
+        const fieldMsg =
+          flat && typeof flat === "object"
+            ? Object.values(flat as Record<string, string[]>)
+                .flat()
+                .filter(Boolean)[0]
+            : null;
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : fieldMsg ||
+              data.error?.formErrors?.[0] ||
+              "Could not send negotiation"
+        );
       }
-    );
-    const data = await res.json();
-    setNegotiateBusy(false);
-    if (!res.ok) {
-      throw new Error(
-        typeof data.error === "string"
-          ? data.error
-          : data.error?.formErrors?.[0] || "Could not send negotiation"
+      const noteForUi =
+        payload.mode === "ai"
+          ? payload.plainNote
+          : payload.plainNote || payload.subject;
+      // Optimistic local update so the list updates without a full reload.
+      setVendorMatches((prev) =>
+        prev.map((match) => {
+          if (match.vendor.id !== vendorId) return match;
+          const outreach = match.outreach;
+          return {
+            ...match,
+            outreach: outreach
+              ? {
+                  ...outreach,
+                  status:
+                    typeof data.status === "string" ? data.status : "NEGOTIATING",
+                  negotiatedAt:
+                    typeof data.negotiatedAt === "string"
+                      ? data.negotiatedAt
+                      : outreach.negotiatedAt || new Date().toISOString(),
+                  negotiationNote: noteForUi,
+                }
+              : outreach,
+          };
+        })
       );
+      setNegotiateVendor(null);
+      void loadVendorMatches({ soft: true });
+      void load({ soft: true });
+    } finally {
+      setNegotiateBusy(false);
     }
-    setNegotiateVendor(null);
-    await Promise.all([load(), loadVendorMatches()]);
   }
 
   async function openVendorThread(match: VendorMatch) {
@@ -1763,10 +3154,46 @@ export default function RfqDetailPage() {
   }
 
   if (loading) {
-    return <p className="text-mid-green">Loading…</p>;
+    return (
+      <div className="w-full space-y-5 animate-pulse">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-2">
+            <div className="h-3 w-16 rounded bg-dark-secondary/10" />
+            <div className="h-7 w-56 rounded-lg bg-dark-secondary/10" />
+            <div className="h-3 w-40 rounded bg-dark-secondary/10" />
+          </div>
+          <div className="flex gap-2">
+            <div className="h-9 w-24 rounded-full bg-dark-secondary/10" />
+            <div className="h-9 w-28 rounded-full bg-dark-secondary/10" />
+            <div className="h-9 w-36 rounded-full bg-mid-green/20" />
+          </div>
+        </div>
+        <div className="grid gap-4 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, index) => (
+            <div
+              key={index}
+              className="h-28 rounded-2xl border border-light-green/20 bg-white/50"
+            />
+          ))}
+        </div>
+        <div className="h-64 rounded-2xl border border-light-green/20 bg-white/50" />
+      </div>
+    );
   }
   if (!rfq) {
-    return <p className="text-dark-primary">{error || "Not found"}</p>;
+    return (
+      <div className="rounded-2xl border border-light-green/25 bg-white/55 px-6 py-12 text-center shadow-[0_8px_30px_rgba(11,43,38,0.05)]">
+        <p className="text-sm font-medium text-dark-primary">
+          {error || "RFQ not found"}
+        </p>
+        <Link
+          href="/inbox"
+          className="mt-4 inline-flex h-9 items-center rounded-full bg-mid-green px-3.5 text-sm font-medium text-background hover:bg-dark-secondary"
+        >
+          Back to inbox
+        </Link>
+      </div>
+    );
   }
 
   const meta =
@@ -1779,86 +3206,130 @@ export default function RfqDetailPage() {
     requirements.length > 0
       ? requirements
       : extractRfqItems(rfq.parsedSpecs, rfq.rawText);
+  const quoteCostByLine = parsedRequirements.map((req) => {
+    const vendorId = lineVendorSelection[req.lineNumber];
+    const match = vendorId
+      ? vendorMatches.find((row) => row.vendor.id === vendorId)
+      : undefined;
+    const cost = match ? vendorUnitCostForLine(match, req.lineNumber) : null;
+    const qty = req.quantity > 0 ? req.quantity : 1;
+    return {
+      lineNumber: req.lineNumber,
+      description: req.description,
+      qty,
+      unit: req.unit,
+      cost,
+      lineTotal: cost ? cost.unitPrice * qty : null,
+    };
+  });
+  const pricedCostLines = quoteCostByLine.filter((line) => line.lineTotal != null);
+  const quoteCostTotal =
+    pricedCostLines.length > 0
+      ? pricedCostLines.reduce((sum, line) => sum + (line.lineTotal || 0), 0)
+      : null;
+  const linesMappedCount = Object.keys(lineSelection).length;
+  const quoteProductCount =
+    itemMatches.length > 0 ? linesMappedCount : selected.size;
 
   return (
-    <div className="w-full space-y-5">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex flex-wrap items-start gap-4 sm:gap-6">
-          <Link
-            href="/inbox"
-            className="mt-1.5 shrink-0 text-sm text-mid-green hover:underline"
-          >
-            ← Inbox
-          </Link>
-          <div>
-            <h1 className="text-2xl font-semibold">
-              {rfq.customerCompany || rfq.customerName || "RFQ"}
-            </h1>
-            <p className="mt-1 text-sm text-mid-green">
-              {format(new Date(rfq.createdAt), "dd MMM yyyy HH:mm")} ·{" "}
-              <span className="rounded bg-light-green/25 px-1.5 py-0.5 text-xs">
-                {rfq.channel.replace("_", " ")}
-              </span>
-            </p>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="w-full space-y-4">
+      <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2 rounded-xl border border-light-green/20 bg-background/95 px-3 py-2 backdrop-blur-md">
+        <h1 className="min-w-0 truncate text-base font-semibold tracking-tight text-dark-primary">
+          {rfq.customerCompany || rfq.customerName || "RFQ"}
+        </h1>
+        <StatusBadge status={rfq.status} />
+        <span className="hidden text-xs text-mid-green sm:inline">
+          {format(new Date(rfq.createdAt), "dd MMM HH:mm")}
+          {" · "}
+          {rfq.channel.replaceAll("_", " ")}
+          {rfq.parsedCategory ? ` · ${rfq.parsedCategory}` : ""}
+        </span>
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => setThreadOpen(true)}
-            className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
+            className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20"
           >
             Thread
             {(rfq.messages ?? []).length > 0 ? (
-              <span className="ml-1.5 text-xs text-mid-green">
-                ({(rfq.messages ?? []).length})
+              <span className="ml-1 tabular-nums text-mid-green/80">
+                {(rfq.messages ?? []).length}
               </span>
             ) : null}
           </button>
           <button
             type="button"
             onClick={() => setLinkedQuotesOpen(true)}
-            className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
+            className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20"
           >
-            Linked quotes
+            Quotes
             {(rfq.quotes ?? []).length > 0 ? (
-              <span className="ml-1.5 text-xs text-mid-green">({(rfq.quotes ?? []).length})</span>
+              <span className="ml-1 tabular-nums text-mid-green/80">
+                {(rfq.quotes ?? []).length}
+              </span>
             ) : null}
           </button>
           <button
             type="button"
             onClick={reparse}
             disabled={!!busy}
-            className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20 disabled:opacity-60"
+            className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20 disabled:opacity-60"
           >
-            {busy === "parse" ? "Parsing…" : "Re-parse with AI"}
+            {busy === "parse" ? "Parsing…" : "Re-parse"}
           </button>
           <button
             type="button"
             onClick={convertToQuote}
             disabled={!!busy}
-            className="rounded-lg bg-mid-green px-3 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+            className="inline-flex h-8 items-center rounded-full bg-mid-green px-3 text-xs font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
           >
             {busy === "quote"
               ? "Creating…"
-              : selected.size > 0
-                ? `Generate quote (${selected.size})`
+              : quoteProductCount > 0
+                ? `Quote (${quoteProductCount})`
                 : "Generate quote"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSummaryPanelOpen((open) => !open)}
+            aria-expanded={summaryPanelOpen}
+            className={`inline-flex h-8 items-center gap-1 rounded-full px-2.5 text-xs font-medium transition ${
+              summaryPanelOpen
+                ? "bg-mid-green/15 text-dark-primary"
+                : "bg-dark-secondary/[0.05] text-mid-green hover:bg-light-green/20"
+            }`}
+          >
+            {summaryPanelOpen ? "Hide options" : "More options"}
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${
+                summaryPanelOpen ? "rotate-180" : ""
+              }`}
+              strokeWidth={1.75}
+            />
           </button>
         </div>
       </div>
 
-      {error ? <p className="text-sm text-dark-primary">{error}</p> : null}
+      {error ? (
+        <p className="rounded-xl border border-dark-primary/10 bg-dark-primary/5 px-3 py-2 text-sm text-dark-primary">
+          {error}
+        </p>
+      ) : null}
       {rfq.parseError ? (
-        <p className="rounded-lg bg-dark-primary/5 px-3 py-2 text-sm">Parse error: {rfq.parseError}</p>
+        <p className="rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
+          Parse error: {rfq.parseError}
+        </p>
       ) : null}
 
-      <div className="grid w-full gap-4 lg:grid-cols-3">
-        <div className="rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+      {summaryPanelOpen ? (
+      <div className="grid w-full gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border border-light-green/25 bg-white/60 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="text-sm font-medium text-mid-green">Customer</h2>
-              <p className="mt-1 truncate text-sm font-medium">
+              <h2 className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                Customer
+              </h2>
+              <p className="mt-1.5 truncate text-sm font-semibold text-dark-primary">
                 {rfq.customerCompany || rfq.customerName || "—"}
               </p>
               <p className="mt-1 truncate text-xs text-mid-green">
@@ -1866,551 +3337,671 @@ export default function RfqDetailPage() {
                   "No contact details"}
               </p>
             </div>
-            <div className="flex shrink-0 flex-col items-end gap-1.5">
-              <StatusBadge status={rfq.status} />
-              <button
-                type="button"
-                onClick={() => setCustomerDetailsOpen(true)}
-                className="text-xs text-mid-green hover:underline"
-              >
-                Details
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h2 className="text-sm font-medium text-mid-green">AI parse</h2>
-              <p className="mt-1 text-sm font-medium">
-                {rfq.parsedCategory || "Not parsed yet"}
-                {rfq.parseConfidence != null ? (
-                  <span className="ml-2 text-xs font-normal text-mid-green">
-                    {Math.round(rfq.parseConfidence * 100)}% confidence
-                  </span>
-                ) : null}
-              </p>
-              {meta.summary ? (
-                <p className="mt-0.5 line-clamp-1 text-xs text-mid-green">{meta.summary}</p>
-              ) : (
-                <p className="mt-0.5 text-xs text-mid-green">
-                  {parsedRequirements.length > 0
-                    ? `${parsedRequirements.length} product${parsedRequirements.length === 1 ? "" : "s"} requested`
-                    : Object.keys(specsForDisplay).length > 0
-                      ? `${Object.keys(specsForDisplay).length} specs extracted`
-                      : "No summary yet"}
-                </p>
-              )}
-            </div>
             <button
               type="button"
-              onClick={() => setAiParseDetailsOpen(true)}
-              className="shrink-0 text-xs text-mid-green hover:underline"
+              onClick={() => setCustomerDetailsOpen(true)}
+              className="shrink-0 rounded-full bg-dark-secondary/[0.05] px-2.5 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
             >
               Details
             </button>
           </div>
         </div>
 
-        <div className="rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+        <div className="rounded-2xl border border-light-green/25 bg-white/60 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="text-sm font-medium text-mid-green">Matches</h2>
-              <p className="mt-1 text-sm font-medium">
+              <h2 className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                AI parse
+              </h2>
+              <p className="mt-1.5 text-sm font-semibold text-dark-primary">
+                {rfq.parsedCategory || "Not parsed yet"}
+                {rfq.parseConfidence != null ? (
+                  <span className="ml-2 text-xs font-normal text-mid-green">
+                    {Math.round(rfq.parseConfidence * 100)}%
+                  </span>
+                ) : null}
+              </p>
+              {meta.summary ? (
+                <p className="mt-1 line-clamp-1 text-xs text-mid-green">{meta.summary}</p>
+              ) : (
+                <p className="mt-1 text-xs text-mid-green">
+                  {Object.keys(specsForDisplay).length > 0
+                    ? `${Object.keys(specsForDisplay).length} specs extracted`
+                    : "No summary yet"}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setAiParseDetailsOpen(true)}
+              className="shrink-0 rounded-full bg-dark-secondary/[0.05] px-2.5 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
+            >
+              Details
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-light-green/25 bg-white/60 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                Requested products
+              </h2>
+              <p className="mt-1.5 text-sm font-semibold text-dark-primary">
                 {parsedRequirements.length > 0
-                  ? `${parsedRequirements.length} requirement${parsedRequirements.length === 1 ? "" : "s"}`
-                  : `${matches.length} product${matches.length === 1 ? "" : "s"}`}{" "}
-                · {vendorMatches.length} vendor{vendorMatches.length === 1 ? "" : "s"}
+                  ? `${parsedRequirements.length} line${parsedRequirements.length === 1 ? "" : "s"}`
+                  : "None yet"}
+              </p>
+              <p className="mt-1 line-clamp-2 text-xs text-mid-green">
+                {parsedRequirements.length > 0
+                  ? parsedRequirements
+                      .slice(0, 2)
+                      .map((req) => req.description)
+                      .join(" · ")
+                  : "Parse the RFQ to extract line items"}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRequestedProductsOpen(true)}
+              disabled={parsedRequirements.length === 0}
+              className="shrink-0 rounded-full bg-dark-secondary/[0.05] px-2.5 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Details
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-light-green/25 bg-white/60 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                Matches
+              </h2>
+              <p className="mt-1.5 text-sm font-semibold text-dark-primary">
+                {matchesLoading || vendorsLoading ? (
+                  <span className="font-medium text-mid-green">Loading…</span>
+                ) : (
+                  <>
+                    {matches.length} product{matches.length === 1 ? "" : "s"}
+                    {" · "}
+                    {vendorMatches.length} vendor
+                    {vendorMatches.length === 1 ? "" : "s"}
+                  </>
+                )}
               </p>
               <p className="mt-1 truncate text-xs text-mid-green">
-                {selected.size > 0
-                  ? `${selected.size} selected for quote`
+                {quoteProductCount > 0
+                  ? itemMatches.length > 0
+                    ? `${quoteProductCount}/${itemMatches.length} lines mapped to catalog`
+                    : `${quoteProductCount} product${quoteProductCount === 1 ? "" : "s"} for quote`
                   : keywords.length > 0
                     ? `${keywords.length} keywords`
                     : "Select products to generate quote"}
               </p>
-              <p className="mt-2 truncate text-xs text-dark-primary">
+              <p className="mt-2 truncate text-xs text-dark-primary/80">
                 {rfq.subject || rfq.rawText || "No raw message"}
               </p>
             </div>
             <button
               type="button"
               onClick={() => setRawMessageOpen(true)}
-              className="shrink-0 text-xs text-mid-green hover:underline"
+              className="shrink-0 rounded-full bg-dark-secondary/[0.05] px-2.5 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
             >
               Message
             </button>
           </div>
         </div>
       </div>
-
-      {parsedRequirements.length > 0 ? (
-        <section className="w-full rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <button
-            type="button"
-            onClick={() => setRequestedProductsOpen((open) => !open)}
-            className="flex w-full items-start justify-between gap-3 text-left"
-            aria-expanded={requestedProductsOpen}
-          >
-            <div className="min-w-0">
-              <h2 className="text-sm font-medium text-mid-green">Requested products</h2>
-              <p className="mt-1 text-xs text-mid-green">
-                {requestedProductsOpen
-                  ? "Each line is matched to catalog products independently."
-                  : `${parsedRequirements.length} product${parsedRequirements.length === 1 ? "" : "s"} · click to expand`}
-              </p>
-            </div>
-            <ChevronDown
-              className={`mt-0.5 h-4 w-4 shrink-0 text-mid-green transition-transform ${
-                requestedProductsOpen ? "rotate-180" : ""
-              }`}
-            />
-          </button>
-          {requestedProductsOpen ? (
-            <div className="mt-3 overflow-x-auto rounded-lg">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-dark-secondary/5 text-mid-green">
-                  <tr>
-                    <th className="w-10 px-3 py-2 font-medium">#</th>
-                    <th className="px-3 py-2 font-medium">Product</th>
-                    <th className="px-3 py-2 font-medium text-right">Qty</th>
-                    <th className="px-3 py-2 font-medium">Unit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {parsedRequirements.map((req, i) => (
-                    <tr key={req.lineNumber} className={i % 2 === 1 ? "bg-light-green/10" : undefined}>
-                      <td className="px-3 py-2 font-medium text-mid-green">{req.lineNumber}</td>
-                      <td className="px-3 py-2">
-                        <div className="font-medium">{req.description}</div>
-                        {req.brand ? (
-                          <div className="text-xs text-mid-green">Brand: {req.brand}</div>
-                        ) : null}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">{req.quantity}</td>
-                      <td className="px-3 py-2">{req.unit}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-        </section>
       ) : null}
 
-      <div className="grid w-full gap-5 lg:grid-cols-2">
-        <section className="min-w-0 rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium text-mid-green">Suggested products</h2>
-              <p className="mt-0.5 text-xs text-mid-green">
-                {itemMatches.length > 0
-                  ? "One product per line — the best match is selected. Tap Change to pick another."
-                  : "Search the catalog to pick products"}
-              </p>
-            </div>
+      <div className="grid w-full gap-4 lg:grid-cols-2">
+        <section className="min-w-0 overflow-hidden rounded-2xl border border-light-green/25 bg-white/60 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
+          <div className="flex items-center gap-2 border-b border-light-green/20 px-3 py-2.5">
+            <h2 className="text-sm font-semibold tracking-tight text-dark-primary">
+              Products
+            </h2>
+            {itemMatches.length > 0 ? (
+              <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
+                {linesMappedCount}/{itemMatches.length} lines
+              </span>
+            ) : matches.length > 0 ? (
+              <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
+                {selected.size}/{matches.length} for quote
+              </span>
+            ) : (
+              <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium text-mid-green">
+                0
+              </span>
+            )}
             <button
               type="button"
               onClick={() => void loadMatches(rfq.productSelections)}
-              className="rounded-md p-1.5 text-mid-green hover:bg-light-green/20"
+              className="ml-auto rounded-full p-1.5 text-mid-green hover:bg-light-green/20"
               aria-label="Refresh suggested products"
               title="Refresh"
             >
-              <RefreshCw className="h-4 w-4" />
+              <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          <div className="mt-3">
+          <div className="border-b border-light-green/15 px-3 py-2">
             <RfqProductSearch
               inventoryMap={inventoryMap}
               onSelect={pickCatalogProduct}
-              placeholder="Search by product name or code…"
+              placeholder="Search catalog…"
               label="Search catalog"
+              onAddMissing={(query) => {
+                const unmatched = itemMatches.find((im) => lineMatches(im).length === 0);
+                const fallback = unmatched || itemMatches[0];
+                openCatalogDraft({
+                  lineNumber: fallback?.lineNumber,
+                  requirement: fallback?.requirement,
+                  query,
+                });
+              }}
             />
           </div>
 
-        {matchesLoading ? (
-          <p className="mt-4 text-sm text-mid-green">Matching catalog…</p>
-        ) : itemMatches.length > 0 ? (
-          <div className="mt-4 space-y-4">
-            {itemMatches.map((item) => {
-              const combinedMatches = lineMatches(item);
-              const vendorPriceOptions = vendorsWithPriceForLine(
-                vendorMatches,
-                item.lineNumber
-              );
-              const selectedVendorId = lineVendorSelection[item.lineNumber] || "";
-              return (
-              <div key={item.lineNumber} className="rounded-lg border border-light-green/30">
-                <div className="flex flex-wrap items-start justify-between gap-2 bg-dark-secondary/5 px-3 py-2.5">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-mid-green">
-                      Line {item.lineNumber} · qty {item.requirement.quantity} {item.requirement.unit}
-                    </div>
-                    <div className="mt-0.5 text-sm font-medium text-dark-primary">
-                      {item.requirement.description}
-                    </div>
-                    {vendorPriceOptions.length > 0 ? (
-                      <label className="mt-2 flex flex-wrap items-center gap-2 text-xs text-mid-green">
-                        <span className="font-medium">Price from</span>
-                        <select
-                          value={selectedVendorId}
-                          onChange={(e) => {
-                            const value = e.target.value;
-                            setLineVendorSelection((prev) => {
-                              const next = { ...prev };
-                              if (!value) delete next[item.lineNumber];
-                              else next[item.lineNumber] = value;
-                              return next;
-                            });
-                          }}
-                          className="rounded-md border border-light-green/40 bg-white/80 px-2 py-1 text-xs text-dark-primary outline-none focus:border-mid-green"
-                        >
-                          <option value="">Catalog offer</option>
-                          {vendorPriceOptions.map((opt) => (
-                            <option key={opt.vendorId} value={opt.vendorId}>
-                              {opt.vendorName} — ₹
-                              {opt.unitPrice.toLocaleString("en-IN")}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setExpandedSearchLine((current) =>
-                        current === item.lineNumber ? null : item.lineNumber
-                      )
-                    }
-                    className="shrink-0 text-xs font-medium text-mid-green underline-offset-2 hover:text-dark-primary hover:underline"
-                  >
-                    {expandedSearchLine === item.lineNumber ? "Close" : "Change"}
-                  </button>
-                </div>
-                {expandedSearchLine === item.lineNumber ? (
-                  <div className="border-b border-light-green/20 bg-light-green/5 px-3 py-3">
-                    <RfqProductSearch
-                      autoFocus
-                      requiredQty={item.requirement.quantity}
-                      inventoryMap={inventoryMap}
-                      placeholder="Search by product name or code…"
-                      label="Search catalog"
-                      onClose={() => setExpandedSearchLine(null)}
-                      onSelect={(product) => {
-                        selectProductForLine(item.lineNumber, product);
-                        setExpandedSearchLine(null);
-                      }}
-                    />
-                  </div>
-                ) : null}
-                {combinedMatches.length === 0 ? (
-                  <p className="px-3 py-4 text-sm text-mid-green">
-                    No catalog match — click <span className="font-medium">Change</span> to
-                    search the catalog.
-                  </p>
-                ) : (
-                  <div className="overflow-x-auto">
-                  <table className="w-full min-w-[520px] text-left text-sm">
-                    <thead className="text-xs uppercase tracking-wide text-mid-green">
-                      <tr>
-                        <th className="w-10 px-3 py-2 font-medium" />
-                        <th className="px-3 py-2 font-medium">Product</th>
-                        <th className="px-3 py-2 font-medium">Matched</th>
-                        <th className="px-3 py-2 text-right font-medium">Stock</th>
-                        <th className="px-3 py-2 text-right font-medium">Score</th>
-                        <th className="px-3 py-2 text-right font-medium">Last price</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {combinedMatches.map((m, i) => {
-                        const chosen = isLineProductSelected(item.lineNumber, m.product.id);
-                        return (
-                        <tr
-                          key={m.product.id}
-                          className={
-                            chosen
-                              ? "bg-mid-green/15"
-                              : i % 2 === 1
-                                ? "bg-light-green/10"
-                                : undefined
-                          }
-                        >
-                          <td className="px-3 py-2">
-                            <input
-                              type="radio"
-                              name={`rfq-line-${item.lineNumber}`}
-                              checked={chosen}
-                              onChange={() => toggleProductForLine(item.lineNumber, m.product.id)}
-                              aria-label={`Select ${m.product.code} for line ${item.lineNumber}`}
-                            />
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="font-medium">
-                              {m.product.code} — {m.product.name}
-                            </div>
-                            {m.product.description ? (
-                              <div className="text-xs text-mid-green line-clamp-1">
-                                {m.product.description}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td className="px-3 py-2 text-xs text-mid-green">
-                            {m.matchedTokens.slice(0, 5).join(", ") || "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right text-xs">
-                            <ProductStockCell
-                              productId={m.product.id}
-                              unit={m.product.unit}
-                              inventoryMap={inventoryMap}
-                              requiredQty={item.requirement.quantity}
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums">
-                            {m.score > 0 ? m.score : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right font-semibold tabular-nums text-dark-primary">
-                            <ProductLastPriceInput
-                              productId={m.product.id}
-                              value={m.product.lastPrice ?? m.product.offerPrice}
-                              onSaved={(price) => applyProductPrice(m.product.id, price)}
-                            />
-                          </td>
-                        </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  </div>
-                )}
-              </div>
-            );
-            })}
-          </div>
-        ) : matches.length === 0 ? (
-          <div className="mt-4 space-y-3">
-            <p className="text-sm text-mid-green">
-              {keywords.length === 0
-                ? "Parse the RFQ first, then search the catalog below."
-                : "No catalog matches — search below or generate a blank quote."}
-            </p>
-          </div>
-        ) : (
-          <div className="mt-4 overflow-x-auto rounded-lg">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-dark-secondary/5 text-mid-green">
-                <tr>
-                  <th className="w-10 px-3 py-2 font-medium" />
-                  <th className="px-3 py-2 font-medium">Product</th>
-                  <th className="px-3 py-2 font-medium">Matched</th>
-                  <th className="px-3 py-2 text-right font-medium">Stock</th>
-                  <th className="px-3 py-2 text-right font-medium">Score</th>
-                  <th className="px-3 py-2 text-right font-medium">Last price</th>
-                </tr>
-              </thead>
-              <tbody>
-                {matches.map((m, i) => (
-                  <tr
-                    key={m.product.id}
-                    className={i % 2 === 1 ? "bg-light-green/10" : undefined}
-                  >
-                    <td className="px-3 py-2">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(m.product.id)}
-                        onChange={() => toggleProduct(m.product.id)}
-                      />
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="font-medium">
-                        {m.product.code} — {m.product.name}
+          <div className="max-h-[34rem] overflow-y-auto">
+            {matchesLoading ? (
+              <p className="px-3 py-8 text-center text-sm text-mid-green">Matching catalog…</p>
+            ) : itemMatches.length > 0 ? (
+              <ul className="divide-y divide-light-green/15">
+                {itemMatches.map((item) => {
+                  const combinedMatches = lineMatches(item);
+                  const visible = combinedMatches.slice(0, 4);
+                  return (
+                    <li key={item.lineNumber} className="px-3 py-3">
+                      <div className="mb-2 flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                            Line {item.lineNumber} · {item.requirement.quantity}{" "}
+                            {item.requirement.unit}
+                          </p>
+                          <p className="mt-0.5 truncate text-sm font-medium text-dark-primary">
+                            {item.requirement.description}
+                          </p>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openCatalogDraft({
+                                lineNumber: item.lineNumber,
+                                requirement: item.requirement,
+                              })
+                            }
+                            className="rounded-full px-2 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
+                          >
+                            <Plus className="mr-0.5 inline h-3 w-3" strokeWidth={1.75} />
+                            Add
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedSearchLine((current) =>
+                                current === item.lineNumber ? null : item.lineNumber
+                              )
+                            }
+                            className="rounded-full px-2 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
+                          >
+                            {expandedSearchLine === item.lineNumber ? "Close" : "Change"}
+                          </button>
+                        </div>
                       </div>
-                      {m.product.description ? (
-                        <div className="text-xs text-mid-green line-clamp-1">
-                          {m.product.description}
+                      {expandedSearchLine === item.lineNumber ? (
+                        <div className="mb-2 rounded-xl bg-light-green/10 p-2">
+                          <RfqProductSearch
+                            autoFocus
+                            requiredQty={item.requirement.quantity}
+                            inventoryMap={inventoryMap}
+                            placeholder="Search by name or code…"
+                            label="Search catalog"
+                            onClose={() => setExpandedSearchLine(null)}
+                            onSelect={(product) => {
+                              selectProductForLine(item.lineNumber, product);
+                              setExpandedSearchLine(null);
+                            }}
+                            onAddMissing={(query) =>
+                              openCatalogDraft({
+                                lineNumber: item.lineNumber,
+                                requirement: item.requirement,
+                                query,
+                              })
+                            }
+                          />
                         </div>
                       ) : null}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-mid-green">
-                      {m.matchedTokens.slice(0, 5).join(", ") || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right text-xs">
-                      <ProductStockCell
-                        productId={m.product.id}
-                        unit={m.product.unit}
-                        inventoryMap={inventoryMap}
-                      />
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {m.score > 0 ? m.score : "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-dark-primary">
-                      <ProductLastPriceInput
-                        productId={m.product.id}
-                        value={m.product.lastPrice ?? m.product.offerPrice}
-                        onSaved={(price) => applyProductPrice(m.product.id, price)}
-                      />
-                    </td>
-                  </tr>
+                      {combinedMatches.length === 0 ? (
+                        <div className="rounded-xl border border-dashed border-light-green/40 px-3 py-4 text-center">
+                          <p className="text-xs text-mid-green">No catalog match</p>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openCatalogDraft({
+                                lineNumber: item.lineNumber,
+                                requirement: item.requirement,
+                              })
+                            }
+                            className="mt-2 inline-flex h-8 items-center gap-1 rounded-full bg-mid-green px-3 text-xs font-medium text-background hover:bg-dark-secondary"
+                          >
+                            <Plus className="h-3 w-3" strokeWidth={1.75} />
+                            Add to catalog
+                          </button>
+                        </div>
+                      ) : (
+                        <ul className="space-y-1">
+                          {visible.map((m) => {
+                            const chosen = isLineProductSelected(
+                              item.lineNumber,
+                              m.product.id
+                            );
+                            return (
+                              <li key={m.product.id}>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    toggleProductForLine(item.lineNumber, m.product.id)
+                                  }
+                                  className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition ${
+                                    chosen
+                                      ? "bg-mid-green/15 ring-1 ring-mid-green/30"
+                                      : "hover:bg-light-green/15"
+                                  }`}
+                                >
+                                  <span
+                                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                                      chosen
+                                        ? "border-mid-green bg-mid-green text-background"
+                                        : "border-light-green/50"
+                                    }`}
+                                  >
+                                    {chosen ? (
+                                      <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                                    ) : null}
+                                  </span>
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block truncate text-sm font-medium text-dark-primary">
+                                      {m.product.code} — {m.product.name}
+                                    </span>
+                                    <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-mid-green">
+                                      {m.score > 0 ? <span>Score {m.score}</span> : null}
+                                      <ProductStockCell
+                                        productId={m.product.id}
+                                        unit={m.product.unit}
+                                        inventoryMap={inventoryMap}
+                                        requiredQty={item.requirement.quantity}
+                                      />
+                                    </span>
+                                  </span>
+                                  <span
+                                    className="shrink-0"
+                                    onClick={(event) => event.stopPropagation()}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                  >
+                                    <ProductLastPriceInput
+                                      productId={m.product.id}
+                                      value={m.product.lastPrice ?? m.product.offerPrice}
+                                      onSaved={(price) =>
+                                        applyProductPrice(m.product.id, price)
+                                      }
+                                    />
+                                  </span>
+                                </button>
+                              </li>
+                            );
+                          })}
+                          {combinedMatches.length > visible.length ? (
+                            <li className="px-2.5 pt-1 text-[11px] text-mid-green">
+                              +{combinedMatches.length - visible.length} more — use Change to
+                              search
+                            </li>
+                          ) : null}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : matches.length === 0 ? (
+              <div className="space-y-2 px-3 py-4">
+                <p className="text-center text-sm text-mid-green">
+                  {keywords.length === 0
+                    ? "Parse the RFQ, then search the catalog."
+                    : "No catalog matches yet."}
+                </p>
+                {parsedRequirements.map((req) => (
+                  <div
+                    key={req.lineNumber}
+                    className="flex items-center justify-between gap-2 rounded-xl bg-light-green/10 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-dark-primary">
+                        {req.description}
+                      </p>
+                      <p className="text-[11px] text-mid-green">
+                        Line {req.lineNumber} · {req.quantity} {req.unit}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openCatalogDraft({
+                          lineNumber: req.lineNumber,
+                          requirement: req,
+                        })
+                      }
+                      className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-mid-green px-3 text-xs font-medium text-background hover:bg-dark-secondary"
+                    >
+                      <Plus className="h-3 w-3" strokeWidth={1.75} />
+                      Add
+                    </button>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            ) : (
+              <ul className="divide-y divide-light-green/15">
+                {matches.map((m) => {
+                  const chosen = selected.has(m.product.id);
+                  return (
+                    <li key={m.product.id}>
+                      <button
+                        type="button"
+                        onClick={() => toggleProduct(m.product.id)}
+                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-left transition ${
+                          chosen ? "bg-mid-green/15" : "hover:bg-light-green/15"
+                        }`}
+                      >
+                        <span
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                            chosen
+                              ? "border-mid-green bg-mid-green text-background"
+                              : "border-light-green/50"
+                          }`}
+                        >
+                          {chosen ? (
+                            <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                          ) : null}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium text-dark-primary">
+                            {m.product.code} — {m.product.name}
+                          </span>
+                          <span className="text-[11px] text-mid-green">
+                            {m.score > 0 ? `Score ${m.score}` : "Match"}
+                          </span>
+                        </span>
+                        <span
+                          className="shrink-0"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <ProductLastPriceInput
+                            productId={m.product.id}
+                            value={m.product.lastPrice ?? m.product.offerPrice}
+                            onSaved={(price) => applyProductPrice(m.product.id, price)}
+                          />
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-        )}
         </section>
 
-        <section className="min-w-0 rounded-xl bg-white/50 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium text-mid-green">
-                Suggested vendors
-                {vendorProductKey ? (
-                  <span className="ml-1 text-xs font-normal text-mid-green">
-                    · {vendorProductKey}
-                  </span>
-                ) : null}
-              </h2>
-             
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
+        <section className="min-w-0 overflow-hidden rounded-2xl border border-light-green/25 bg-white/60 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
+          <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-2.5">
+            <h2 className="text-sm font-semibold tracking-tight text-dark-primary">
+              Vendors
+            </h2>
+            <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
+              {vendorMatches.length}
+            </span>
+            {vendorProductKey ? (
+              <span className="truncate text-[11px] text-mid-green">{vendorProductKey}</span>
+            ) : null}
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setAddVendorOpen((open) => !open);
+                  if (addVendorOpen) {
+                    setVendorSearch("");
+                    setVendorSearchResults([]);
+                  }
+                }}
+                className="inline-flex h-8 items-center gap-1 rounded-full bg-mid-green/15 px-2.5 text-[11px] font-medium text-dark-primary hover:bg-mid-green/25"
+              >
+                <Plus className="h-3 w-3" strokeWidth={1.75} />
+                Add vendor
+              </button>
               <button
                 type="button"
                 onClick={() => void checkVendorReplies()}
                 disabled={checkRepliesBusy}
-                className="rounded-lg border border-mid-green/40 bg-mid-green/10 px-2.5 py-1 text-xs font-medium text-dark-primary hover:bg-mid-green/20 disabled:opacity-60"
+                className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-[11px] font-medium text-mid-green hover:bg-light-green/20 disabled:opacity-60"
               >
-                {checkRepliesBusy ? "Checking…" : "Check vendor replies"}
+                {checkRepliesBusy ? "Checking…" : "Check replies"}
               </button>
               <button
                 type="button"
-                onClick={loadVendorMatches}
-                className="rounded-md p-1.5 text-mid-green hover:bg-light-green/20"
+                onClick={() => void loadVendorMatches({ soft: true })}
+                className="rounded-full p-1.5 text-mid-green hover:bg-light-green/20"
                 aria-label="Refresh suggested vendors"
                 title="Refresh"
               >
-                <RefreshCw className="h-4 w-4" />
+                <RefreshCw className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
           {checkRepliesMsg ? (
-            <p className="mt-2 text-xs text-mid-green">{checkRepliesMsg}</p>
+            <p className="border-b border-light-green/15 px-3 py-2 text-[11px] text-mid-green">
+              {checkRepliesMsg}
+            </p>
+          ) : null}
+          {addVendorOpen ? (
+            <div className="border-b border-light-green/15 bg-light-green/10 px-3 py-3">
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green/70"
+                  strokeWidth={1.75}
+                />
+                <input
+                  value={vendorSearch}
+                  onChange={(event) => setVendorSearch(event.target.value)}
+                  placeholder="Search vendors by name, phone, email…"
+                  className="h-9 w-full rounded-xl border border-light-green/35 bg-white pl-8 pr-3 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                  autoFocus
+                />
+              </div>
+              <div className="mt-2 max-h-48 overflow-y-auto rounded-xl border border-light-green/25 bg-white">
+                {vendorSearchBusy ? (
+                  <p className="px-3 py-4 text-center text-xs text-mid-green">
+                    Searching…
+                  </p>
+                ) : vendorSearchResults.length === 0 ? (
+                  <p className="px-3 py-4 text-center text-xs text-mid-green">
+                    No vendors found. Add them on the Vendors page first.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-light-green/15">
+                    {vendorSearchResults.map((vendor) => {
+                      const already = vendorMatches.some(
+                        (match) => match.vendor.id === vendor.id
+                      );
+                      return (
+                        <li key={vendor.id}>
+                          <button
+                            type="button"
+                            disabled={already}
+                            onClick={() => intakeVendorFromDirectory(vendor)}
+                            className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left transition hover:bg-light-green/15 disabled:cursor-default disabled:opacity-55"
+                          >
+                            <span className="min-w-0">
+                              <span className="block truncate text-sm font-medium text-dark-primary">
+                                {vendor.name}
+                              </span>
+                              <span className="mt-0.5 block truncate text-[11px] text-mid-green">
+                                {vendor.categories?.[0]?.category || "Vendor"}
+                                {" · "}
+                                {vendor.email ||
+                                  vendor.whatsappId ||
+                                  vendor.phone ||
+                                  "No contact"}
+                              </span>
+                            </span>
+                            <span className="shrink-0 text-[11px] font-medium text-mid-green">
+                              {already ? "Added" : "Add"}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
           ) : null}
 
-        {vendorsLoading ? (
-          <p className="mt-4 text-sm text-mid-green">Matching vendors…</p>
-        ) : vendorMatches.length === 0 ? (
-          <p className="mt-4 text-sm text-mid-green">
-            No vendors match this RFQ category yet.
-          </p>
-        ) : (
-          <div className="mt-4 overflow-x-auto rounded-lg">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-dark-secondary/5 text-mid-green">
-                <tr>
-                  <th className="px-3 py-2 font-medium">Vendor</th>
-                  <th className="px-3 py-2 font-medium">Contact</th>
-                  <th className="px-3 py-2 text-right font-medium">Price / Sum</th>
-                  <th className="px-3 py-2 text-right font-medium">Score</th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
-              <tbody>
-                {vendorMatches.map((match, index) => {
-                  const display = vendorDisplayPrice(match);
-                  const lineCount =
-                    display.lines.length || match.matchedLines?.length || 0;
+          <div className="max-h-[34rem] overflow-y-auto">
+            {vendorsLoading ? (
+              <p className="px-3 py-8 text-center text-sm text-mid-green">Matching vendors…</p>
+            ) : vendorMatches.length === 0 ? (
+              <div className="space-y-3 px-3 py-8 text-center">
+                <p className="text-sm text-mid-green">
+                  No vendors matched this RFQ automatically.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setAddVendorOpen(true)}
+                  className="inline-flex h-8 items-center gap-1 rounded-full bg-mid-green px-3 text-xs font-medium text-background hover:bg-dark-secondary"
+                >
+                  <Plus className="h-3 w-3" strokeWidth={1.75} />
+                  Pick from vendor list
+                </button>
+              </div>
+            ) : (
+              <ul className="divide-y divide-light-green/15">
+                {vendorMatches.map((match) => {
+                  const pricedLines = vendorPricedLineNumbers(match);
+                  const costTotal = vendorCostTotal(match);
+                  const usingCosts =
+                    pricedLines.length > 0 &&
+                    pricedLines.every(
+                      (lineNumber) => lineVendorSelection[lineNumber] === match.vendor.id
+                    );
                   const canNegotiate =
                     Boolean(match.vendor.email) &&
-                    display.amount != null &&
+                    costTotal != null &&
                     match.outreach?.status !== "DECLINED";
                   const declined = match.outreach?.status === "DECLINED";
                   const negotiating = match.outreach?.status === "NEGOTIATING";
+                  const hasEmail =
+                    (match.vendor.contacts || []).some((contact) => contact.email) ||
+                    Boolean(match.vendor.email);
+                  const hasWhatsApp =
+                    (match.vendor.contacts || []).some((contact) => contact.phone) ||
+                    Boolean(match.vendor.phone) ||
+                    Boolean(match.vendor.whatsappId);
+                  const canRecore = hasEmail || hasWhatsApp;
+                  const isManual = manualVendorIdsRef.current.has(match.vendor.id);
                   return (
-                  <tr
-                    key={match.vendor.id}
-                    className={index % 2 === 1 ? "bg-light-green/10" : undefined}
-                  >
-                    <td className="px-3 py-2">
-                      <div className="font-medium">{match.vendor.name}</div>
-                      <div className="text-xs text-mid-green">
-                        {match.category}
-                        {lineCount > 0 ? (
-                          <span>
-                            {" "}
-                            · {lineCount} line{lineCount === 1 ? "" : "s"}
-                          </span>
-                        ) : null}
-                      </div>
-                      {match.outreach?.requestedLineNumbers &&
-                      match.outreach.requestedLineNumbers.length > 0 ? (
-                        <div className="mt-0.5 text-[10px] text-mid-green">
-                          Requested lines{" "}
-                          {match.outreach.requestedLineNumbers.join(", ")}
+                    <li
+                      key={match.vendor.id}
+                      className={`px-3 py-3 ${usingCosts ? "bg-mid-green/10" : ""}`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <p className="truncate text-sm font-semibold text-dark-primary">
+                              {match.vendor.name}
+                            </p>
+                            {isManual ? (
+                              <span className="rounded-full bg-dark-secondary/8 px-1.5 py-0.5 text-[10px] font-medium text-mid-green">
+                                Added
+                              </span>
+                            ) : null}
+                            {declined ? (
+                              <span className="rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800">
+                                Declined
+                              </span>
+                            ) : negotiating ? (
+                              <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+                                Negotiating
+                              </span>
+                            ) : usingCosts ? (
+                              <span className="inline-flex items-center gap-0.5 rounded-full bg-mid-green/20 px-1.5 py-0.5 text-[10px] font-medium text-dark-primary">
+                                <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
+                                On quote
+                              </span>
+                            ) : null}
+                          </div>
+                          <p className="mt-0.5 truncate text-[11px] text-mid-green">
+                            {match.category}
+                            {pricedLines.length > 0
+                              ? ` · lines ${pricedLines.join(", ")}`
+                              : ""}
+                            {" · "}
+                            {match.vendor.email || match.vendor.phone || "No contact"}
+                          </p>
                         </div>
-                      ) : null}
-                      {declined ? (
-                        <span className="mt-1 inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-red-800">
-                          Declined
-                        </span>
-                      ) : negotiating ? (
-                        <span className="mt-1 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-900">
-                          Negotiating
-                        </span>
-                      ) : match.outreach?.replyIntent === "COUNTER" ? (
-                        <span className="mt-1 inline-block rounded bg-mid-green/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-dark-primary">
-                          Updated
-                        </span>
-                      ) : null}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-mid-green">
-                      {match.vendor.preferredChannel}
-                      <br />
-                      {match.vendor.email || match.vendor.phone || "—"}
-                    </td>
-                    <td className="px-3 py-2 text-right font-semibold tabular-nums text-dark-primary">
-                      {display.amount != null || lineCount > 0 ? (
                         <button
                           type="button"
-                          onClick={() => setPriceDetailVendor(match)}
-                          title="View quote prices by product"
-                          className="inline-flex flex-col items-end rounded-md px-1.5 py-0.5 text-right hover:bg-mid-green/15 focus:outline-none focus:ring-1 focus:ring-mid-green/40"
+                          onClick={() =>
+                            pricedLines.length > 0
+                              ? setPriceDetailVendor(match)
+                              : undefined
+                          }
+                          disabled={pricedLines.length === 0}
+                          className="shrink-0 text-right disabled:opacity-50"
+                          title="View cost by product"
                         >
-                          <span>
-                            {display.amount != null ? (
-                              <Money value={display.amount} />
-                            ) : (
-                              <span className="font-normal text-mid-green">
-                                View lines
-                              </span>
-                            )}
+                          <span className="block text-sm font-semibold tabular-nums text-dark-primary">
+                            {costTotal != null ? <Money value={costTotal} /> : "—"}
                           </span>
-                          {match.outreach?.previousQuotedPrice != null &&
-                          display.amount != null &&
-                          match.outreach.previousQuotedPrice !== display.amount ? (
-                            <span className="text-[10px] font-normal text-mid-green line-through">
-                              <Money value={match.outreach.previousQuotedPrice} />
-                            </span>
-                          ) : null}
-                          <span className="text-[10px] font-normal text-mid-green">
-                            {display.amount != null
-                              ? `${display.source || "Price"}${lineCount > 1 ? " · view lines" : " · details"}`
-                              : `${lineCount} product${lineCount === 1 ? "" : "s"}`}
+                          <span className="text-[10px] text-mid-green">
+                            {pricedLines.length > 0 ? "View costs" : "No cost"}
                           </span>
                         </button>
-                      ) : (
-                        <span className="font-normal text-mid-green">—</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">{match.score}</td>
-                    <td className="px-3 py-2 text-right">
-                      <div className="flex flex-col items-end gap-1">
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          disabled={pricedLines.length === 0}
+                          onClick={() => selectVendorCosts(match)}
+                          className={`inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[11px] font-medium disabled:opacity-50 ${
+                            usingCosts
+                              ? "bg-mid-green text-background"
+                              : "bg-dark-secondary/[0.05] text-mid-green hover:bg-light-green/20"
+                          }`}
+                        >
+                          {usingCosts ? (
+                            <>
+                              <Check className="h-3 w-3" strokeWidth={2.5} />
+                              Using
+                            </>
+                          ) : (
+                            "Use costs"
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canRecore || recoreBusy === match.vendor.id}
+                          onClick={(event) => {
+                            event.currentTarget.blur();
+                            setRecoreVendor(match);
+                          }}
+                          className="inline-flex h-7 items-center rounded-full bg-mid-green/15 px-2.5 text-[11px] font-medium text-dark-primary hover:bg-mid-green/25 disabled:opacity-50"
+                        >
+                          {recoreBusy === match.vendor.id ? "Sending…" : "Recore"}
+                        </button>
                         {match.outreach ? (
                           <button
                             type="button"
                             onClick={() => void openVendorThread(match)}
-                            className="text-xs font-medium text-mid-green underline-offset-2 hover:text-dark-primary hover:underline"
+                            className="inline-flex h-7 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
                           >
                             Thread
                           </button>
@@ -2419,34 +4010,32 @@ export default function RfqDetailPage() {
                           <button
                             type="button"
                             onClick={() => setNegotiateVendor(match)}
-                            className="rounded-lg border border-mid-green/40 bg-white/70 px-2.5 py-1 text-xs font-medium text-dark-primary hover:bg-mid-green/15"
+                            className="inline-flex h-7 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
                           >
                             Negotiate
                           </button>
                         ) : null}
-                        <button
-                          type="button"
-                          disabled={!match.vendor.email || recoreBusy === match.vendor.id}
-                          title={
-                            match.vendor.email
-                              ? "Email vendor a revised quote request"
-                              : "Add vendor email on Vendors page"
-                          }
-                          onClick={() => setRecoreVendor(match)}
-                          className="rounded-lg border border-mid-green/40 bg-mid-green/10 px-2.5 py-1 text-xs font-medium text-dark-primary hover:bg-mid-green/20 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {recoreBusy === match.vendor.id ? "Sending…" : "Recore"}
-                        </button>
                       </div>
-                    </td>
-                  </tr>
+                    </li>
                   );
                 })}
-              </tbody>
-            </table>
+              </ul>
+            )}
           </div>
-        )}
+          {quoteCostTotal != null ? (
+            <div className="border-t border-light-green/20 bg-mid-green/10 px-3 py-2.5">
+              <div className="flex items-baseline justify-between gap-3">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-mid-green">
+                  Quote cost
+                </p>
+                <p className="text-sm font-semibold tabular-nums text-dark-primary">
+                  <Money value={quoteCostTotal} />
+                </p>
+              </div>
+            </div>
+          ) : null}
         </section>
+      </div>
 
       {priceDetailVendor ? (
         <VendorPriceDetailModal
@@ -2463,6 +4052,7 @@ export default function RfqDetailPage() {
       {recoreVendor ? (
         <VendorRecoreLinePickerModal
           match={recoreVendor}
+          rfqId={id}
           items={
             requirements.length > 0
               ? requirements
@@ -2470,12 +4060,12 @@ export default function RfqDetailPage() {
           }
           busy={recoreBusy === recoreVendor.vendor.id}
           onClose={() => setRecoreVendor(null)}
-          onSend={async (lineNumbers) => {
+          onSend={async (payload) => {
             try {
               await sendRecore(
                 recoreVendor.vendor.id,
                 recoreVendor.productKey,
-                lineNumbers
+                payload
               );
             } catch (e) {
               setError(
@@ -2507,7 +4097,6 @@ export default function RfqDetailPage() {
           }}
         />
       ) : null}
-      </div>
 
       <section className="w-full rounded-xl bg-white/50 p-5 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2636,6 +4225,96 @@ export default function RfqDetailPage() {
                 </dd>
               </div>
             </dl>
+          </div>
+        </div>
+      ) : null}
+
+      {requestedProductsOpen ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-dark-primary/40 px-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="requested-products-title"
+          onClick={() => setRequestedProductsOpen(false)}
+        >
+          <div
+            className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-light-green/20 px-5 py-4">
+              <div className="min-w-0">
+                <h2
+                  id="requested-products-title"
+                  className="text-lg font-semibold tracking-tight text-dark-primary"
+                >
+                  Requested products
+                </h2>
+                <p className="mt-1 text-xs text-mid-green">
+                  {parsedRequirements.length} line
+                  {parsedRequirements.length === 1 ? "" : "s"} extracted from this RFQ
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRequestedProductsOpen(false)}
+                className="rounded-lg p-1.5 text-mid-green hover:bg-dark-secondary/8 hover:text-dark-primary"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-4">
+              {parsedRequirements.length === 0 ? (
+                <p className="px-1 py-8 text-center text-sm text-mid-green">
+                  No requested products yet. Re-parse the RFQ to extract line items.
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-light-green/20">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-dark-secondary/5 text-mid-green">
+                      <tr>
+                        <th className="w-12 px-3 py-2.5 font-medium">#</th>
+                        <th className="px-3 py-2.5 font-medium">Product</th>
+                        <th className="px-3 py-2.5 font-medium text-right">Qty</th>
+                        <th className="px-3 py-2.5 font-medium">Unit</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {parsedRequirements.map((req, i) => (
+                        <tr
+                          key={req.lineNumber}
+                          className={i % 2 === 1 ? "bg-light-green/10" : undefined}
+                        >
+                          <td className="px-3 py-2.5 font-medium text-mid-green">
+                            {req.lineNumber}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <div className="font-medium text-dark-primary">
+                              {req.description}
+                            </div>
+                            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-mid-green">
+                              {req.brand ? <span>Brand: {req.brand}</span> : null}
+                              {req.category ? <span>{req.category}</span> : null}
+                              {req.model ? <span>Model: {req.model}</span> : null}
+                              {req.code ? <span>Code: {req.code}</span> : null}
+                            </div>
+                            {req.extraNotes ? (
+                              <p className="mt-1 text-xs text-dark-primary/70">
+                                {req.extraNotes}
+                              </p>
+                            ) : null}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums">
+                            {req.quantity}
+                          </td>
+                          <td className="px-3 py-2.5">{req.unit}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ) : null}
@@ -2846,6 +4525,18 @@ export default function RfqDetailPage() {
             </pre>
           </div>
         </div>
+      ) : null}
+
+      {catalogDraft ? (
+        <AddCatalogProductDialog
+          requirement={catalogDraft.requirement}
+          onClose={() => setCatalogDraft(null)}
+          onCreated={(product) => {
+            selectProductForLine(catalogDraft.lineNumber, product);
+            setCatalogDraft(null);
+            setExpandedSearchLine(null);
+          }}
+        />
       ) : null}
     </div>
   );

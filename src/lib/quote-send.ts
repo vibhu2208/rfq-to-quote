@@ -3,6 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { getCompanyConfig } from "@/lib/company";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
 import { getMailboxUser } from "@/lib/mailbox";
+import {
+  sendWhatsAppDocument,
+  whatsappQuoteCaption,
+} from "@/lib/whatsapp";
 import { buildQuotePdfBuffer } from "@/lib/pdf/render-quote-buffer";
 import { formatMoney } from "@/lib/tax";
 import { decimalToNumber, makeQuoteThreadRef } from "@/lib/quotes";
@@ -58,6 +62,7 @@ export type SendQuoteResult = {
   messageId?: string;
   status: string;
   sentAt: string | null;
+  deliveryNote?: string;
 };
 
 export async function sendQuoteToBuyer(
@@ -92,12 +97,6 @@ export async function sendQuoteToBuyer(
     throw new Error("Quote not found.");
   }
 
-  if (input.channel === "WHATSAPP") {
-    throw new Error(
-      "WhatsApp sending is not configured yet. Choose email for now, or mark as sent after sharing manually."
-    );
-  }
-
   if (input.channel === "EMAIL" && !isEmailLike(to)) {
     throw new Error("Enter a valid email address.");
   }
@@ -121,30 +120,63 @@ export async function sendQuoteToBuyer(
     text += `\n\nNote: ${input.note.trim()}`;
   }
 
-  const inReplyTo =
-    quote.rfq?.channel === "EMAIL" ||
-    quote.rfq?.channel === "MARKETPLACE" ||
-    quote.rfq?.channel === "WEB_FORM"
-      ? quote.rfq.sourceRef || undefined
-      : undefined;
-
-  const sent = await sendGmailEmail({
-    to,
-    subject,
-    text,
-    inReplyTo,
-    references: inReplyTo,
-    attachments: [
-      {
-        filename,
-        content: buffer,
-        contentType: "application/pdf",
-      },
-    ],
-  });
-
   const now = new Date();
-  const outboundChannel: RfqChannel = "EMAIL";
+  let sent: { messageId: string; to?: string };
+  let outboundChannel: RfqChannel;
+  let fromAddress: string;
+  let toAddress = to;
+  let inReplyTo: string | undefined;
+  let deliveryNote: string | undefined;
+
+  if (input.channel === "WHATSAPP") {
+    sent = await sendWhatsAppDocument({
+      to,
+      filename,
+      content: buffer,
+      contentType: "application/pdf",
+      caption: whatsappQuoteCaption({
+        quoteNumber: quote.quoteNumber,
+        grandTotalLabel: formatMoney(grandTotal),
+        threadRef,
+        extra: input.note,
+      }),
+    });
+    outboundChannel = "WHATSAPP";
+    fromAddress =
+      process.env.WHATSAPP_PHONE_NUMBER_ID?.trim() ||
+      process.env.COMPANY_MOBILE?.trim() ||
+      "whatsapp";
+    toAddress = sent.to || to.replace(/[^\d+]/g, "") || to;
+    deliveryNote = `WhatsApp accepted the PDF for +${toAddress}. Delivery only happens if that number has messaged ${company.name} on WhatsApp in the last 24 hours. Ask them to send Hi to the business WhatsApp, then resend.`;
+    inReplyTo =
+      quote.rfq?.channel === "WHATSAPP"
+        ? quote.rfq.sourceRef || undefined
+        : undefined;
+  } else {
+    inReplyTo =
+      quote.rfq?.channel === "EMAIL" ||
+      quote.rfq?.channel === "MARKETPLACE" ||
+      quote.rfq?.channel === "WEB_FORM"
+        ? quote.rfq.sourceRef || undefined
+        : undefined;
+
+    sent = await sendGmailEmail({
+      to,
+      subject,
+      text,
+      inReplyTo,
+      references: inReplyTo,
+      attachments: [
+        {
+          filename,
+          content: buffer,
+          contentType: "application/pdf",
+        },
+      ],
+    });
+    outboundChannel = "EMAIL";
+    fromAddress = getMailboxUser();
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.quote.update({
@@ -156,9 +188,9 @@ export async function sendQuoteToBuyer(
         threadRef,
         needsAssistance: false,
         assistanceReason: "",
-        // Keep buyerEmail in sync with the address we actually emailed so
-        // per-quote thread checks search the right "from:" mailbox.
+        // Keep destination in sync with the address/number we actually sent to.
         ...(isEmailLike(to) ? { buyerEmail: to } : {}),
+        ...(outboundChannel === "WHATSAPP" ? { buyerPhone: toAddress } : {}),
       },
     });
 
@@ -171,8 +203,8 @@ export async function sendQuoteToBuyer(
         body: text,
         messageId: sent.messageId,
         inReplyTo: inReplyTo || "",
-        fromEmail: getMailboxUser(),
-        toEmail: to,
+        fromEmail: fromAddress,
+        toEmail: toAddress,
         analysis: { kind: "quote_send", filename },
       },
     });
@@ -201,9 +233,10 @@ export async function sendQuoteToBuyer(
   return {
     ok: true,
     channel: input.channel,
-    to,
+    to: toAddress,
     messageId: sent.messageId,
     status: "SENT",
     sentAt: (quote.sentAt ?? now).toISOString(),
+    deliveryNote,
   };
 }

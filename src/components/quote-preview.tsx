@@ -19,6 +19,7 @@ import {
   quoteIntro,
   quoteSignatoryName,
   quoteShowHsn,
+  quoteShowUnit,
   quoteTableColCount,
   quoteWordsColSpan,
 } from "@/lib/quote-format";
@@ -75,9 +76,12 @@ type Props = {
   withGst: boolean;
   showHsn?: boolean;
   onRemoveHsn?: () => void;
+  showUnit?: boolean;
+  onRemoveUnit?: () => void;
   otherTaxLabel: string;
   lineItems: QuotePreviewLine[];
   calc: QuoteCalcResult;
+  discountPercent?: number;
   open: boolean;
   onClose: () => void;
   sidebar?: ReactNode;
@@ -144,9 +148,12 @@ export function QuotePreviewModal({
   withGst,
   showHsn,
   onRemoveHsn,
+  showUnit,
+  onRemoveUnit,
   otherTaxLabel,
   lineItems,
   calc,
+  discountPercent,
   open,
   onClose,
   sidebar,
@@ -188,11 +195,13 @@ export function QuotePreviewModal({
     gstBuckets: Array.from(gstBuckets.entries()),
     gstAmount: calc.gstAmount,
     discountAmount: calc.discountAmount,
+    discountPercent,
     deliveryCharge: calc.deliveryCharge,
     otherTaxAmount: calc.otherTaxAmount,
     otherTaxLabel,
   });
   const includeHsn = quoteShowHsn(showHsn);
+  const includeUnit = quoteShowUnit(showUnit);
   const tableCols = quoteTableColCount(withGst, includeHsn);
   const wordsCols = quoteWordsColSpan(withGst, includeHsn);
 
@@ -334,7 +343,23 @@ export function QuotePreviewModal({
                     </th>
                   ) : null}
                   <th className="border border-black px-1.5 py-1 text-center text-[11px] font-bold">
-                    Qty
+                    <span className="inline-flex items-center justify-center gap-1">
+                      Qty
+                      {includeUnit && onRemoveUnit ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRemoveUnit();
+                          }}
+                          className="inline-flex h-4 w-4 items-center justify-center rounded border border-black/50 bg-white text-black hover:bg-red-50"
+                          title="Remove units from quotation"
+                          aria-label="Remove units from quotation"
+                        >
+                          <Minus className="h-3 w-3" strokeWidth={2.5} />
+                        </button>
+                      ) : null}
+                    </span>
                   </th>
                   <th className="border border-black px-1.5 py-1 text-right text-[11px] font-bold">
                     Unit Rate
@@ -386,7 +411,7 @@ export function QuotePreviewModal({
                         </td>
                       ) : null}
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
-                        {formatQuoteQty(line.qty, line.unit)}
+                        {formatQuoteQty(line.qty, line.unit, includeUnit)}
                       </td>
                       <td className="border border-black px-1.5 py-1.5 text-right align-top tabular-nums">
                         {formatQuoteAmount(line.unitPrice)}

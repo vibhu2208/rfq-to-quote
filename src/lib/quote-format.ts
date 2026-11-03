@@ -23,6 +23,7 @@ export function formatTaxAnalysis(input: {
   gstBuckets: Array<[number, number]>;
   gstAmount: number;
   discountAmount?: number;
+  discountPercent?: number;
   deliveryCharge?: number;
   otherTaxAmount?: number;
   otherTaxLabel?: string;
@@ -38,7 +39,11 @@ export function formatTaxAnalysis(input: {
     }
   }
   if (input.discountAmount && input.discountAmount > 0) {
-    parts.push(`Discount: -${formatQuoteAmount(input.discountAmount)}`);
+    const pct =
+      input.discountPercent && input.discountPercent > 0
+        ? ` (${Number(input.discountPercent)}%)`
+        : "";
+    parts.push(`Discount${pct}: -${formatQuoteAmount(input.discountAmount)}`);
   }
   if (input.deliveryCharge && input.deliveryCharge > 0) {
     parts.push(`Delivery: ${formatQuoteAmount(input.deliveryCharge)}`);
@@ -136,13 +141,18 @@ export function quoteUnitOptions(current?: string | null): Array<{ value: string
   return [...QUOTE_UNITS, { value, label: value }];
 }
 
-export function formatQuoteQty(qty: number, unit: string): string {
+export function formatQuoteQty(
+  qty: number,
+  unit: string,
+  showUnit?: boolean | null
+): string {
+  const q = Number.isInteger(qty) ? String(qty) : String(qty);
+  if (!quoteShowUnit(showUnit)) return q;
   const raw = (unit || DEFAULT_QUOTE_UNIT).trim();
   const u =
     /^(pc|pcs|piece|pieces)$/i.test(raw) || raw.toLowerCase() === "nos"
       ? "NOS"
       : raw.toUpperCase();
-  const q = Number.isInteger(qty) ? String(qty) : String(qty);
   return `${q} ${u}`;
 }
 
@@ -189,6 +199,10 @@ export function quoteContactFooterLine(company: {
 
 export function quoteShowHsn(showHsn?: boolean | null): boolean {
   return showHsn !== false;
+}
+
+export function quoteShowUnit(showUnit?: boolean | null): boolean {
+  return showUnit !== false;
 }
 
 /** SN + description + qty + rate + amount, plus optional HSN and GST/tax. */

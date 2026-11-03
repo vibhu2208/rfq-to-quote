@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
-import { recordProductLastPrice } from "@/lib/product-price";
+import {
+  getProductPriceHistory,
+  recordProductLastPrice,
+} from "@/lib/product-price";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -10,6 +13,22 @@ export const dynamic = "force-dynamic";
 const bodySchema = z.object({
   price: z.coerce.number().nonnegative(),
 });
+
+/** Current last price + recent quote history for the product. */
+export async function GET(_req: NextRequest, { params }: Params) {
+  const { error } = await requireSession();
+  if (error) return error;
+
+  const { id } = await params;
+  try {
+    const data = await getProductPriceHistory(id, 4);
+    return NextResponse.json(data);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Could not load price history";
+    const status = message.includes("not found") ? 404 : 400;
+    return NextResponse.json({ error: message }, { status });
+  }
+}
 
 export async function POST(req: NextRequest, { params }: Params) {
   const { error } = await requireSession();

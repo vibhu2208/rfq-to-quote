@@ -101,11 +101,12 @@ export default async function QuotesPage({ searchParams }: Props) {
                       No quotes yet.{" "}
                       <Link href="/quotes/generate" className="underline">
                         Generate from a requirement
-                      </Link>{" "}
-                      or{" "}
+                      </Link>
+                      ,{" "}
                       <Link href="/quotes/new" className="underline">
                         start blank
                       </Link>
+                      , or use New → Import CSV / Excel.
                     </>
                   )}
                 </td>

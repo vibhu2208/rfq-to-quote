@@ -26,6 +26,15 @@ export type VendorLineQuote = {
   productKey: string;
 };
 
+export type VendorContactMatch = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  isPrimary: boolean;
+};
+
 export type VendorMatch = {
   vendor: {
     id: string;
@@ -34,6 +43,7 @@ export type VendorMatch = {
     email: string;
     whatsappId: string;
     preferredChannel: "EMAIL" | "WHATSAPP";
+    contacts: VendorContactMatch[];
   };
   category: string;
   subcategory: string;
@@ -234,6 +244,7 @@ export async function matchVendorsToRfq(
     },
     include: {
       categories: true,
+      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
       productHistory: {
         where: { productKey: { in: productKeys } },
         orderBy: { lastQuotedAt: "desc" },
@@ -296,6 +307,41 @@ export async function matchVendorsToRfq(
             email: vendor.email || "",
             whatsappId: vendor.whatsappId || "",
             preferredChannel: vendor.preferredChannel,
+            contacts: (() => {
+              const mapped =
+                vendor.contacts.length > 0
+                  ? vendor.contacts.map((contact) => ({
+                      id: contact.id,
+                      name: contact.name || "",
+                      email: contact.email || "",
+                      phone: contact.phone || "",
+                      role: contact.role || "",
+                      isPrimary: contact.isPrimary,
+                    }))
+                  : [];
+              const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
+              const hasPhone = mapped.some((contact) => Boolean(contact.phone));
+              if (vendorWa && !hasPhone) {
+                mapped.push({
+                  id: `vendor-${vendor.id}-wa`,
+                  name: vendor.name,
+                  email: vendor.email || "",
+                  phone: vendorWa,
+                  role: "WhatsApp",
+                  isPrimary: mapped.length === 0,
+                });
+              } else if (mapped.length === 0 && (vendor.email || vendorWa)) {
+                mapped.push({
+                  id: `vendor-${vendor.id}`,
+                  name: vendor.name,
+                  email: vendor.email || "",
+                  phone: vendorWa,
+                  role: "",
+                  isPrimary: true,
+                });
+              }
+              return mapped;
+            })(),
           },
           bestCategory: bestForLine,
           matchedLines: [lineQuote],

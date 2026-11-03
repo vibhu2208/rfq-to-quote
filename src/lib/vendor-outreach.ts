@@ -1,7 +1,12 @@
 import type { ParsedMail } from "mailparser";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { normalizeOutboundEmailText } from "@/lib/email-text";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
+import {
+  normalizeWhatsAppNumber,
+  sendWhatsAppText,
+} from "@/lib/whatsapp";
 import { parseVendorReplyWithAi } from "@/lib/ai/parse-vendor-reply";
 import {
   classifyVendorReplyIntent,
@@ -19,7 +24,6 @@ import {
 } from "@/lib/parse-vendor-price";
 import { normalizeProductKey } from "@/lib/product-key";
 import { extractRfqItems } from "@/lib/rfq-items";
-import { matchVendorsToRfq } from "@/lib/vendor-match";
 
 function makeThreadRef(rfqId: string): string {
   const rfqPart = rfqId.replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase();
@@ -34,14 +38,14 @@ function formatItemsList(
   return items
     .map(
       (item) =>
-        `${item.lineNumber}. ${item.description} — Qty: ${item.quantity} ${item.unit}${
+        `${item.lineNumber}. ${item.description} - Qty: ${item.quantity} ${item.unit}${
           item.category ? ` [${item.category}]` : ""
         }`
     )
     .join("\n");
 }
 
-function buildOutreachEmail(input: {
+export function buildOutreachEmail(input: {
   vendorName: string;
   threadRef: string;
   category: string;
@@ -50,16 +54,18 @@ function buildOutreachEmail(input: {
   rawText: string;
   items: ReturnType<typeof extractRfqItems>;
   parsedSummary?: string;
+  /** Optional greeting name; defaults to vendor company name. */
+  contactName?: string;
 }) {
   const company = process.env.COMPANY_NAME || "QuoteFlow";
   const itemsBlock = formatItemsList(input.items);
   const replyGuide =
     input.items.length > 1
       ? `Please reply with a unit price (INR) for EACH line, for example:
-1. <product> — ₹____ / unit
-2. <product> — ₹____ / unit
+1. <product> - Rs.____ / unit
+2. <product> - Rs.____ / unit
 ...
-Total: ₹____`
+Total: Rs.____`
       : `Please reply to this email with your unit price in INR for the item above.`;
 
   const notes =
@@ -68,7 +74,8 @@ Total: ₹____`
       ? input.rawText.trim().slice(0, 1200) || "(see customer request)"
       : "");
 
-  const body = `Hello ${input.vendorName},
+  const greeting = input.contactName?.trim() || input.vendorName;
+  const body = `Hello ${greeting},
 
 We have a customer RFQ and need your best revised quote (INR).
 
@@ -86,7 +93,7 @@ Reference: [REF:${input.threadRef}]
 Thanks,
 ${company}`;
 
-  const emailSubject = `Quote request — ${input.category || "RFQ"} (${input.items.length || 1} item${(input.items.length || 1) === 1 ? "" : "s"}) [REF:${input.threadRef}]`;
+  const emailSubject = `Quote request - ${input.category || "RFQ"} (${input.items.length || 1} item${(input.items.length || 1) === 1 ? "" : "s"}) [REF:${input.threadRef}]`;
   return { emailSubject, body };
 }
 
@@ -266,33 +273,89 @@ export async function getOutreachMapForRfq(
   return map;
 }
 
-/** Send a Recore quote request email to a vendor for an RFQ. */
-export async function sendVendorRecore(input: {
+function normalizeEmailList(values: string[]): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value.trim().toLowerCase())
+        .filter((value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))
+    ),
+  ];
+}
+
+export async function previewVendorRecore(input: {
   rfqId: string;
   vendorId: string;
   productKey?: string;
-  /** Original RFQ lineNumbers to include; omit = all lines. */
   lineNumbers?: number[];
+  contactIds?: string[];
 }) {
-  const rfq = await prisma.rfq.findUnique({ where: { id: input.rfqId } });
+  const [rfq, vendor, existing] = await Promise.all([
+    prisma.rfq.findUnique({ where: { id: input.rfqId } }),
+    prisma.vendor.findUnique({
+      where: { id: input.vendorId },
+      include: {
+        contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
+      },
+    }),
+    prisma.vendorOutreach.findUnique({
+      where: {
+        rfqId_vendorId: { rfqId: input.rfqId, vendorId: input.vendorId },
+      },
+    }),
+  ]);
   if (!rfq) throw new Error("RFQ not found");
-
-  const vendor = await prisma.vendor.findUnique({
-    where: { id: input.vendorId },
-  });
   if (!vendor || !vendor.active) throw new Error("Vendor not found");
-  if (!vendor.email) {
-    throw new Error("Vendor has no email address — add one on the Vendors page.");
+
+  let contacts =
+    vendor.contacts.length > 0
+      ? vendor.contacts.map((contact) => ({ ...contact }))
+      : [];
+  const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
+  const hasWaContact = contacts.some((contact) => Boolean(contact.phone?.trim()));
+  if (vendorWa && !hasWaContact) {
+    contacts = [
+      ...contacts,
+      {
+        id: `vendor-${vendor.id}-wa`,
+        name: vendor.name,
+        email: vendor.email || "",
+        phone: vendorWa,
+        role: "WhatsApp",
+        isPrimary: contacts.length === 0,
+      },
+    ];
+  } else if (contacts.length === 0 && (vendor.email || vendorWa)) {
+    contacts = [
+      {
+        id: `vendor-${vendor.id}`,
+        name: vendor.name,
+        email: vendor.email || "",
+        phone: vendorWa,
+        role: "",
+        isPrimary: true,
+      },
+    ];
   }
 
-  const matchResult = await matchVendorsToRfq({
-    parsedCategory: rfq.parsedCategory,
-    parsedSpecs: rfq.parsedSpecs,
-    subject: rfq.subject,
-    rawText: rfq.rawText,
-  });
+  const preferred =
+    input.contactIds && input.contactIds.length > 0
+      ? contacts.filter((contact) => input.contactIds!.includes(contact.id))
+      : contacts.filter((contact) => contact.isPrimary);
+  const recipients =
+    preferred.length > 0 ? preferred : contacts.slice(0, 1);
+
+  // Avoid full vendor matching on every draft preview — productKey is only a label.
   const productKey =
-    input.productKey || matchResult.productKey || "general";
+    (input.productKey && input.productKey.trim()) ||
+    existing?.productKey ||
+    normalizeProductKey({
+      parsedCategory: rfq.parsedCategory,
+      parsedSpecs: rfq.parsedSpecs,
+      subject: rfq.subject,
+      rawText: rfq.rawText,
+    }) ||
+    "general";
 
   const allItems = extractRfqItems(rfq.parsedSpecs, rfq.rawText);
   const requestedLineNumbers = asRequestedLineNumbers(input.lineNumbers ?? null);
@@ -306,13 +369,15 @@ export async function sendVendorRecore(input: {
   const meta = (rfq.parsedSpecs as { _meta?: { summary?: string } } | null)
     ?._meta;
 
-  const existing = await prisma.vendorOutreach.findUnique({
-    where: { rfqId_vendorId: { rfqId: rfq.id, vendorId: vendor.id } },
-  });
-  // Keep the same REF across re-sends so vendor replies to older Recore emails still match.
   const threadRef = existing?.threadRef || makeThreadRef(rfq.id);
-  const { emailSubject, body } = buildOutreachEmail({
+  const greeting =
+    recipients
+      .map((contact) => contact.name?.trim())
+      .filter(Boolean)
+      .join(", ") || vendor.name;
+  const draft = buildOutreachEmail({
     vendorName: vendor.name,
+    contactName: greeting,
     threadRef,
     category: rfq.parsedCategory || "General",
     productKey,
@@ -322,17 +387,126 @@ export async function sendVendorRecore(input: {
     parsedSummary: meta?.summary,
   });
 
+  return {
+    vendor,
+    contacts,
+    recipients,
+    productKey,
+    items,
+    storedLineNumbers,
+    existing,
+    threadRef,
+    subject: normalizeOutboundEmailText(draft.emailSubject),
+    body: normalizeOutboundEmailText(draft.body),
+  };
+}
+
+function resolveVendorWhatsAppNumbers(input: {
+  vendor: { phone?: string | null; whatsappId?: string | null };
+  contacts: Array<{ id: string; phone?: string | null }>;
+  contactIds?: string[];
+  toPhones?: string[];
+}): string[] {
+  const selected =
+    input.contactIds && input.contactIds.length > 0
+      ? input.contacts.filter((contact) => input.contactIds!.includes(contact.id))
+      : input.contacts.filter((contact) => contact.phone);
+  const contactPhones = selected
+    .map((contact) => contact.phone || "")
+    .filter(Boolean);
+  const raw = [
+    ...(input.toPhones || []),
+    ...(contactPhones.length > 0
+      ? contactPhones
+      : [input.vendor.whatsappId || "", input.vendor.phone || ""]),
+  ];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    if (!value?.trim()) continue;
+    try {
+      const normalized = normalizeWhatsAppNumber(value);
+      if (seen.has(normalized)) continue;
+      seen.add(normalized);
+      out.push(normalized);
+    } catch {
+      // skip invalid numbers
+    }
+  }
+  return out;
+}
+
+/** Send a Recore quote request to a vendor (email or WhatsApp). */
+export async function sendVendorRecore(input: {
+  rfqId: string;
+  vendorId: string;
+  productKey?: string;
+  /** Original RFQ lineNumbers to include; omit = all lines. */
+  lineNumbers?: number[];
+  contactIds?: string[];
+  toEmails?: string[];
+  toPhones?: string[];
+  channel?: "EMAIL" | "WHATSAPP";
+  subject?: string;
+  body?: string;
+}) {
+  const channel = input.channel === "WHATSAPP" ? "WHATSAPP" : "EMAIL";
+  const preview = await previewVendorRecore(input);
+  const { vendor, productKey, items, storedLineNumbers, existing, threadRef } =
+    preview;
+
+  const emailSubject = normalizeOutboundEmailText(
+    input.subject?.trim() || preview.subject
+  );
+  const body = normalizeOutboundEmailText(input.body?.trim() || preview.body);
+  if (!body) {
+    throw new Error("Message body is required.");
+  }
+  if (channel === "EMAIL" && !emailSubject) {
+    throw new Error("Subject and email body are required.");
+  }
+
+  let toEmails: string[] = [];
+  let toPhones: string[] = [];
+  if (channel === "EMAIL") {
+    const contactEmails = preview.recipients
+      .map((contact) => contact.email)
+      .filter(Boolean);
+    toEmails = normalizeEmailList([
+      ...(input.toEmails || []),
+      ...contactEmails,
+      vendor.email || "",
+    ]);
+    if (toEmails.length === 0) {
+      throw new Error(
+        "No email addresses selected — add a POC email on the Vendors page."
+      );
+    }
+  } else {
+    toPhones = resolveVendorWhatsAppNumbers({
+      vendor,
+      contacts: preview.contacts,
+      contactIds: input.contactIds,
+      toPhones: input.toPhones,
+    });
+    if (toPhones.length === 0) {
+      throw new Error(
+        "No WhatsApp numbers selected — set vendor WhatsApp/phone or a POC phone on the Vendors page."
+      );
+    }
+  }
+
   const outreach = await prisma.vendorOutreach.upsert({
     where: {
-      rfqId_vendorId: { rfqId: rfq.id, vendorId: vendor.id },
+      rfqId_vendorId: { rfqId: input.rfqId, vendorId: vendor.id },
     },
     create: {
-      rfqId: rfq.id,
+      rfqId: input.rfqId,
       vendorId: vendor.id,
       productKey,
       threadRef,
       status: "PENDING",
-      outboundSubject: emailSubject,
+      outboundSubject: emailSubject || `WhatsApp request [REF:${threadRef}]`,
       outboundBody: body,
       requestedLineNumbers: storedLineNumbers ?? Prisma.DbNull,
     },
@@ -340,21 +514,34 @@ export async function sendVendorRecore(input: {
       productKey,
       threadRef,
       status: existing?.status === "REPLIED" ? "REPLIED" : "PENDING",
-      outboundSubject: emailSubject,
+      outboundSubject: emailSubject || `WhatsApp request [REF:${threadRef}]`,
       outboundBody: body,
       outboundMsgId: "",
       requestedLineNumbers: storedLineNumbers ?? Prisma.DbNull,
-      // Keep prior reply prices until a new vendor reply overwrites them.
       errorMessage: "",
     },
   });
 
   try {
-    const sent = await sendGmailEmail({
-      to: vendor.email,
-      subject: emailSubject,
-      text: body,
-    });
+    let messageId = "";
+    if (channel === "EMAIL") {
+      const sent = await sendGmailEmail({
+        to: toEmails.join(", "),
+        subject: emailSubject,
+        text: body,
+      });
+      messageId = sent.messageId;
+    } else {
+      const waBody = emailSubject
+        ? `*${emailSubject}*\n\n${body}`
+        : body;
+      const sentIds: string[] = [];
+      for (const phone of toPhones) {
+        const sent = await sendWhatsAppText({ to: phone, body: waBody });
+        sentIds.push(sent.messageId);
+      }
+      messageId = sentIds[0] || "";
+    }
 
     const updated = await prisma.vendorOutreach.update({
       where: { id: outreach.id },
@@ -365,7 +552,7 @@ export async function sendVendorRecore(input: {
             existing.quotedLineItems.length > 0)
             ? "REPLIED"
             : "SENT",
-        outboundMsgId: sent.messageId,
+        outboundMsgId: messageId,
         sentAt: new Date(),
         errorMessage: "",
       },
@@ -373,17 +560,23 @@ export async function sendVendorRecore(input: {
 
     await prisma.rfqMessage.create({
       data: {
-        rfqId: rfq.id,
+        rfqId: input.rfqId,
         direction: "OUT",
-        channel: "EMAIL",
-        body: `Recore sent to ${vendor.name} <${vendor.email}>\n\n${body}`,
+        channel,
+        body:
+          channel === "EMAIL"
+            ? `Recore emailed to ${vendor.name} <${toEmails.join(", ")}>\n\n${body}`
+            : `Recore WhatsApp to ${vendor.name} <${toPhones.map((n) => `+${n}`).join(", ")}>\n\n${body}`,
         meta: {
           type: "vendor_recore",
+          channel,
           vendorId: vendor.id,
           outreachId: outreach.id,
           threadRef,
-          messageId: sent.messageId,
+          messageId,
           itemCount: items.length,
+          recipients: channel === "EMAIL" ? toEmails : toPhones,
+          contactIds: input.contactIds || [],
         },
       },
     });
@@ -398,14 +591,17 @@ export async function sendVendorRecore(input: {
   }
 }
 
-/** Send an AI-formatted negotiation email on the same Recore thread. */
+/** Send a negotiation email on the same Recore thread (AI-polished or manual). */
 export async function sendVendorNegotiation(input: {
   rfqId: string;
   vendorId: string;
-  plainNote: string;
+  mode?: "ai" | "manual";
+  plainNote?: string;
+  subject?: string;
+  body?: string;
 }) {
-  const note = input.plainNote.trim();
-  if (!note) throw new Error("Write a short negotiation note first.");
+  const mode = input.mode === "manual" ? "manual" : "ai";
+  const note = (input.plainNote || "").trim();
 
   const outreach = await prisma.vendorOutreach.findUnique({
     where: {
@@ -445,15 +641,42 @@ export async function sendVendorNegotiation(input: {
     outreach.requestedLineNumbers
   );
 
-  const { subject, body } = await formatVendorNegotiationEmail({
-    vendorName: outreach.vendor.name,
-    plainNote: note,
-    threadRef: outreach.threadRef,
-    currentTotal,
-    lineItems,
-    rfqItems,
-    subject: outreach.outboundSubject || `Quote negotiation [REF:${outreach.threadRef}]`,
-  });
+  const baseSubject =
+    outreach.outboundSubject || `Quote negotiation [REF:${outreach.threadRef}]`;
+
+  let subject: string;
+  let body: string;
+  if (mode === "manual") {
+    subject = normalizeOutboundEmailText(input.subject || "");
+    body = normalizeOutboundEmailText(input.body || "");
+    if (!subject || body.length < 10) {
+      throw new Error("Write the email subject and body before sending.");
+    }
+    if (!subject.includes(`[REF:${outreach.threadRef}]`)) {
+      subject = `${subject} [REF:${outreach.threadRef}]`;
+    }
+    if (!/^re\s*:/i.test(subject)) {
+      subject = `Re: ${subject}`;
+    }
+    if (!body.includes(`[REF:${outreach.threadRef}]`)) {
+      body = `${body}\n\nReference: [REF:${outreach.threadRef}]`;
+    }
+  } else {
+    if (note.length < 3) {
+      throw new Error("Write a short negotiation note first.");
+    }
+    const drafted = await formatVendorNegotiationEmail({
+      vendorName: outreach.vendor.name,
+      plainNote: note,
+      threadRef: outreach.threadRef,
+      currentTotal,
+      lineItems,
+      rfqItems,
+      subject: baseSubject,
+    });
+    subject = drafted.subject;
+    body = drafted.body;
+  }
 
   const inReplyTo = outreach.replyMsgId || outreach.outboundMsgId || undefined;
   const sent = await sendGmailEmail({
@@ -465,10 +688,14 @@ export async function sendVendorNegotiation(input: {
   });
 
   const now = new Date();
+  const noteForLog =
+    mode === "manual"
+      ? (note || body).slice(0, 4000)
+      : note.slice(0, 4000);
   await prisma.vendorOutreach.update({
     where: { id: outreach.id },
     data: {
-      negotiationNote: note.slice(0, 4000),
+      negotiationNote: noteForLog,
       negotiatedAt: now,
       outboundSubject: subject,
       outboundBody: body,
@@ -491,14 +718,18 @@ export async function sendVendorNegotiation(input: {
       rfqId: outreach.rfqId,
       direction: "OUT",
       channel: "EMAIL",
-      body: `Negotiation sent to ${outreach.vendor.name} <${outreach.vendor.email}>\n\nPlain note: ${note}\n\n${body}`,
+      body:
+        mode === "manual"
+          ? `Negotiation (manual) sent to ${outreach.vendor.name} <${outreach.vendor.email}>\n\n${body}`
+          : `Negotiation sent to ${outreach.vendor.name} <${outreach.vendor.email}>\n\nPlain note: ${note}\n\n${body}`,
       meta: {
         type: "vendor_negotiation",
+        mode,
         vendorId: outreach.vendorId,
         outreachId: outreach.id,
         threadRef: outreach.threadRef,
         messageId: sent.messageId,
-        plainNote: note,
+        plainNote: note || null,
       },
     },
   });
@@ -606,11 +837,31 @@ export async function handleVendorReplyEmail(
     });
   }
 
+  // WhatsApp replies: match open outreach by vendor phone / WhatsApp id.
+  const whatsappPhone = fromEmail.match(/^(\d{10,15})@whatsapp\.local$/i)?.[1] || "";
+  if (!outreach && whatsappPhone) {
+    const tail = whatsappPhone.slice(-10);
+    outreach = await prisma.vendorOutreach.findFirst({
+      where: {
+        status: { in: ["SENT", "REPLIED", "PENDING", "NEGOTIATING", "DECLINED"] },
+        vendor: {
+          OR: [
+            { phone: { contains: tail } },
+            { whatsappId: { contains: tail } },
+            { contacts: { some: { phone: { contains: tail } } } },
+          ],
+        },
+      },
+      include: { vendor: true, rfq: true },
+      orderBy: { sentAt: "desc" },
+    });
+  }
+
   if (!outreach) return { handled: false };
 
   // Only enforce from==vendor when we matched solely by email (no REF / In-Reply-To).
   const matchedByThread =
-    Boolean(threadRef) || referenceIds.length > 0;
+    Boolean(threadRef) || referenceIds.length > 0 || Boolean(whatsappPhone);
   const vendorEmail = outreach.vendor.email?.toLowerCase();
   if (
     !matchedByThread &&
@@ -831,14 +1082,20 @@ export async function handleVendorReplyEmail(
         ? `\nQuoted price: ₹${displayTotal.toLocaleString("en-IN")}\nIntent: ${intentResult.intent} — ${intentResult.summary}`
         : `\nNo prices extracted. Intent: ${intentResult.intent} — ${intentResult.summary}`;
 
+  const replyChannel = whatsappPhone ? "WHATSAPP" : "EMAIL";
+  const fromLabel = whatsappPhone
+    ? `+${whatsappPhone}`
+    : fromEmail;
+
   await prisma.rfqMessage.create({
     data: {
       rfqId: outreach.rfqId,
       direction: "IN",
-      channel: "EMAIL",
-      body: `Vendor reply from ${outreach.vendor.name} <${fromEmail}>${priceSummary}\n\n${text}`,
+      channel: replyChannel,
+      body: `Vendor reply from ${outreach.vendor.name} <${fromLabel}>${priceSummary}\n\n${text}`,
       meta: {
         type: "vendor_reply",
+        channel: replyChannel,
         vendorId: outreach.vendorId,
         outreachId: outreach.id,
         threadRef: outreach.threadRef,
@@ -862,6 +1119,67 @@ export async function handleVendorReplyEmail(
     quotedLineItems,
     replyIntent: intentResult.intent,
   };
+}
+
+/** Match an inbound WhatsApp text message to a vendor Recore / negotiation reply. */
+export async function handleVendorReplyWhatsApp(input: {
+  from: string;
+  text: string;
+  messageId: string;
+}): Promise<VendorReplyResult> {
+  const text = input.text.trim();
+  if (!text) return { handled: false };
+
+  let phone = "";
+  try {
+    phone = normalizeWhatsAppNumber(input.from);
+  } catch {
+    phone = input.from.replace(/[^\d]/g, "");
+  }
+  if (!phone) return { handled: false };
+
+  // Only treat as vendor reply when REF is present or this phone has open outreach.
+  // Product-requirement texts without a REF stay in the RFQ inbox even if the
+  // sender number also exists on a vendor record.
+  const threadRef = extractThreadRef(text);
+  if (!threadRef) {
+    const { messageLooksLikeRequirement } = await import(
+      "@/lib/inbound-requirement"
+    );
+    if (messageLooksLikeRequirement(text)) {
+      return { handled: false };
+    }
+    const tail = phone.slice(-10);
+    const open = await prisma.vendorOutreach.findFirst({
+      where: {
+        status: { in: ["SENT", "PENDING", "NEGOTIATING"] },
+        vendor: {
+          OR: [
+            { phone: { contains: tail } },
+            { whatsappId: { contains: tail } },
+            { contacts: { some: { phone: { contains: tail } } } },
+          ],
+        },
+      },
+      select: { id: true },
+    });
+    if (!open) return { handled: false };
+  }
+
+  const synthetic = {
+    messageId: input.messageId,
+    subject: threadRef ? `WhatsApp reply [REF:${threadRef}]` : "WhatsApp vendor reply",
+    text,
+    html: undefined,
+    from: {
+      text: `${phone}@whatsapp.local`,
+      value: [{ address: `${phone}@whatsapp.local`, name: "" }],
+    },
+    references: undefined,
+    inReplyTo: undefined,
+  } as ParsedMail;
+
+  return handleVendorReplyEmail(synthetic);
 }
 
 /**

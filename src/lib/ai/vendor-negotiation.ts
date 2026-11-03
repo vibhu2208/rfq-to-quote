@@ -1,3 +1,4 @@
+import { normalizeOutboundEmailText } from "@/lib/email-text";
 import type { RfqRequirementItem } from "@/lib/rfq-items";
 import type { VendorQuotedLineItem } from "@/lib/parse-vendor-price";
 
@@ -36,11 +37,11 @@ export async function formatVendorNegotiationEmail(input: {
       ? input.lineItems
           .map(
             (l) =>
-              `${l.lineNumber}. ${l.description} — ₹${l.unitPrice.toLocaleString("en-IN")} / ${l.unit} (qty ${l.quantity})`
+              `${l.lineNumber}. ${l.description} - Rs.${l.unitPrice.toLocaleString("en-IN")} / ${l.unit} (qty ${l.quantity})`
           )
           .join("\n")
       : input.currentTotal != null
-        ? `Current quoted total: ₹${input.currentTotal.toLocaleString("en-IN")}`
+        ? `Current quoted total: Rs.${input.currentTotal.toLocaleString("en-IN")}`
         : "Current quote: (see prior email)";
 
   const fallbackBody = `Hello ${input.vendorName},
@@ -65,7 +66,10 @@ ${company}`;
 
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
-    return { subject: fallbackSubject, body: fallbackBody };
+    return {
+      subject: normalizeOutboundEmailText(fallbackSubject),
+      body: normalizeOutboundEmailText(fallbackBody),
+    };
   }
 
   const model = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
@@ -79,6 +83,7 @@ Rules:
 - Rewrite the admin's casual/plain notes into clear, polite business English.
 - Do NOT invent discounts, deadlines, or commitments not in the plain note.
 - Keep specific numbers the admin mentioned.
+- Use plain ASCII punctuation and write currency as "Rs." (not the ₹ symbol or em dashes).
 - Ask the vendor to reply with revised per-line INR unit prices or clearly decline.
 - Always include Reference: [REF:${input.threadRef}] near the end.
 - Sign off with "${company}".
@@ -114,16 +119,26 @@ ${input.plainNote.trim()}`;
       }),
     });
 
-    if (!res.ok) return { subject: fallbackSubject, body: fallbackBody };
+    if (!res.ok) {
+      return {
+        subject: normalizeOutboundEmailText(fallbackSubject),
+        body: normalizeOutboundEmailText(fallbackBody),
+      };
+    }
 
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
     const content = data.choices?.[0]?.message?.content;
-    if (!content) return { subject: fallbackSubject, body: fallbackBody };
+    if (!content) {
+      return {
+        subject: normalizeOutboundEmailText(fallbackSubject),
+        body: normalizeOutboundEmailText(fallbackBody),
+      };
+    }
 
     const parsed = extractJson(content) as { subject?: unknown; body?: unknown };
-    const body =
+    let body =
       typeof parsed.body === "string" && parsed.body.trim()
         ? parsed.body.trim()
         : fallbackBody;
@@ -138,14 +153,17 @@ ${input.plainNote.trim()}`;
       subject = `Re: ${subject}`;
     }
     if (!body.includes(`[REF:${input.threadRef}]`)) {
-      return {
-        subject,
-        body: `${body}\n\nReference: [REF:${input.threadRef}]\n\nThanks,\n${company}`,
-      };
+      body = `${body}\n\nReference: [REF:${input.threadRef}]\n\nThanks,\n${company}`;
     }
-    return { subject, body };
+    return {
+      subject: normalizeOutboundEmailText(subject),
+      body: normalizeOutboundEmailText(body),
+    };
   } catch {
-    return { subject: fallbackSubject, body: fallbackBody };
+    return {
+      subject: normalizeOutboundEmailText(fallbackSubject),
+      body: normalizeOutboundEmailText(fallbackBody),
+    };
   }
 }
 

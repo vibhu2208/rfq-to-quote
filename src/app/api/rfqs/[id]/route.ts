@@ -13,20 +13,32 @@ export async function GET(_req: NextRequest, { params }: Params) {
   const rfq = await prisma.rfq.findUnique({
     where: { id },
     include: {
-      messages: { orderBy: { createdAt: "asc" } },
-      quotes: { orderBy: { createdAt: "desc" }, select: { id: true, quoteNumber: true, status: true, grandTotal: true } },
+      messages: {
+        orderBy: { createdAt: "asc" },
+        take: 80,
+        select: {
+          id: true,
+          direction: true,
+          channel: true,
+          body: true,
+          createdAt: true,
+        },
+      },
+      quotes: {
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          quoteNumber: true,
+          status: true,
+          grandTotal: true,
+        },
+      },
     },
   });
   if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // productSelections may exist in DB before Prisma client is regenerated
-  const rows = await prisma.$queryRaw<Array<{ productSelections: unknown }>>`
-    SELECT "productSelections" FROM "Rfq" WHERE id = ${id}
-  `;
-  return NextResponse.json({
-    ...rfq,
-    productSelections: rows[0]?.productSelections ?? null,
-  });
+  return NextResponse.json(rfq);
 }
 
 const productSnapshotSchema = z.object({

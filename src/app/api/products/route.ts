@@ -13,6 +13,11 @@ import {
   searchTokens,
 } from "@/lib/product-search";
 
+function emptyToNull(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
 const productSchema = z.object({
   code: z.string().min(1),
   name: z.string().min(1),
@@ -26,6 +31,11 @@ const productSchema = z.object({
   active: z.boolean().optional().default(true),
   openingQty: z.coerce.number().nonnegative().optional(),
   openingUnitCost: z.coerce.number().nonnegative().optional(),
+  brand: z.string().optional().nullable(),
+  hsnCode: z.string().optional().nullable(),
+  modelNo: z.string().optional().nullable(),
+  partNo: z.string().optional().nullable(),
+  category: z.string().optional().nullable(),
 });
 
 function serializeProduct(p: {
@@ -197,11 +207,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const ctx = await getDefaultOrgContext();
-    const { openingQty, openingUnitCost, ...data } = parsed.data;
+    const { openingQty, openingUnitCost, brand, hsnCode, modelNo, partNo, category, ...data } =
+      parsed.data;
 
     const product = await prisma.product.create({
       data: {
         ...data,
+        brand: emptyToNull(brand),
+        hsnCode: emptyToNull(hsnCode),
+        modelNo: emptyToNull(modelNo),
+        partNo: emptyToNull(partNo),
+        category: emptyToNull(category),
         organisationId: ctx.organisationId,
       },
     });

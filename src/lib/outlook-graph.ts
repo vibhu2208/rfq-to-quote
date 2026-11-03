@@ -2,6 +2,10 @@ import { randomUUID } from "crypto";
 import nodemailer from "nodemailer";
 import type { ParsedMail } from "mailparser";
 import {
+  normalizeOutboundEmailText,
+  plainTextToEmailHtml,
+} from "@/lib/email-text";
+import {
   getMicrosoftGraphConfig,
   type MicrosoftGraphConfig,
 } from "@/lib/mailbox";
@@ -10,7 +14,7 @@ const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 const TOKEN_URL = (tenantId: string) =>
   `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
 
-type TokenCache = { accessToken: string; expiresAt: number };
+type TokenCache = { key: string; accessToken: string; expiresAt: number };
 let tokenCache: TokenCache | null = null;
 
 export type OutlookMessage = {
@@ -49,7 +53,14 @@ function requireGraphConfig(): MicrosoftGraphConfig {
 
 function graphErrorMessage(payload: unknown, status: number): string {
   if (status === 403) {
-    return "Outlook mailbox read is denied. In Azure Portal open this app → API permissions → add Microsoft Graph application permission Mail.ReadWrite (keep Mail.Send), then click Grant admin consent. Fetch cannot work with Mail.Send alone.";
+    const detail =
+      payload && typeof payload === "object" && "error" in payload
+        ? (payload as { error?: { message?: string } }).error?.message
+        : "";
+    return (
+      "Outlook mailbox access is denied. In Azure Portal open this app → API permissions → add Microsoft Graph application permissions Mail.ReadWrite and Mail.Send, then click Grant admin consent." +
+      (detail ? ` Microsoft said: ${detail}` : "")
+    );
   }
   if (payload && typeof payload === "object" && "error" in payload) {
     const err = (payload as { error?: { code?: string; message?: string } }).error;
@@ -61,7 +72,12 @@ function graphErrorMessage(payload: unknown, status: number): string {
 }
 
 async function getAccessToken(config: MicrosoftGraphConfig): Promise<string> {
-  if (tokenCache && tokenCache.expiresAt > Date.now() + 30_000) {
+  const cacheKey = `${config.tenantId}|${config.clientId}|${config.mailbox}`;
+  if (
+    tokenCache &&
+    tokenCache.key === cacheKey &&
+    tokenCache.expiresAt > Date.now() + 30_000
+  ) {
     return tokenCache.accessToken;
   }
 
@@ -92,6 +108,7 @@ async function getAccessToken(config: MicrosoftGraphConfig): Promise<string> {
   }
 
   tokenCache = {
+    key: cacheKey,
     accessToken: json.access_token,
     expiresAt: Date.now() + Math.max(60, Number(json.expires_in || 3600)) * 1000,
   };
@@ -329,6 +346,15 @@ function toReferencesHeader(refs: string): string {
     .join(" ");
 }
 
+function prepareOutlookContent(input: OutlookSendInput) {
+  const text = normalizeOutboundEmailText(input.text);
+  const html = input.html
+    ? normalizeOutboundEmailText(input.html)
+    : plainTextToEmailHtml(text);
+  const subject = normalizeOutboundEmailText(input.subject);
+  return { text, html, subject };
+}
+
 /** Send via Graph using a MIME payload so Message-ID / In-Reply-To stay intact. */
 export async function sendOutlookEmail(
   input: OutlookSendInput
@@ -337,6 +363,20 @@ export async function sendOutlookEmail(
   const domain = config.mailbox.split("@")[1] || "tinfotech.com";
   const messageId = `<${randomUUID()}@${domain}>`;
   const company = process.env.COMPANY_NAME?.trim() || "QuoteFlow";
+  const prepared = prepareOutlookContent(input);
+  const needsMimeThreading = Boolean(input.inReplyTo || input.references);
+
+  // New outbound mail: JSON HTML path avoids quoted-printable MIME glitches.
+  if (!needsMimeThreading && !(input.attachments && input.attachments.length > 0)) {
+    try {
+      return await sendOutlookEmailJson(config, {
+        ...input,
+        ...prepared,
+      }, messageId);
+    } catch {
+      // Fall through to MIME if JSON send is blocked on the tenant.
+    }
+  }
 
   const transport = nodemailer.createTransport({
     streamTransport: true,
@@ -348,9 +388,10 @@ export async function sendOutlookEmail(
     from: `"${company}" <${config.mailbox}>`,
     to: input.to,
     replyTo: input.replyTo || config.mailbox,
-    subject: input.subject,
-    text: input.text,
-    html: input.html,
+    subject: prepared.subject,
+    text: prepared.text,
+    html: prepared.html,
+    textEncoding: "base64",
     messageId,
     inReplyTo: input.inReplyTo ? toAngleAddr(input.inReplyTo) : undefined,
     references: input.references
@@ -383,7 +424,11 @@ export async function sendOutlookEmail(
     const json = await res.json().catch(() => null);
     // Fallback: JSON draft + send if MIME upload is blocked on the tenant.
     if (res.status === 400 || res.status === 415) {
-      return sendOutlookEmailJson(config, input, messageId);
+      return sendOutlookEmailJson(
+        config,
+        { ...input, ...prepared },
+        messageId
+      );
     }
     throw new Error(graphErrorMessage(json, res.status));
   }
@@ -396,35 +441,38 @@ async function sendOutlookEmailJson(
   input: OutlookSendInput,
   preferredMessageId: string
 ): Promise<{ messageId: string }> {
-  const draft = await graphJson<OutlookMessage>(
+  const prepared = prepareOutlookContent(input);
+  await graphJson(
     config,
-    mailboxPath(config.mailbox, "/messages"),
+    mailboxPath(config.mailbox, "/sendMail"),
     {
       method: "POST",
       body: JSON.stringify({
-        subject: input.subject,
-        body: {
-          contentType: input.html ? "HTML" : "Text",
-          content: input.html || input.text,
+        message: {
+          subject: prepared.subject,
+          body: {
+            contentType: "HTML",
+            content: prepared.html,
+          },
+          toRecipients: input.to
+            .split(/[,;]/)
+            .map((address) => address.trim())
+            .filter(Boolean)
+            .map((address) => ({ emailAddress: { address } })),
+          replyTo: [
+            { emailAddress: { address: input.replyTo || config.mailbox } },
+          ],
+          attachments: input.attachments?.map((a) => ({
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            name: a.filename,
+            contentType: a.contentType || "application/octet-stream",
+            contentBytes: a.content.toString("base64"),
+          })),
         },
-        toRecipients: [{ emailAddress: { address: input.to } }],
-        replyTo: [
-          { emailAddress: { address: input.replyTo || config.mailbox } },
-        ],
-        attachments: input.attachments?.map((a) => ({
-          "@odata.type": "#microsoft.graph.fileAttachment",
-          name: a.filename,
-          contentType: a.contentType || "application/octet-stream",
-          contentBytes: a.content.toString("base64"),
-        })),
+        saveToSentItems: true,
       }),
     }
   );
 
-  await graphJson(config, mailboxPath(config.mailbox, `/messages/${draft.id}/send`), {
-    method: "POST",
-  });
-
-  const id = (draft.internetMessageId || preferredMessageId).replace(/[<>]/g, "");
-  return { messageId: id };
+  return { messageId: preferredMessageId.replace(/[<>]/g, "") };
 }

@@ -17,6 +17,8 @@ const bodySchema = z.object({
         productId: z.string().min(1),
         qty: z.coerce.number().optional(),
         unitPrice: z.coerce.number().optional(),
+        costPrice: z.coerce.number().optional(),
+        costVendorName: z.string().optional(),
         aliasName: z.string().optional(),
         unit: z.string().optional(),
       })
@@ -41,6 +43,8 @@ export async function POST(req: NextRequest, { params }: Params) {
     productId: string;
     qty: number;
     unitPrice?: number;
+    costPrice?: number;
+    costVendorName?: string;
     aliasName?: string;
     unit?: string;
   }> = [];
@@ -54,6 +58,8 @@ export async function POST(req: NextRequest, { params }: Params) {
         productId: line.productId,
         qty: line.qty && line.qty > 0 ? line.qty : 1,
         unitPrice: line.unitPrice,
+        costPrice: line.costPrice,
+        costVendorName: line.costVendorName?.trim() || undefined,
         aliasName: line.aliasName?.trim() || undefined,
         unit: line.unit?.trim() || undefined,
       }));

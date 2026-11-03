@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
@@ -99,14 +100,35 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const buffer = file ? Buffer.from(await file.arrayBuffer()) : null;
+  const attachmentId = randomUUID();
+  const fileName = file ? filenameFromUpload(file) : "note.txt";
+  const fileType = file?.type || (note ? "text/plain" : "application/octet-stream");
+  let storageKey: string | null = null;
+
+  if (buffer) {
+    try {
+      storageKey = await uploadQuoteAttachmentFile({
+        quoteId: id,
+        attachmentId,
+        fileName,
+        contentType: fileType,
+        body: buffer,
+      });
+    } catch (e) {
+      console.warn("Supabase Storage upload skipped", e);
+    }
+  }
+
   const created = await prisma.quoteAttachment.create({
     data: {
+      id: attachmentId,
       quoteId: id,
-      fileName: file ? filenameFromUpload(file) : "note.txt",
-      contentType: file?.type || (note ? "text/plain" : "application/octet-stream"),
+      fileName,
+      contentType: fileType,
       size: buffer?.byteLength ?? 0,
       note,
-      data: buffer,
+      storageKey: storageKey || "",
+      data: storageKey ? null : buffer,
     },
     select: {
       id: true,
@@ -117,25 +139,6 @@ export async function POST(req: NextRequest, { params }: Params) {
       createdAt: true,
     },
   });
-
-  if (buffer) {
-    try {
-      const storageKey = await uploadQuoteAttachmentFile({
-        quoteId: id,
-        attachmentId: created.id,
-        fileName: created.fileName,
-        contentType: created.contentType,
-        body: buffer,
-      });
-      if (storageKey) {
-        await prisma.$executeRaw`
-          UPDATE "QuoteAttachment" SET "storageKey" = ${storageKey} WHERE id = ${created.id}
-        `;
-      }
-    } catch (e) {
-      console.warn("Supabase Storage upload skipped", e);
-    }
-  }
 
   return NextResponse.json(meta(created), { status: 201 });
 }

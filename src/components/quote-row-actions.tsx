@@ -82,13 +82,22 @@ export function QuoteRowActions({
     setSendTo(quote.buyerEmail.trim());
     setSendNote("");
     setError("");
+    setWhatsAppOpen(false);
     setEmailOpen(true);
   }
 
-  async function sendEmail() {
+  function openWhatsApp() {
+    setSendTo(quote.buyerPhone.trim());
+    setSendNote("");
+    setError("");
+    setEmailOpen(false);
+    setWhatsAppOpen(true);
+  }
+
+  async function sendQuote(channel: "EMAIL" | "WHATSAPP") {
     const to = sendTo.trim();
     if (!to) {
-      setError("Enter an email address");
+      setError(channel === "EMAIL" ? "Enter an email address" : "Enter a WhatsApp number");
       return;
     }
     setSending(true);
@@ -98,16 +107,17 @@ export function QuoteRowActions({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          channel: "EMAIL",
+          channel,
           to,
           note: sendNote.trim() || undefined,
         }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
         throw new Error(typeof data.error === "string" ? data.error : "Send failed");
       }
       setEmailOpen(false);
+      setWhatsAppOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Send failed");
     } finally {
@@ -165,11 +175,8 @@ export function QuoteRowActions({
         <button
           type="button"
           className={btn}
-          title="WhatsApp (coming soon)"
-          onClick={() => {
-            setError("");
-            setWhatsAppOpen(true);
-          }}
+          title="WhatsApp"
+          onClick={openWhatsApp}
         >
           <MessageCircle className="h-4 w-4" strokeWidth={1.5} />
           <span className="sr-only">WhatsApp</span>
@@ -250,7 +257,7 @@ export function QuoteRowActions({
               <button
                 type="button"
                 disabled={sending}
-                onClick={() => void sendEmail()}
+                onClick={() => void sendQuote("EMAIL")}
                 className="inline-flex items-center gap-2 rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
               >
                 <Send className="h-4 w-4" strokeWidth={1.5} />
@@ -287,10 +294,22 @@ export function QuoteRowActions({
           <div
             role="dialog"
             aria-modal="true"
-            className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
+            aria-labelledby={`whatsapp-quote-${quote.id}`}
+            className="w-full max-w-md rounded-xl bg-background p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3">
-              <h2 className="text-lg font-semibold">WhatsApp</h2>
+              <div>
+                <h2 id={`whatsapp-quote-${quote.id}`} className="text-lg font-semibold">
+                  WhatsApp quote
+                </h2>
+                <p className="mt-1 text-sm text-mid-green">
+                  {quote.quoteNumber}
+                  {quote.quoteName ? ` · ${quote.quoteName}` : ""}. Delivery
+                  only works if this number has messaged the business WhatsApp
+                  in the last 24 hours.
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => setWhatsAppOpen(false)}
@@ -300,16 +319,43 @@ export function QuoteRowActions({
                 <X className="h-5 w-5 text-mid-green" />
               </button>
             </div>
-            <p className="mt-3 text-sm text-mid-green">
-              WhatsApp sending will be connected later. Use Email to send this quote for now.
-            </p>
-            <div className="mt-5 flex justify-end">
+            <div className="mt-5 space-y-3">
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">WhatsApp number</span>
+                <input
+                  value={sendTo}
+                  onChange={(e) => setSendTo(e.target.value)}
+                  className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
+                  placeholder="+919876543210"
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-mid-green">Note (optional)</span>
+                <textarea
+                  value={sendNote}
+                  onChange={(e) => setSendNote(e.target.value)}
+                  rows={2}
+                  className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
+                />
+              </label>
+              {error ? <p className="text-sm text-dark-primary">{error}</p> : null}
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setWhatsAppOpen(false)}
-                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+                className="rounded-lg px-3 py-2 text-sm text-mid-green hover:bg-light-green/20"
               >
-                OK
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={sending}
+                onClick={() => void sendQuote("WHATSAPP")}
+                className="inline-flex items-center gap-2 rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+              >
+                <Send className="h-4 w-4" strokeWidth={1.5} />
+                {sending ? "Sending…" : "Send quote"}
               </button>
             </div>
           </div>

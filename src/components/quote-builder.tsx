@@ -10,12 +10,15 @@ import {
   Mail,
   MessageCircle,
   Minus,
+  Percent,
   Plus,
   Printer,
   RotateCcw,
   Search,
   Send,
   Sparkles,
+  Store,
+  Tag,
   Trash2,
   Upload,
   X,
@@ -58,6 +61,31 @@ import {
 } from "@/components/client-company-field";
 import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
 import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
+import { QuoteCalculator } from "@/components/quote-calculator";
+import { QuoteDiscountDialog } from "@/components/quote-discount-dialog";
+import {
+  MarketplacePriceStack,
+  type MarketplacePriceStackValue,
+} from "@/components/marketplace-price-stack";
+import {
+  CatalogPriceStack,
+  catalogPricesFromProduct,
+  type CatalogPriceStackValue,
+} from "@/components/catalog-price-stack";
+import { marketplaceQueryFromText } from "@/lib/marketplace/summary";
+import {
+  applyPercentToLinePrices,
+  type QuoteDiscountMethod,
+} from "@/lib/quote-discount";
+import {
+  cheapestVendorQuote,
+  selectedVendorQuote,
+  sortVendorQuotes,
+  vendorQuotesForQuoteLine,
+  vendorQuotesFromMatches,
+  type QuoteVendorQuote,
+} from "@/lib/quote-line-vendor-cost";
+import type { VendorPriceMatch } from "@/lib/vendor-line-price";
 
 type ProductHit = {
   id: string;
@@ -83,9 +111,102 @@ type LineItem = {
   qty: number;
   unit: string;
   unitPrice: number;
+  costPrice?: number | null;
+  costVendorName?: string;
+  vendorQuotes?: QuoteVendorQuote[];
+  catalogLastPrice?: number | null;
+  catalogOfferPrice?: number | null;
+  catalogMrp?: number | null;
   taxRate: number;
   hsnCode?: string;
 };
+
+function catalogPricesFromLine(line: LineItem): CatalogPriceStackValue | null {
+  const prices = catalogPricesFromProduct({
+    lastPrice: line.catalogLastPrice,
+    offerPrice: line.catalogOfferPrice,
+    mrp: line.catalogMrp,
+  });
+  if (!prices.lastPrice && !prices.offerPrice && !prices.mrp) return null;
+  return prices;
+}
+
+function vendorQuoteOptionKey(quote: Pick<QuoteVendorQuote, "vendorId" | "vendorName" | "unitPrice">) {
+  return `${quote.vendorId || quote.vendorName}::${quote.unitPrice}`;
+}
+
+function vendorQuotesForLine(line: LineItem): QuoteVendorQuote[] {
+  if (line.vendorQuotes && line.vendorQuotes.length > 0) {
+    return sortVendorQuotes(line.vendorQuotes);
+  }
+  if (line.costPrice != null && line.costPrice > 0) {
+    return [
+      {
+        vendorId: line.costVendorName || "vendor",
+        vendorName: line.costVendorName || "Vendor",
+        unitPrice: line.costPrice,
+        source: "",
+      },
+    ];
+  }
+  return [];
+}
+
+function QuoteLineVendorCostCell({
+  line,
+  selectClassName,
+  onChooseCost,
+  onUseAsSell,
+}: {
+  line: LineItem;
+  selectClassName: string;
+  onChooseCost: (quote: QuoteVendorQuote) => void;
+  onUseAsSell: (quote: QuoteVendorQuote) => void;
+}) {
+  const quotes = vendorQuotesForLine(line);
+  if (quotes.length === 0) {
+    return <div className="px-0.5 pt-1.5 text-right text-xs text-mid-green">—</div>;
+  }
+  const selected =
+    selectedVendorQuote(quotes, line.costPrice, line.costVendorName) ?? quotes[0];
+  const lowest = quotes[0];
+
+  return (
+    <div className="space-y-1 px-0.5 pt-0.5">
+      <button
+        type="button"
+        className="block w-full text-right text-sm font-medium tabular-nums text-dark-primary"
+        title="Copy this vendor cost into sell price"
+        onClick={() => onUseAsSell(selected)}
+      >
+        {formatMoney(selected.unitPrice)}
+      </button>
+      {quotes.length === 1 ? (
+        <div className="truncate text-[10px] text-mid-green" title={selected.vendorName}>
+          {selected.vendorName}
+          {selected.source ? ` · ${selected.source}` : ""}
+        </div>
+      ) : (
+        <select
+          value={vendorQuoteOptionKey(selected)}
+          onChange={(e) => {
+            const next = quotes.find((quote) => vendorQuoteOptionKey(quote) === e.target.value);
+            if (next) onChooseCost(next);
+          }}
+          className={selectClassName}
+          title={`${quotes.length} vendor quotes for this product`}
+        >
+          {quotes.map((quote) => (
+            <option key={vendorQuoteOptionKey(quote)} value={vendorQuoteOptionKey(quote)}>
+              {quote.vendorName} · {formatMoney(quote.unitPrice)}
+              {quote.unitPrice === lowest.unitPrice ? " · lowest" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
 
 export type QuoteFormState = {
   id?: string;
@@ -100,6 +221,7 @@ export type QuoteFormState = {
   buyerGstin: string;
   withGst: boolean;
   showHsn: boolean;
+  showUnit: boolean;
   gstMode: "AUTO" | "CGST_SGST" | "IGST";
   deliveryCharge: number;
   discountPercent: number;
@@ -131,6 +253,9 @@ type Props = {
   sellerState: string;
   company: QuotePreviewCompany;
   sendContext?: QuoteSendContext;
+  quoteStatus?: string;
+  lastReplyIntent?: string | null;
+  rfqId?: string;
 };
 
 function newKey() {
@@ -182,6 +307,7 @@ const emptyQuote = (): QuoteFormState => ({
   buyerGstin: "",
   withGst: true,
   showHsn: true,
+  showUnit: true,
   gstMode: "AUTO",
   deliveryCharge: 0,
   discountPercent: 0,
@@ -204,6 +330,8 @@ const emptyQuote = (): QuoteFormState => ({
       qty: 1,
       unit: DEFAULT_QUOTE_UNIT,
       unitPrice: 0,
+      costPrice: null,
+      costVendorName: "",
       taxRate: 18,
       hsnCode: "",
     },
@@ -229,6 +357,7 @@ function quoteSavePayload(
     buyerGstin: form.buyerGstin.trim().toUpperCase(),
     withGst: form.withGst,
     showHsn: form.showHsn,
+    showUnit: form.showUnit,
     gstMode: form.gstMode,
     deliveryCharge: calc.deliveryCharge,
     discountPercent: form.discountPercent,
@@ -242,7 +371,7 @@ function quoteSavePayload(
     termsText: form.termsText,
     closingText: form.closingText,
     quoteDate: form.quoteDate,
-    status: status || form.status,
+    ...(status ? { status } : {}),
     manualOverrides: form.manualOverrides,
     subtotal: calc.subtotal,
     gstAmount: calc.gstAmount,
@@ -254,6 +383,8 @@ function quoteSavePayload(
       qty: finiteAmount(l.qty),
       unit: normalizeQuoteUnit(l.unit),
       unitPrice: finiteAmount(l.unitPrice),
+      costPrice: l.costPrice != null && l.costPrice > 0 ? l.costPrice : null,
+      costVendorName: l.costVendorName || "",
       taxRate: finiteAmount(l.taxRate),
       sortOrder: i,
     })),
@@ -267,6 +398,7 @@ function withDocumentDefaults(
   return {
     ...state,
     showHsn: state.showHsn !== false,
+    showUnit: state.showUnit !== false,
     quoteDate: state.quoteDate || todayQuoteDateIso(),
     introText: state.introText?.trim() || quoteIntro(company.name),
     termsText: state.termsText?.trim() || defaultQuoteTerms(company.paymentTerms),
@@ -274,7 +406,14 @@ function withDocumentDefaults(
   };
 }
 
-export function QuoteBuilder({ initial, sellerState, company, sendContext }: Props) {
+export function QuoteBuilder({
+  initial,
+  sellerState,
+  company,
+  sendContext,
+  quoteStatus,
+  rfqId,
+}: Props) {
   const router = useRouter();
   const [aliasSnapshot, setAliasSnapshot] = useState<Record<string, string> | null>(null);
   const [form, setForm] = useState<QuoteFormState>(() =>
@@ -282,6 +421,11 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   );
   const formRef = useRef(form);
   formRef.current = form;
+  const linePriceBasisRef = useRef<Record<string, number>>(
+    Object.fromEntries(
+      (initial || emptyQuote()).lineItems.map((line) => [line.key, line.unitPrice])
+    )
+  );
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
   const [searchIdx, setSearchIdx] = useState<number | null>(null);
@@ -309,10 +453,46 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   );
   const [buyerError, setBuyerError] = useState("");
   const [hsnConfirmOpen, setHsnConfirmOpen] = useState(false);
+  const [unitConfirmOpen, setUnitConfirmOpen] = useState(false);
+  const [discountDialog, setDiscountDialog] = useState<{
+    percent: number;
+    method: QuoteDiscountMethod;
+  } | null>(null);
+  const [appliedLineDiscountPercent, setAppliedLineDiscountPercent] = useState<
+    number | null
+  >(null);
   const [buyerContacts, setBuyerContacts] = useState<ClientContactHit[]>([]);
   const [selectedContactId, setSelectedContactId] = useState("");
-  const [whatsAppOpen, setWhatsAppOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [showMarketplace, setShowMarketplace] = useState(false);
+  const [marketplaceByQuery, setMarketplaceByQuery] = useState<
+    Record<string, { loading: boolean; prices: MarketplacePriceStackValue | null }>
+  >({});
+  const marketplaceFetchedRef = useRef<Set<string>>(new Set());
+  const [showCatalog, setShowCatalog] = useState(false);
+  const [catalogByProductId, setCatalogByProductId] = useState<
+    Record<string, { loading: boolean; prices: CatalogPriceStackValue | null }>
+  >(() => {
+    const seed: Record<string, { loading: boolean; prices: CatalogPriceStackValue | null }> =
+      {};
+    for (const line of (initial || emptyQuote()).lineItems) {
+      if (!line.productId) continue;
+      const prices = catalogPricesFromLine(line);
+      if (!prices) continue;
+      seed[line.productId] = { loading: false, prices };
+    }
+    return seed;
+  });
+  const catalogFetchedRef = useRef<Set<string>>(
+    new Set(
+      Object.keys(
+        (initial || emptyQuote()).lineItems.reduce<Record<string, true>>((acc, line) => {
+          if (line.productId && catalogPricesFromLine(line)) acc[line.productId] = true;
+          return acc;
+        }, {})
+      )
+    )
+  );
 
   const sendDefaults = useMemo(
     () =>
@@ -351,7 +531,9 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           sendContext?.customerPhone?.trim() ||
           ""
       );
-      setSendHint("WhatsApp sending will be connected later.");
+      setSendHint(
+        "Sends the quotation PDF. WhatsApp only delivers this if the buyer has messaged the business number in the last 24 hours."
+      );
     }
     setSendNote("");
     setSendError("");
@@ -446,6 +628,176 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     setSearchAiDone(false);
     setSearchAiError("");
   }
+
+  useEffect(() => {
+    if (!rfqId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/rfqs/${rfqId}/vendors`);
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { matches?: VendorPriceMatch[] };
+        const groups = vendorQuotesFromMatches(data.matches || []);
+        if (cancelled || groups.length === 0) return;
+        setForm((f) => ({
+          ...f,
+          lineItems: f.lineItems.map((line, index) => {
+            const vendorQuotes = vendorQuotesForQuoteLine(
+              { aliasName: line.aliasName, sortOrder: index },
+              index,
+              groups,
+              f.lineItems.length
+            );
+            if (vendorQuotes.length === 0) return line;
+            const fallback =
+              line.costPrice != null && line.costPrice > 0
+                ? null
+                : cheapestVendorQuote(vendorQuotes);
+            return {
+              ...line,
+              vendorQuotes,
+              costPrice: line.costPrice ?? fallback?.unitPrice ?? null,
+              costVendorName: line.costVendorName || fallback?.vendorName || "",
+            };
+          }),
+        }));
+      } catch {
+        // Quote editor still works without vendor cost lookup.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rfqId]);
+
+  const marketplaceQueries = useMemo(() => {
+    const queries = new Set<string>();
+    for (const line of form.lineItems) {
+      const query = marketplaceQueryFromText(
+        line.catalogName,
+        line.aliasName,
+        line.description
+      );
+      if (query) queries.add(query);
+    }
+    return [...queries];
+  }, [form.lineItems]);
+  const marketplaceQueryKey = marketplaceQueries.join("\n");
+
+  useEffect(() => {
+    if (!showMarketplace) return;
+    const queries = marketplaceQueryKey ? marketplaceQueryKey.split("\n") : [];
+    let cancelled = false;
+    void (async () => {
+      for (const query of queries) {
+        if (cancelled) return;
+        if (marketplaceFetchedRef.current.has(query)) continue;
+        marketplaceFetchedRef.current.add(query);
+        setMarketplaceByQuery((prev) => ({
+          ...prev,
+          [query]: { loading: true, prices: prev[query]?.prices ?? null },
+        }));
+        try {
+          const res = await fetch("/api/marketplace/prices", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query }),
+          });
+          const data = (await res.json().catch(() => ({}))) as {
+            best?: MarketplacePriceStackValue;
+          };
+          if (cancelled) {
+            marketplaceFetchedRef.current.delete(query);
+            return;
+          }
+          if (!res.ok) {
+            marketplaceFetchedRef.current.delete(query);
+            setMarketplaceByQuery((prev) => ({
+              ...prev,
+              [query]: { loading: false, prices: null },
+            }));
+            continue;
+          }
+          setMarketplaceByQuery((prev) => ({
+            ...prev,
+            [query]: { loading: false, prices: data.best ?? null },
+          }));
+        } catch {
+          marketplaceFetchedRef.current.delete(query);
+          if (!cancelled) {
+            setMarketplaceByQuery((prev) => ({
+              ...prev,
+              [query]: { loading: false, prices: null },
+            }));
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showMarketplace, marketplaceQueryKey]);
+
+  const catalogProductKey = useMemo(
+    () =>
+      [...new Set(form.lineItems.map((line) => line.productId).filter(Boolean))].join(
+        "\n"
+      ),
+    [form.lineItems]
+  );
+
+  useEffect(() => {
+    if (!showCatalog) return;
+    const ids = catalogProductKey ? catalogProductKey.split("\n") : [];
+    let cancelled = false;
+    void (async () => {
+      for (const productId of ids) {
+        if (cancelled) return;
+        if (catalogFetchedRef.current.has(productId)) continue;
+        catalogFetchedRef.current.add(productId);
+        setCatalogByProductId((prev) => ({
+          ...prev,
+          [productId]: { loading: true, prices: prev[productId]?.prices ?? null },
+        }));
+        try {
+          const res = await fetch(`/api/products/${productId}`);
+          const data = (await res.json().catch(() => ({}))) as {
+            lastPrice?: number | null;
+            offerPrice?: number | null;
+            mrp?: number | null;
+            basePrice?: number | null;
+          };
+          if (cancelled) {
+            catalogFetchedRef.current.delete(productId);
+            return;
+          }
+          if (!res.ok) {
+            catalogFetchedRef.current.delete(productId);
+            setCatalogByProductId((prev) => ({
+              ...prev,
+              [productId]: { loading: false, prices: null },
+            }));
+            continue;
+          }
+          setCatalogByProductId((prev) => ({
+            ...prev,
+            [productId]: { loading: false, prices: catalogPricesFromProduct(data) },
+          }));
+        } catch {
+          catalogFetchedRef.current.delete(productId);
+          if (!cancelled) {
+            setCatalogByProductId((prev) => ({
+              ...prev,
+              [productId]: { loading: false, prices: null },
+            }));
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showCatalog, catalogProductKey]);
 
   useEffect(() => {
     if (searchIdx == null || searchQ.trim().length < 1) {
@@ -551,6 +903,14 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
     });
   }, [form, sellerState]);
 
+  const vendorCostTotal = useMemo(() => {
+    return form.lineItems.reduce((sum, line) => {
+      if (line.costPrice == null || line.costPrice <= 0) return sum;
+      const qty = Number.isFinite(line.qty) ? line.qty : 0;
+      return sum + line.costPrice * qty;
+    }, 0);
+  }, [form.lineItems]);
+
   const calcRef = useRef(calc);
   const lastSavedJsonRef = useRef<string | null>(null);
   const baselineJsonRef = useRef<string | null>(null);
@@ -626,7 +986,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   }, []);
 
   useEffect(() => {
-    const json = JSON.stringify(quoteSavePayload(form, calc, form.status));
+    const json = JSON.stringify(quoteSavePayload(form, calc));
     if (baselineJsonRef.current === null) {
       baselineJsonRef.current = json;
       return;
@@ -643,7 +1003,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   useEffect(() => {
     const flush = () => {
       const json = JSON.stringify(
-        quoteSavePayload(formRef.current, calcRef.current, formRef.current.status)
+        quoteSavePayload(formRef.current, calcRef.current)
       );
       if (json === baselineJsonRef.current || json === lastSavedJsonRef.current) return;
       void saveQuote();
@@ -661,24 +1021,78 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
 
   function updateLine(idx: number, patch: Partial<LineItem>) {
     setForm((f) => {
-      const lineItems = f.lineItems.map((l, i) => (i === idx ? { ...l, ...patch } : l));
+      const lineItems = f.lineItems.map((l, i) => {
+        if (i !== idx) return l;
+        const next = { ...l, ...patch };
+        if (patch.unitPrice != null) {
+          linePriceBasisRef.current[next.key] = next.unitPrice;
+        }
+        return next;
+      });
       return { ...f, lineItems };
     });
   }
 
+  function restoreLinePriceBasis(lines: LineItem[]): LineItem[] {
+    return lines.map((line) => ({
+      ...line,
+      unitPrice: linePriceBasisRef.current[line.key] ?? line.unitPrice,
+    }));
+  }
+
+  function applyHeaderDiscount(percent: number) {
+    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
+    setAppliedLineDiscountPercent(null);
+    setForm((f) => ({
+      ...f,
+      discountPercent: nextPercent,
+      discountAmount: 0,
+      manualOverrides: { ...f.manualOverrides, discountAmount: false },
+      lineItems: restoreLinePriceBasis(f.lineItems),
+    }));
+  }
+
+  function applyLineDiscount(percent: number) {
+    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
+    setAppliedLineDiscountPercent(nextPercent > 0 ? nextPercent : null);
+    setForm((f) => ({
+      ...f,
+      discountPercent: 0,
+      discountAmount: 0,
+      manualOverrides: { ...f.manualOverrides, discountAmount: false },
+      lineItems: applyPercentToLinePrices(restoreLinePriceBasis(f.lineItems), nextPercent),
+    }));
+  }
+
+  function closeDiscountDialog() {
+    setDiscountDialog(null);
+  }
+
+  function openDiscountDialog() {
+    const percent = appliedLineDiscountPercent ?? form.discountPercent ?? 0;
+    setDiscountDialog({
+      percent,
+      method: appliedLineDiscountPercent ? "lines" : "header",
+    });
+  }
+
   function addLine() {
+    const key = newKey();
+    linePriceBasisRef.current[key] = 0;
     setForm((f) => ({
       ...f,
       lineItems: [
         ...f.lineItems,
         {
-          key: newKey(),
+          key,
           productId: null,
           description: "",
           aliasName: "",
           qty: 1,
           unit: DEFAULT_QUOTE_UNIT,
           unitPrice: 0,
+          costPrice: null,
+          costVendorName: "",
           taxRate: 18,
           hsnCode: "",
         },
@@ -724,7 +1138,15 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
               : p.offerPrice) || 0,
       taxRate: p.taxRate,
       hsnCode: p.hsnCode || "",
+      catalogLastPrice: p.lastPrice ?? null,
+      catalogOfferPrice: p.offerPrice ?? null,
+      catalogMrp: p.mrp ?? null,
     });
+    catalogFetchedRef.current.add(p.id);
+    setCatalogByProductId((prev) => ({
+      ...prev,
+      [p.id]: { loading: false, prices: catalogPricesFromProduct(p) },
+    }));
     resetCatalogSearch();
   }
 
@@ -930,12 +1352,17 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
       return;
     }
 
+    const data = (await res.json().catch(() => ({}))) as {
+      deliveryNote?: string;
+      to?: string;
+    };
     setForm((f) => ({ ...f, status: "SENT" }));
     setSendOpen(false);
     setMsg(
-      sendChannel === "EMAIL"
-        ? `Quote emailed to ${to}`
-        : `Quote sent to ${to}`
+      data.deliveryNote ||
+        (sendChannel === "EMAIL"
+          ? `Quote emailed to ${to}`
+          : `Quote sent to ${data.to || to}`)
     );
     router.refresh();
   }
@@ -1193,9 +1620,12 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         withGst={form.withGst}
         showHsn={form.showHsn}
         onRemoveHsn={() => setHsnConfirmOpen(true)}
+        showUnit={form.showUnit}
+        onRemoveUnit={() => setUnitConfirmOpen(true)}
         otherTaxLabel={form.otherTaxLabel}
         lineItems={form.lineItems}
         calc={calc}
+        discountPercent={form.discountPercent}
         activeSection={previewSection}
         onSelectSection={setPreviewSection}
         sidebar={renderPreviewSidebar()}
@@ -1223,6 +1653,8 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
   const cellInput = `${field} w-full`;
   const numInput =
     `${cellInput} text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
+  const moneyInput =
+    "h-9 w-full rounded-md border border-light-green/35 bg-background px-2 text-right text-base font-semibold tabular-nums outline-none focus:border-mid-green [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
   const chargeInput =
     `${field} text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
 
@@ -1240,7 +1672,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           className="h-8 min-w-[10rem] flex-1 rounded-md border border-light-green/30 bg-background px-2.5 text-sm outline-none placeholder:text-mid-green/55 focus:border-mid-green sm:max-w-xs"
         />
         <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium capitalize text-dark-secondary">
-          {form.status.toLowerCase()}
+          {(quoteStatus || form.status).replaceAll("_", " ").toLowerCase()}
         </span>
         <span
           className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${saveTone}`}
@@ -1264,6 +1696,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           ) : null}
         </button>
         <div className="ml-auto flex items-center gap-1">
+          <QuoteCalculator compact className={iconBtn} />
           <button
             type="button"
             onClick={() => {
@@ -1294,9 +1727,9 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
           </button>
           <button
             type="button"
-            onClick={() => setWhatsAppOpen(true)}
+            onClick={() => openSendModal("WHATSAPP")}
             className={iconBtn}
-            title="WhatsApp (coming soon)"
+            title="WhatsApp"
             aria-label="WhatsApp"
           >
             <MessageCircle className="h-4 w-4" strokeWidth={1.5} />
@@ -1365,6 +1798,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     setSendChannel(next);
                     setSendError("");
                     if (next === "EMAIL") {
+                      setSendHint("Sends the quotation PDF to this email.");
                       setSendTo(
                         form.buyerEmail.trim() ||
                           sendContext?.customerEmail?.trim() ||
@@ -1373,6 +1807,9 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             : "")
                       );
                     } else {
+                      setSendHint(
+                        "Sends the quotation PDF. WhatsApp only delivers this if the buyer has messaged the business number in the last 24 hours."
+                      );
                       setSendTo(
                         form.buyerPhone.trim() ||
                           sendContext?.customerPhone?.trim() ||
@@ -1385,7 +1822,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                   className="w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 outline-none focus:border-mid-green"
                 >
                   <option value="EMAIL">Email</option>
-                  <option value="WHATSAPP">WhatsApp (coming soon)</option>
+                  <option value="WHATSAPP">WhatsApp</option>
                 </select>
               </label>
 
@@ -1420,13 +1857,6 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                 />
               </label>
 
-              {sendChannel === "WHATSAPP" ? (
-                <p className="rounded-lg bg-light-green/20 px-3 py-2 text-sm text-dark-secondary">
-                  WhatsApp delivery is not wired up yet. Download the PDF and
-                  share manually, or switch to email — then use Mark sent below.
-                </p>
-              ) : null}
-
               {sendError ? (
                 <p className="text-sm text-dark-primary">{sendError}</p>
               ) : null}
@@ -1454,7 +1884,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                 </button>
                 <button
                   type="button"
-                  disabled={sending || sendChannel === "WHATSAPP"}
+                  disabled={sending}
                   onClick={sendQuote}
                   className="inline-flex items-center gap-2 rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
                 >
@@ -1462,40 +1892,6 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                   {sending ? "Sending…" : "Send"}
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {whatsAppOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <h2 className="text-lg font-semibold">WhatsApp</h2>
-              <button
-                type="button"
-                onClick={() => setWhatsAppOpen(false)}
-                className="rounded-lg p-1 hover:bg-light-green/20"
-                aria-label="Close"
-              >
-                <X className="h-5 w-5 text-mid-green" />
-              </button>
-            </div>
-            <p className="mt-3 text-sm text-mid-green">
-              WhatsApp sending will be connected later. Use Email to send this quote for now.
-            </p>
-            <div className="mt-5 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setWhatsAppOpen(false)}
-                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
-              >
-                OK
-              </button>
             </div>
           </div>
         </div>
@@ -1604,6 +2000,79 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
         </div>
       ) : null}
 
+      {discountDialog ? (
+        <QuoteDiscountDialog
+          percent={discountDialog.percent}
+          method={discountDialog.method}
+          lines={form.lineItems.map((line) => ({
+            qty: line.qty,
+            unitPrice: linePriceBasisRef.current[line.key] ?? line.unitPrice,
+          }))}
+          onPercentChange={(percent) =>
+            setDiscountDialog((current) =>
+              current ? { ...current, percent } : current
+            )
+          }
+          onMethodChange={(method) =>
+            setDiscountDialog((current) =>
+              current ? { ...current, method } : current
+            )
+          }
+          onCancel={closeDiscountDialog}
+          onApply={() => {
+            if (discountDialog.method === "lines") {
+              applyLineDiscount(discountDialog.percent);
+            } else {
+              applyHeaderDiscount(discountDialog.percent);
+            }
+            closeDiscountDialog();
+          }}
+        />
+      ) : null}
+
+      {unitConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-primary/40 px-4"
+          onClick={() => setUnitConfirmOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="unit-confirm-title"
+            className="w-full max-w-sm rounded-xl bg-background p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="unit-confirm-title" className="text-lg font-semibold">
+              Remove units?
+            </h2>
+            <p className="mt-2 text-sm text-mid-green">
+              Some clients do not need units on the quotation. This will hide
+              Nos, Pcs, and other units from this quote, including the preview
+              and PDF. Quantity stays visible.
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setUnitConfirmOpen(false)}
+                className="rounded-lg border border-light-green/50 px-3 py-2 text-sm hover:bg-light-green/20"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setForm((f) => ({ ...f, showUnit: false }));
+                  setUnitConfirmOpen(false);
+                }}
+                className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+              >
+                Remove units
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="space-y-3">
             <section className="min-w-0 overflow-hidden rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
               <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-1.5">
@@ -1634,6 +2103,16 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                       HSN
                     </button>
                   )}
+                  {form.showUnit ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, showUnit: true }))}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                    >
+                      <Plus className="h-3 w-3" strokeWidth={1.5} />
+                      Unit
+                    </button>
+                  )}
                   <select
                     value={form.gstMode}
                     onChange={(e) =>
@@ -1648,6 +2127,28 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     <option value="CGST_SGST">CGST + SGST</option>
                     <option value="IGST">IGST</option>
                   </select>
+                  {showMarketplace ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setShowMarketplace(true)}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                      title="Show Amazon, Flipkart and IndiaMART prices for each product"
+                    >
+                      <Store className="h-3 w-3" strokeWidth={1.5} />
+                      Marketplace
+                    </button>
+                  )}
+                  {showCatalog ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setShowCatalog(true)}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                      title="Show catalog last, offer and MRP for each product"
+                    >
+                      <Tag className="h-3 w-3" strokeWidth={1.5} />
+                      Catalog
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={copyProductNamesToAliases}
@@ -1685,10 +2186,13 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     <col />
                     {form.showHsn ? <col className="w-[6.75rem]" /> : null}
                     <col className="w-[4.25rem]" />
-                    <col className="w-[4.75rem]" />
-                    <col className="w-[6.25rem]" />
+                    {form.showUnit ? <col className="w-[4.75rem]" /> : null}
+                    <col className="w-[10rem]" />
+                    {showMarketplace ? <col className="w-[9.5rem]" /> : null}
+                    {showCatalog ? <col className="w-[8.5rem]" /> : null}
+                    <col className="w-[8.75rem]" />
                     <col className="w-[3.75rem]" />
-                    <col className="w-[6.5rem]" />
+                    <col className="w-[9.5rem]" />
                     <col className="w-8" />
                   </colgroup>
                   <thead className="bg-dark-secondary/[0.04] text-[10px] uppercase tracking-wide text-mid-green">
@@ -1712,10 +2216,58 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                         </th>
                       ) : null}
                       <th className="px-1.5 py-1.5 font-medium">Qty</th>
-                      <th className="px-1.5 py-1.5 font-medium">Unit</th>
-                      <th className="px-1.5 py-1.5 font-medium">Price</th>
+                      {form.showUnit ? (
+                        <th className="px-1.5 py-1.5 font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            Unit
+                            <button
+                              type="button"
+                              onClick={() => setUnitConfirmOpen(true)}
+                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              title="Remove units from quotation"
+                              aria-label="Remove units from quotation"
+                            >
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                          </span>
+                        </th>
+                      ) : null}
+                      <th className="px-1.5 py-1.5 font-medium">Vendor cost</th>
+                      {showMarketplace ? (
+                        <th className="px-1.5 py-1.5 font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            Marketplace
+                            <button
+                              type="button"
+                              onClick={() => setShowMarketplace(false)}
+                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              title="Hide marketplace prices"
+                              aria-label="Hide marketplace prices"
+                            >
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                          </span>
+                        </th>
+                      ) : null}
+                      {showCatalog ? (
+                        <th className="px-1.5 py-1.5 font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            Catalog
+                            <button
+                              type="button"
+                              onClick={() => setShowCatalog(false)}
+                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              title="Hide catalog prices"
+                              aria-label="Hide catalog prices"
+                            >
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                          </span>
+                        </th>
+                      ) : null}
+                      <th className="px-1.5 py-1.5 text-xs font-semibold">Sell</th>
                       <th className="px-1.5 py-1.5 font-medium">Tax%</th>
-                      <th className="px-2 py-1.5 text-right font-medium">Total</th>
+                      <th className="px-2 py-1.5 text-right text-xs font-semibold">Total</th>
                       <th className="px-1 py-1.5"></th>
                     </tr>
                   </thead>
@@ -1861,6 +2413,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             className={numInput}
                           />
                         </td>
+                        {form.showUnit ? (
                         <td className="px-1.5 py-1.5 align-top">
                           <select
                             value={normalizeQuoteUnit(line.unit)}
@@ -1877,6 +2430,68 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             ))}
                           </select>
                         </td>
+                        ) : null}
+                        <td className="px-1.5 py-1.5 align-top">
+                          <QuoteLineVendorCostCell
+                            line={line}
+                            selectClassName={`${cellInput} h-7 px-1 text-[10px] text-mid-green`}
+                            onChooseCost={(quote) =>
+                              updateLine(idx, {
+                                costPrice: quote.unitPrice,
+                                costVendorName: quote.vendorName,
+                              })
+                            }
+                            onUseAsSell={(quote) =>
+                              updateLine(idx, {
+                                unitPrice: quote.unitPrice,
+                                costPrice: quote.unitPrice,
+                                costVendorName: quote.vendorName,
+                              })
+                            }
+                          />
+                        </td>
+                        {showMarketplace ? (
+                        <td className="px-1.5 py-1.5 align-top">
+                          <MarketplacePriceStack
+                            loading={
+                              marketplaceByQuery[
+                                marketplaceQueryFromText(
+                                  line.catalogName,
+                                  line.aliasName,
+                                  line.description
+                                )
+                              ]?.loading
+                            }
+                            prices={
+                              marketplaceByQuery[
+                                marketplaceQueryFromText(
+                                  line.catalogName,
+                                  line.aliasName,
+                                  line.description
+                                )
+                              ]?.prices
+                            }
+                            onPick={(price) => updateLine(idx, { unitPrice: price })}
+                          />
+                        </td>
+                        ) : null}
+                        {showCatalog ? (
+                        <td className="px-1.5 py-1.5 align-top">
+                          <CatalogPriceStack
+                            loading={
+                              line.productId
+                                ? catalogByProductId[line.productId]?.loading
+                                : false
+                            }
+                            prices={
+                              line.productId
+                                ? catalogByProductId[line.productId]?.prices
+                                : null
+                            }
+                            onPick={(price) => updateLine(idx, { unitPrice: price })}
+                          />
+                        </td>
+                        ) : null}
                         <td className="px-1.5 py-1.5 align-top">
                           <input
                             type="number"
@@ -1886,7 +2501,8 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             onChange={(e) =>
                               updateLine(idx, { unitPrice: Number(e.target.value) })
                             }
-                            className={numInput}
+                            className={moneyInput}
+                            title="Sell price on the quotation"
                           />
                         </td>
                         <td className="px-1.5 py-1.5 align-top">
@@ -1901,7 +2517,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                             className={numInput}
                           />
                         </td>
-                        <td className="px-2 py-1.5 text-right align-middle text-sm font-medium tabular-nums text-dark-primary">
+                        <td className="px-2 py-1.5 text-right align-middle text-base font-semibold tabular-nums text-dark-primary">
                           {formatMoney(calc.lineTotals[idx] ?? 0)}
                         </td>
                         <td className="px-1 py-1.5 align-middle">
@@ -1921,26 +2537,35 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
 
               <div className="flex flex-wrap items-end justify-between gap-3 border-t border-light-green/20 px-3 py-2">
                 <div className="flex flex-wrap items-end gap-2">
-                  <label className="block">
-                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">Discount %</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step="0.01"
-                      value={form.discountPercent}
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          discountPercent: Number(e.target.value),
-                          manualOverrides: {
-                            ...f.manualOverrides,
-                            discountAmount: false,
-                          },
-                        }))
-                      }
-                      className={`${chargeInput} w-[5.5rem]`}
-                    />
-                  </label>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Discount
+                    </span>
+                    <button
+                      type="button"
+                      onClick={openDiscountDialog}
+                      className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
+                      title="Choose how to apply a discount"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        <Percent className="h-3 w-3 text-mid-green" strokeWidth={2} />
+                        <span className="tabular-nums">
+                          {(appliedLineDiscountPercent ?? form.discountPercent) > 0
+                            ? `${appliedLineDiscountPercent ?? form.discountPercent}%`
+                            : "Select"}
+                        </span>
+                      </span>
+                    </button>
+                    {appliedLineDiscountPercent ? (
+                      <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
+                        Built into unit prices
+                      </span>
+                    ) : form.discountPercent > 0 ? (
+                      <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
+                        Shown on the quote
+                      </span>
+                    ) : null}
+                  </div>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Freight{form.manualOverrides.deliveryCharge ? " · man" : ""}
@@ -1983,20 +2608,34 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                     />
                   </label>
                 </div>
-                <div className="min-w-[16rem] flex-1 space-y-1 text-xs sm:max-w-sm sm:flex-none">
+                <div className="min-w-[18rem] flex-1 space-y-1.5 text-sm sm:max-w-md sm:flex-none">
                   <div className="mb-1 flex items-center justify-between">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">Totals</span>
+                    <span className="text-xs font-semibold uppercase tracking-wide text-mid-green">Totals</span>
                     {hasOverrides ? (
                       <button
                         type="button"
                         onClick={resetCalculations}
-                        className="inline-flex items-center gap-1 text-[10px] text-mid-green hover:underline"
+                        className="inline-flex items-center gap-1 text-xs text-mid-green hover:underline"
                       >
                         <RotateCcw className="h-3 w-3" strokeWidth={1.5} />
                         Reset
                       </button>
                     ) : null}
                   </div>
+                  {vendorCostTotal > 0 ? (
+                    <>
+                      <div className="flex justify-between text-mid-green">
+                        <span>Vendor cost</span>
+                        <span className="tabular-nums font-medium">{formatMoney(vendorCostTotal)}</span>
+                      </div>
+                      <div className="flex justify-between text-mid-green">
+                        <span>Margin vs cost</span>
+                        <span className="tabular-nums font-medium">
+                          {formatMoney(calc.subtotal - vendorCostTotal)}
+                        </span>
+                      </div>
+                    </>
+                  ) : null}
                   <label className="flex items-center justify-between gap-3">
                     <span>Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}</span>
                     <input
@@ -2006,35 +2645,35 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                       onChange={(e) =>
                         setOverride("subtotal", Number(e.target.value))
                       }
-                      className="h-7 w-24 rounded border border-light-green/40 bg-background px-1.5 text-right text-xs outline-none"
+                      className="h-8 w-32 rounded border border-light-green/40 bg-background px-1.5 text-right text-sm font-medium tabular-nums outline-none"
                     />
                   </label>
                   {calc.discountAmount > 0 ? (
                     <div className="flex justify-between text-mid-green">
                       <span>Discount</span>
-                      <span className="tabular-nums">-{formatMoney(calc.discountAmount)}</span>
+                      <span className="tabular-nums font-medium">-{formatMoney(calc.discountAmount)}</span>
                     </div>
                   ) : null}
                   {form.withGst && calc.gstSplit === "CGST_SGST" ? (
                     <>
                       <div className="flex justify-between">
                         <span>CGST</span>
-                        <span className="tabular-nums">{formatMoney(calc.cgstAmount)}</span>
+                        <span className="tabular-nums font-medium">{formatMoney(calc.cgstAmount)}</span>
                       </div>
                       <div className="flex justify-between">
                         <span>SGST</span>
-                        <span className="tabular-nums">{formatMoney(calc.sgstAmount)}</span>
+                        <span className="tabular-nums font-medium">{formatMoney(calc.sgstAmount)}</span>
                       </div>
                     </>
                   ) : null}
                   {form.withGst && calc.gstSplit === "IGST" ? (
                     <div className="flex justify-between">
                       <span>IGST</span>
-                      <span className="tabular-nums">{formatMoney(calc.igstAmount)}</span>
+                      <span className="tabular-nums font-medium">{formatMoney(calc.igstAmount)}</span>
                     </div>
                   ) : null}
-                  <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-2.5 py-1.5 text-background">
-                    <span className="text-xs font-medium">
+                  <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
+                    <span className="text-sm font-semibold">
                       Grand total
                       {form.manualOverrides.grandTotal ? " · man" : ""}
                     </span>
@@ -2046,7 +2685,7 @@ export function QuoteBuilder({ initial, sellerState, company, sendContext }: Pro
                         setOverride("grandTotal", Number(e.target.value))
                       }
                       aria-label="Grand total"
-                      className="w-28 bg-transparent text-right text-sm font-semibold tabular-nums text-background outline-none"
+                      className="w-36 bg-transparent text-right text-lg font-bold tabular-nums text-background outline-none"
                     />
                   </label>
                 </div>

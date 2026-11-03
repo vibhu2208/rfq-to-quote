@@ -5,42 +5,92 @@ import { requireSession } from "@/lib/api";
 import { createRfqWithMessage } from "@/lib/rfq";
 import type { RfqChannel, RfqStatus } from "@prisma/client";
 
+const CHANNELS = new Set([
+  "MANUAL",
+  "EMAIL",
+  "WEB_FORM",
+  "MARKETPLACE",
+  "WHATSAPP",
+]);
+const STATUSES = new Set([
+  "NEW",
+  "NEEDS_REVIEW",
+  "PARSED",
+  "QUOTED",
+  "CLOSED",
+]);
+
 export async function GET(req: NextRequest) {
   const { error } = await requireSession();
   if (error) return error;
 
   const { searchParams } = new URL(req.url);
-  const channel = searchParams.get("channel") as RfqChannel | null;
-  const status = searchParams.get("status") as RfqStatus | null;
+  const channelParam = searchParams.get("channel") || "";
+  const statusParam = searchParams.get("status") || "";
   const q = searchParams.get("q")?.trim() || "";
+  const channel =
+    channelParam && CHANNELS.has(channelParam)
+      ? (channelParam as RfqChannel)
+      : null;
+  const status =
+    statusParam && STATUSES.has(statusParam)
+      ? (statusParam as RfqStatus)
+      : null;
 
-  const rfqs = await prisma.rfq.findMany({
-    where: {
-      AND: [
-        channel ? { channel } : {},
-        status ? { status } : {},
-        q
-          ? {
-              OR: [
-                { customerName: { contains: q, mode: "insensitive" } },
-                { customerEmail: { contains: q, mode: "insensitive" } },
-                { customerCompany: { contains: q, mode: "insensitive" } },
-                { subject: { contains: q, mode: "insensitive" } },
-                { rawText: { contains: q, mode: "insensitive" } },
-                { parsedCategory: { contains: q, mode: "insensitive" } },
-              ],
-            }
-          : {},
-      ],
-    },
-    orderBy: { createdAt: "desc" },
-    include: {
-      _count: { select: { messages: true, quotes: true } },
-    },
-    take: 100,
+  const where = {
+    AND: [
+      channel ? { channel } : {},
+      status ? { status } : {},
+      q
+        ? {
+            OR: [
+              { customerName: { contains: q, mode: "insensitive" as const } },
+              { customerEmail: { contains: q, mode: "insensitive" as const } },
+              { customerCompany: { contains: q, mode: "insensitive" as const } },
+              { subject: { contains: q, mode: "insensitive" as const } },
+              { parsedCategory: { contains: q, mode: "insensitive" as const } },
+            ],
+          }
+        : {},
+    ],
+  };
+
+  const [rfqs, statusGroups, total] = await Promise.all([
+    prisma.rfq.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        channel: true,
+        subject: true,
+        customerName: true,
+        customerEmail: true,
+        customerCompany: true,
+        status: true,
+        parsedCategory: true,
+        parseConfidence: true,
+        createdAt: true,
+        _count: { select: { messages: true, quotes: true } },
+      },
+    }),
+    prisma.rfq.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+    }),
+    prisma.rfq.count({ where }),
+  ]);
+
+  const counts: Record<string, number> = {};
+  for (const row of statusGroups) {
+    counts[row.status] = row._count._all;
+  }
+
+  return NextResponse.json({
+    items: rfqs,
+    total,
+    counts,
   });
-
-  return NextResponse.json(rfqs);
 }
 
 const createSchema = z.object({

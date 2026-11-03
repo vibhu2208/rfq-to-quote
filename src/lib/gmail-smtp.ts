@@ -1,5 +1,9 @@
 import nodemailer from "nodemailer";
 import { getMailboxUser, getMicrosoftGraphConfig } from "@/lib/mailbox";
+import {
+  normalizeOutboundEmailText,
+  plainTextToEmailHtml,
+} from "@/lib/email-text";
 import { sendOutlookEmail } from "@/lib/outlook-graph";
 
 export type EmailAttachment = {
@@ -71,13 +75,21 @@ export async function sendGmailEmail(
     auth: { user: config.user, pass: config.pass },
   });
 
+  const text = normalizeOutboundEmailText(input.text);
+  const html = input.html
+    ? normalizeOutboundEmailText(input.html)
+    : plainTextToEmailHtml(text);
+  const subject = normalizeOutboundEmailText(input.subject);
+
   const info = await transport.sendMail({
     from: `"${process.env.COMPANY_NAME || "QuoteFlow"}" <${config.user}>`,
     to: input.to,
     replyTo: input.replyTo || config.user,
-    subject: input.subject,
-    text: input.text,
-    html: input.html,
+    subject,
+    text,
+    html,
+    // Base64 avoids quoted-printable "=XX" artifacts on some recipients.
+    textEncoding: "base64",
     attachments: input.attachments?.map((a) => ({
       filename: a.filename,
       content: a.content,
