@@ -199,7 +199,7 @@ export function QuoteCalculator({ compact = false, className }: Props) {
     const width = rect.width;
     const height = rect.height;
 
-    function move(ev: PointerEvent) {
+    function move(ev: globalThis.PointerEvent) {
       const x = Math.min(window.innerWidth - width - 8, Math.max(8, ev.clientX - dx));
       const y = Math.min(window.innerHeight - 48, Math.max(8, ev.clientY - dy));
       setPos({ x, y });

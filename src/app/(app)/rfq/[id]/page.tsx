@@ -3598,17 +3598,20 @@ export default function RfqDetailPage() {
                               m.product.id
                             );
                             return (
-                              <li key={m.product.id}>
+                              <li
+                                key={m.product.id}
+                                className={`flex items-center gap-2 rounded-xl px-2.5 py-2 ${
+                                  chosen
+                                    ? "bg-mid-green/15 ring-1 ring-mid-green/30"
+                                    : "hover:bg-light-green/15"
+                                }`}
+                              >
                                 <button
                                   type="button"
                                   onClick={() =>
                                     toggleProductForLine(item.lineNumber, m.product.id)
                                   }
-                                  className={`flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition ${
-                                    chosen
-                                      ? "bg-mid-green/15 ring-1 ring-mid-green/30"
-                                      : "hover:bg-light-green/15"
-                                  }`}
+                                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
                                 >
                                   <span
                                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
@@ -3635,20 +3638,16 @@ export default function RfqDetailPage() {
                                       />
                                     </span>
                                   </span>
-                                  <span
-                                    className="shrink-0"
-                                    onClick={(event) => event.stopPropagation()}
-                                    onKeyDown={(event) => event.stopPropagation()}
-                                  >
-                                    <ProductLastPriceInput
-                                      productId={m.product.id}
-                                      value={m.product.lastPrice ?? m.product.offerPrice}
-                                      onSaved={(price) =>
-                                        applyProductPrice(m.product.id, price)
-                                      }
-                                    />
-                                  </span>
                                 </button>
+                                <div className="shrink-0">
+                                  <ProductLastPriceInput
+                                    productId={m.product.id}
+                                    value={m.product.lastPrice ?? m.product.offerPrice}
+                                    onSaved={(price) =>
+                                      applyProductPrice(m.product.id, price)
+                                    }
+                                  />
+                                </div>
                               </li>
                             );
                           })}
@@ -3705,13 +3704,16 @@ export default function RfqDetailPage() {
                 {matches.map((m) => {
                   const chosen = selected.has(m.product.id);
                   return (
-                    <li key={m.product.id}>
+                    <li
+                      key={m.product.id}
+                      className={`flex items-center gap-2 px-3 py-2.5 ${
+                        chosen ? "bg-mid-green/15" : "hover:bg-light-green/15"
+                      }`}
+                    >
                       <button
                         type="button"
                         onClick={() => toggleProduct(m.product.id)}
-                        className={`flex w-full items-center gap-2 px-3 py-2.5 text-left transition ${
-                          chosen ? "bg-mid-green/15" : "hover:bg-light-green/15"
-                        }`}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
                       >
                         <span
                           className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
@@ -3732,17 +3734,14 @@ export default function RfqDetailPage() {
                             {m.score > 0 ? `Score ${m.score}` : "Match"}
                           </span>
                         </span>
-                        <span
-                          className="shrink-0"
-                          onClick={(event) => event.stopPropagation()}
-                        >
-                          <ProductLastPriceInput
-                            productId={m.product.id}
-                            value={m.product.lastPrice ?? m.product.offerPrice}
-                            onSaved={(price) => applyProductPrice(m.product.id, price)}
-                          />
-                        </span>
                       </button>
+                      <div className="shrink-0">
+                        <ProductLastPriceInput
+                          productId={m.product.id}
+                          value={m.product.lastPrice ?? m.product.offerPrice}
+                          onSaved={(price) => applyProductPrice(m.product.id, price)}
+                        />
+                      </div>
                     </li>
                   );
                 })}
