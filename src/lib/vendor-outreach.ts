@@ -307,12 +307,27 @@ export async function previewVendorRecore(input: {
   if (!rfq) throw new Error("RFQ not found");
   if (!vendor || !vendor.active) throw new Error("Vendor not found");
 
-  let contacts =
+  type RecoreContact = {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+    role: string;
+    isPrimary: boolean;
+  };
+  let contacts: RecoreContact[] =
     vendor.contacts.length > 0
-      ? vendor.contacts.map((contact) => ({ ...contact }))
+      ? vendor.contacts.map((contact) => ({
+          id: contact.id,
+          name: contact.name || "",
+          email: contact.email || "",
+          phone: contact.phone || "",
+          role: contact.role || "",
+          isPrimary: contact.isPrimary,
+        }))
       : [];
   const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
-  const hasWaContact = contacts.some((contact) => Boolean(contact.phone?.trim()));
+  const hasWaContact = contacts.some((contact) => Boolean(contact.phone.trim()));
   if (vendorWa && !hasWaContact) {
     contacts = [
       ...contacts,
