@@ -1192,7 +1192,10 @@ export async function handleVendorReplyWhatsApp(input: {
     },
     references: undefined,
     inReplyTo: undefined,
-  } as ParsedMail;
+    attachments: [],
+    headers: new Map(),
+    headerLines: [],
+  } as unknown as ParsedMail;
 
   return handleVendorReplyEmail(synthetic);
 }
