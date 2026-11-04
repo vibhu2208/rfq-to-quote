@@ -1,20 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
-import {
-  matchProductsToRfq,
-  matchProductsToRfqItems,
-  flattenRequirementMatches,
-  extractKeywords,
-} from "@/lib/product-match";
-import { extractRfqItems } from "@/lib/rfq-items";
+import { matchRfqCatalogHybrid } from "@/lib/hybrid-catalog-match";
 
 type Params = { params: Promise<{ id: string }> };
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/** Deterministic catalog match from parsed RFQ — no AI. */
+/** Weighted catalog retrieval (top 20) + optional AI re-rank. */
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
@@ -35,14 +29,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
     rawText: rfq.rawText,
   };
 
-  const requirements = extractRfqItems(rfq.parsedSpecs, rfq.rawText);
-  const itemMatches = matchProductsToRfqItems(
-    products,
-    { ...input, parsedSpecs: { ...(rfq.parsedSpecs as object), items: requirements } },
-  );
-  const matches =
-    itemMatches.length > 0 ? flattenRequirementMatches(itemMatches) : matchProductsToRfq(products, input);
-  const keywords = extractKeywords(input);
+  const { keywords, requirements, itemMatches, matches, reranked } =
+    await matchRfqCatalogHybrid(products, input);
 
   return NextResponse.json({
     keywords,
@@ -50,5 +38,6 @@ export async function GET(_req: NextRequest, { params }: Params) {
     requirements,
     itemMatches,
     matches,
+    reranked,
   });
 }

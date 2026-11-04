@@ -285,7 +285,13 @@ function ThinkingBlock({ turn }: { turn: ChatTurn }) {
   );
 }
 
-export function AdminCopilot({ compact = false }: { compact?: boolean }) {
+export function AdminCopilot({
+  compact = false,
+  panel = false,
+}: {
+  compact?: boolean;
+  panel?: boolean;
+}) {
   const [messages, setMessages] = useState<ChatTurn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -298,8 +304,8 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
     getNarrowSnapshot,
     getNarrowServerSnapshot
   );
-  const [sidebarPinned, setSidebarPinned] = useState<boolean | null>(null);
-  const sidebarOpen = sidebarPinned ?? !isNarrow;
+  const [sidebarPinned, setSidebarPinned] = useState<boolean | null>(panel ? false : null);
+  const sidebarOpen = sidebarPinned ?? (!panel && !isNarrow);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -501,9 +507,11 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
   return (
     <div
       className={`relative flex min-h-0 overflow-hidden bg-background ${
-        compact
-          ? "h-[36rem] rounded-xl border border-dark-primary/8 shadow-[0_4px_20px_rgba(11,43,38,0.06)]"
-          : "h-full flex-1"
+        panel
+          ? "h-full"
+          : compact
+            ? "h-[36rem] rounded-xl border border-dark-primary/8 shadow-[0_4px_20px_rgba(11,43,38,0.06)]"
+            : "h-full flex-1"
       }`}
     >
       {sidebarOpen ? (
@@ -521,7 +529,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
         }`}
       >
         <div className="px-3 pt-3">
-          <p className="px-1 pb-3 text-sm font-semibold tracking-tight">Copilot</p>
+          <p className="px-1 pb-3 text-sm font-semibold tracking-tight">Quote Agent</p>
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -590,22 +598,47 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
       </aside>
 
       <section className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex shrink-0 items-center gap-2 border-b border-dark-primary/8 px-3 py-2.5">
-          <button
-            type="button"
-            onClick={() => setSidebarPinned((v) => !(v ?? !isNarrow))}
-            className="rounded-lg p-2 text-mid-green hover:bg-dark-primary/5"
-            aria-label="Toggle chats"
-          >
-            <PanelLeft className="h-4 w-4" />
-          </button>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-dark-primary">{chatTitle}</p>
-            <p className="truncate text-xs text-mid-green">
-              Live numbers from quotes, invoices, GST, and stock
+        {panel ? null : (
+          <header className="flex shrink-0 items-center gap-2 border-b border-dark-primary/8 px-3 py-2.5">
+            <button
+              type="button"
+              onClick={() => setSidebarPinned((v) => !(v ?? (!panel && !isNarrow)))}
+              className="rounded-lg p-2 text-mid-green hover:bg-dark-primary/5"
+              aria-label="Toggle chats"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-dark-primary">{chatTitle}</p>
+              <p className="truncate text-xs text-mid-green">
+                Live numbers from quotes, invoices, GST, and stock
+              </p>
+            </div>
+          </header>
+        )}
+        {panel ? (
+          <div className="flex shrink-0 items-center gap-1 border-b border-dark-primary/8 px-2 py-1.5">
+            <button
+              type="button"
+              onClick={() => setSidebarPinned((v) => !v)}
+              className="rounded-lg p-2 text-mid-green hover:bg-dark-primary/5"
+              aria-label="Toggle chats"
+            >
+              <PanelLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={newChat}
+              className="rounded-lg p-2 text-mid-green hover:bg-dark-primary/5"
+              aria-label="New chat"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <p className="min-w-0 flex-1 truncate px-1 text-xs font-medium text-dark-primary">
+              {chatTitle}
             </p>
           </div>
-        </header>
+        ) : null}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {empty ? (
@@ -613,8 +646,10 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
               <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-mid-green text-background">
                 <Sparkles className="h-6 w-6" strokeWidth={1.5} />
               </div>
-              <h2 className="text-2xl font-semibold tracking-tight">What can I help with?</h2>
-              <p className="mt-2 max-w-md text-sm text-mid-green">
+              <h2 className={`font-semibold tracking-tight ${panel ? "text-lg" : "text-2xl"}`}>
+                What can I help with?
+              </h2>
+              <p className={`mt-2 max-w-md text-mid-green ${panel ? "text-xs" : "text-sm"}`}>
                 Ask for live books, or tell it to draft or send a quote follow-up. Chats stay saved
                 on the left.
               </p>
@@ -695,7 +730,7 @@ export function AdminCopilot({ compact = false }: { compact?: boolean }) {
             </button>
           </form>
           <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-mid-green/80">
-            Copilot reads live company data. Enter to send, Shift+Enter for a new line.
+            Quote Agent reads live company data. Enter to send, Shift+Enter for a new line.
           </p>
         </div>
       </section>

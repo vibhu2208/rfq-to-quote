@@ -22,6 +22,111 @@ export function normalizeOutboundEmailText(value: string): string {
     .trimEnd();
 }
 
+function decodeBasicHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      // Skip invalid / private-use junk (e.g. &#1048958;)
+      if (!Number.isFinite(code) || code <= 0 || code > 0xffff) return "";
+      return String.fromCharCode(code);
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => {
+      const code = Number.parseInt(h, 16);
+      if (!Number.isFinite(code) || code <= 0 || code > 0xffff) return "";
+      return String.fromCharCode(code);
+    });
+}
+
+/**
+ * Convert HTML email bodies to plain text while keeping structure
+ * (paragraphs, line breaks, list items) — never flatten to one paragraph.
+ */
+export function htmlToPlainText(html: string): string {
+  if (!html) return "";
+  let text = String(html)
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    // Drop noisy blocks entirely
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    // Block / break tags → newlines
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|table|h[1-6]|section|article|header|footer|blockquote)>/gi, "\n")
+    .replace(/<(p|div|tr|h[1-6]|section|article|header|footer|blockquote)(\s[^>]*)?>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<\/(ul|ol)>/gi, "\n")
+    .replace(/<(ul|ol)[^>]*>/gi, "\n")
+    .replace(/<\/td>/gi, "\t")
+    .replace(/<hr[^>]*>/gi, "\n---\n")
+    // Remaining tags
+    .replace(/<[^>]+>/g, "");
+
+  text = decodeBasicHtmlEntities(text);
+  return normalizeOutboundEmailText(text)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+/** Prefer plain text; fall back to structured HTML→text (keeps line breaks). */
+export function emailBodyFromParts(text?: string | null, html?: string | null): string {
+  const plain = String(text || "").trim();
+  if (plain) {
+    // Legacy IMAP/HTML strip often left &nbsp; / &quot; in "plain" text.
+    return structureEmailBodyForDisplay(plain);
+  }
+  return htmlToPlainText(String(html || ""));
+}
+
+/**
+ * Decode entities + restore line structure for Thread/raw display.
+ * Handles legacy bodies flattened to one paragraph with literal &nbsp;.
+ */
+export function structureEmailBodyForDisplay(value: string): string {
+  let text = decodeBasicHtmlEntities(String(value || ""));
+  text = normalizeOutboundEmailText(text)
+    .replace(/\u00A0/g, " ")
+    .replace(/[ \t\f\v]+/g, " ")
+    .trim();
+  if (!text) return "";
+
+  // Already multi-line — just tidy (still run light list fixes below).
+  const hadNewlines = text.includes("\n");
+
+  // Bullets mid-paragraph
+  text = text.replace(/\s+[•●◦▪▫]\s+/g, "\n• ");
+
+  // Numbered RFQ lines: "1) Item" / "2. Item" — not decimals like 0.00
+  text = text.replace(/(?:^|\s+)(\d{1,2})[.)](?!\d)\s*/g, "\n$1. ");
+
+  // Quote-table leftovers jammed on one line: Qty : 1 Rate : 0.00
+  text = text.replace(/\s*Qty\s*:\s*/gi, "\n  Qty: ");
+  text = text.replace(/\s*Rate\s*:\s*/gi, "  Rate: ");
+
+  if (!hadNewlines) {
+    text = text.replace(
+      /\s+(?=(?:Dear\b|Hi\b|Hello\b|Respected\b|Good\s+(?:morning|afternoon|evening)\b|Regards\b|Thanks\b|Thank you\b|Best regards\b|Warm regards\b|Sincerely\b|Subject:|From:|Sent:|To:))/gi,
+      "\n\n"
+    );
+  }
+
+  return text
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Plain-text body as simple UTF-8 HTML so Graph/Outlook render it cleanly. */
 export function plainTextToEmailHtml(text: string): string {
   const normalized = normalizeOutboundEmailText(text);

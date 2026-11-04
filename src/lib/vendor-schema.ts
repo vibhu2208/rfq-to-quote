@@ -1,5 +1,18 @@
 import { z } from "zod";
-import { PRODUCT_CATEGORIES } from "@/lib/categories";
+import { PRODUCT_CATEGORIES, UNCATEGORIZED_CATEGORY } from "@/lib/categories";
+
+const LEGACY_CATEGORY_MAP: Record<string, string> = {
+  "CCTV & Surveillance": "CCTV",
+  "Computers & Laptops": "DESKTOP",
+  "Monitors & Displays": "TFT",
+  "Storage (HDD / SSD)": "HDD",
+  "Memory (RAM)": "RAM",
+  "Networking & Cables": "NETWORKING",
+  "UPS & Power": "UPS",
+  "Installation & Service": "Services",
+  "General / Uncategorized": UNCATEGORIZED_CATEGORY,
+  "Printers & Scanners": "PRINTER",
+};
 
 export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
 
@@ -15,6 +28,11 @@ export const vendorContactSchema = z.object({
   phone: z.string().trim().optional().default(""),
   role: z.string().trim().optional().default(""),
   isPrimary: z.boolean().optional().default(false),
+  /** Scope POC to an existing VendorCategory row. */
+  vendorCategoryId: z.string().trim().optional().nullable().default(null),
+  /** Resolve-on-save when vendorCategoryId is not known yet (Admin mapping). */
+  category: z.string().trim().optional().default(""),
+  subcategory: z.string().trim().optional().default(""),
 });
 
 export const vendorInputSchema = z
@@ -88,6 +106,12 @@ export function serializeVendorContacts(
     phone?: string | null;
     role?: string | null;
     isPrimary?: boolean;
+    vendorCategoryId?: string | null;
+    vendorCategory?: {
+      id?: string;
+      category?: string | null;
+      subcategory?: string | null;
+    } | null;
   }> | undefined,
   fallback?: { name?: string; email?: string | null; phone?: string | null }
 ) {
@@ -98,6 +122,9 @@ export function serializeVendorContacts(
     phone: String(contact.phone || "").trim(),
     role: String(contact.role || "").trim(),
     isPrimary: Boolean(contact.isPrimary),
+    vendorCategoryId: contact.vendorCategoryId || contact.vendorCategory?.id || null,
+    category: String(contact.vendorCategory?.category || "").trim(),
+    subcategory: String(contact.vendorCategory?.subcategory || "").trim(),
   }));
   if (rows.length > 0) return rows;
   const email = String(fallback?.email || "").trim();
@@ -110,8 +137,35 @@ export function serializeVendorContacts(
       phone,
       role: "",
       isPrimary: true,
+      vendorCategoryId: null as string | null,
+      category: "",
+      subcategory: "",
     },
   ];
+}
+
+/** Match a contact to a VendorCategory id using explicit id or category/subcategory keys. */
+export function resolveVendorCategoryId(
+  contact: {
+    vendorCategoryId?: string | null;
+    category?: string | null;
+    subcategory?: string | null;
+  },
+  categories: Array<{ id: string; category: string; subcategory: string }>
+): string | null {
+  if (contact.vendorCategoryId) {
+    const byId = categories.find((row) => row.id === contact.vendorCategoryId);
+    if (byId) return byId.id;
+  }
+  const category = normalizeVendorCategory(String(contact.category || "").trim());
+  if (!category) return null;
+  const subcategory = String(contact.subcategory || "").trim();
+  const match = categories.find(
+    (row) =>
+      normalizeVendorCategory(row.category) === category &&
+      String(row.subcategory || "").trim() === subcategory
+  );
+  return match?.id || null;
 }
 
 export function serializeVendor<T extends {
@@ -127,6 +181,12 @@ export function serializeVendor<T extends {
     phone?: string | null;
     role?: string | null;
     isPrimary?: boolean;
+    vendorCategoryId?: string | null;
+    vendorCategory?: {
+      id?: string;
+      category?: string | null;
+      subcategory?: string | null;
+    } | null;
   }>;
   productHistory?: Array<{ lastPrice: unknown }>;
 }>(vendor: T) {

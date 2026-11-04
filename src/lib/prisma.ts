@@ -1,6 +1,21 @@
 import { PrismaClient } from "@prisma/client";
 
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient | undefined };
+/** Bump when schema relations change so dev HMR drops a stale PrismaClient. */
+const PRISMA_CLIENT_VERSION = "admin-subcategory-v1";
+
+const globalForPrisma = globalThis as unknown as {
+  prisma: PrismaClient | undefined;
+  prismaVersion?: string;
+};
+
+if (
+  process.env.NODE_ENV !== "production" &&
+  globalForPrisma.prisma &&
+  globalForPrisma.prismaVersion !== PRISMA_CLIENT_VERSION
+) {
+  void globalForPrisma.prisma.$disconnect().catch(() => undefined);
+  globalForPrisma.prisma = undefined;
+}
 
 export const prisma =
   globalForPrisma.prisma ??
@@ -10,4 +25,5 @@ export const prisma =
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
+  globalForPrisma.prismaVersion = PRISMA_CLIENT_VERSION;
 }

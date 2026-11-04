@@ -1,4 +1,9 @@
-import { PRODUCT_CATEGORIES, PARSE_CONFIDENCE_THRESHOLD } from "@/lib/categories";
+import {
+  PRODUCT_CATEGORIES,
+  PARSE_CONFIDENCE_THRESHOLD,
+  UNCATEGORIZED_CATEGORY,
+} from "@/lib/categories";
+import { looksLikePromotionalEmail } from "@/lib/inbound-requirement";
 import { resolveParsedItems } from "@/lib/rfq-items";
 
 export type ParsedRfqItem = {
@@ -86,7 +91,9 @@ Rules:
 - Prefer the closest category from the list; use "General / Uncategorized" only if nothing fits.
 - Do not invent prices or product codes.
 - Keep each item "description" in the customer's original wording. Do not rename it to a catalog, SKU, or brand-model name.
+- If the message is marketing, promotional, newsletter, SaaS product update, digest, bank alert, or "unsubscribe" mail (not a buyer asking for a quote), set confidence <= 0.2, items: [], and specs.description null.
 - confidence < ${PARSE_CONFIDENCE_THRESHOLD} if the message is vague or not a purchase request.
+- Only high confidence when a real buyer is requesting products/services with quote intent (RFQ, quotation, qty, purchase need).
 
 Example input:
 "quotation for the following products:
@@ -143,7 +150,11 @@ ${rawText}`;
       ? parsed.productCategory
       : "General / Uncategorized";
 
-  const confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
+  let confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
+  // Hard clamp: promo/newsletter text must never land as a high-confidence RFQ.
+  if (looksLikePromotionalEmail({ subject, text: rawText })) {
+    confidence = Math.min(confidence, 0.2);
+  }
   const specs = (parsed.specs && typeof parsed.specs === "object" ? parsed.specs : {}) as ParsedRfqSpecs;
 
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];

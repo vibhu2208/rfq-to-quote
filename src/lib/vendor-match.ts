@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { extractKeywords, tokenize, tokensLooselyMatch } from "@/lib/product-match";
-import { normalizeProductKey } from "@/lib/product-key";
+import {
+  isSpecificProductKey,
+  normalizeProductKey,
+} from "@/lib/product-key";
 import { decimalToNumber } from "@/lib/quotes";
 import {
   extractRfqItems,
@@ -33,6 +36,7 @@ export type VendorContactMatch = {
   phone: string;
   role: string;
   isPrimary: boolean;
+  vendorCategoryId?: string | null;
 };
 
 export type VendorMatch = {
@@ -60,7 +64,12 @@ export type VendorMatch = {
 
 function categoriesEqual(a?: string | null, b?: string | null): boolean {
   if (!a || !b) return false;
-  if (a === "General / Uncategorized" || b === "General / Uncategorized") {
+  if (
+    a === "Misc" ||
+    b === "Misc" ||
+    a === "General / Uncategorized" ||
+    b === "General / Uncategorized"
+  ) {
     return false;
   }
   return a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -114,6 +123,7 @@ function itemProductKey(
 }
 
 type CategoryScore = {
+  vendorCategoryId: string;
   category: string;
   subcategory: string;
   matchedKeywords: string[];
@@ -122,6 +132,7 @@ type CategoryScore = {
 
 function scoreVendorCategoryForItem(input: {
   vendorCategory: {
+    id: string;
     category: string;
     subcategory: string;
     keywords: unknown;
@@ -137,6 +148,7 @@ function scoreVendorCategoryForItem(input: {
   // Require exact category when the RFQ/item has a real category.
   if (
     targetCategory &&
+    targetCategory !== "Misc" &&
     targetCategory !== "General / Uncategorized" &&
     !exactCategory
   ) {
@@ -173,11 +185,76 @@ function scoreVendorCategoryForItem(input: {
   if (score <= 0) return null;
 
   return {
+    vendorCategoryId: vendorCategory.id,
     category: vendorCategory.category,
     subcategory: vendorCategory.subcategory,
     matchedKeywords,
     score,
   };
+}
+
+function contactsForMatchedCategory(
+  vendor: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    whatsappId: string | null;
+    contacts: Array<{
+      id: string;
+      name: string;
+      email: string;
+      phone: string;
+      role: string;
+      isPrimary: boolean;
+      vendorCategoryId: string | null;
+    }>;
+  },
+  vendorCategoryId: string
+): VendorContactMatch[] {
+  const scoped = vendor.contacts.filter(
+    (contact) => contact.vendorCategoryId === vendorCategoryId
+  );
+  const general = vendor.contacts.filter((contact) => !contact.vendorCategoryId);
+  const preferred = scoped.length > 0 ? scoped : general.length > 0 ? general : vendor.contacts;
+
+  const mapped =
+    preferred.length > 0
+      ? preferred.map((contact) => ({
+          id: contact.id,
+          name: contact.name || "",
+          email: contact.email || "",
+          phone: contact.phone || "",
+          role: contact.role || "",
+          isPrimary: contact.isPrimary,
+          vendorCategoryId: contact.vendorCategoryId,
+        }))
+      : [];
+
+  const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
+  const hasPhone = mapped.some((contact) => Boolean(contact.phone));
+  if (vendorWa && !hasPhone) {
+    mapped.push({
+      id: `vendor-${vendor.id}-wa`,
+      name: vendor.name,
+      email: vendor.email || "",
+      phone: vendorWa,
+      role: "WhatsApp",
+      isPrimary: mapped.length === 0,
+      vendorCategoryId: null,
+    });
+  } else if (mapped.length === 0 && (vendor.email || vendorWa)) {
+    mapped.push({
+      id: `vendor-${vendor.id}`,
+      name: vendor.name,
+      email: vendor.email || "",
+      phone: vendorWa,
+      role: "",
+      isPrimary: true,
+      vendorCategoryId: null,
+    });
+  }
+  return mapped;
 }
 
 /**
@@ -228,7 +305,9 @@ export async function matchVendorsToRfq(
         .map((line) => line.category)
         .filter(
           (category): category is string =>
-            Boolean(category) && category !== "General / Uncategorized"
+            Boolean(category) &&
+            category !== "Misc" &&
+            category !== "General / Uncategorized"
         )
     ),
   ];
@@ -282,9 +361,15 @@ export async function matchVendorsToRfq(
 
       if (!bestForLine) continue;
 
-      const history = vendor.productHistory.find(
-        (row) => row.productKey === line.productKey
-      );
+      // Only reuse last-quoted prices when the product key is specific
+      // (e.g. printer-samsung-m2876nd). Broad keys like "printers" / "general"
+      // must not invent a cost for a first-time SKU.
+      const history =
+        isSpecificProductKey(line.productKey)
+          ? vendor.productHistory.find(
+              (row) => row.productKey === line.productKey
+            )
+          : undefined;
       const unitPrice = history ? decimalToNumber(history.lastPrice) : null;
       const quantity = line.item.quantity || 1;
       const lineQuote: VendorLineQuote = {
@@ -307,41 +392,7 @@ export async function matchVendorsToRfq(
             email: vendor.email || "",
             whatsappId: vendor.whatsappId || "",
             preferredChannel: vendor.preferredChannel,
-            contacts: (() => {
-              const mapped =
-                vendor.contacts.length > 0
-                  ? vendor.contacts.map((contact) => ({
-                      id: contact.id,
-                      name: contact.name || "",
-                      email: contact.email || "",
-                      phone: contact.phone || "",
-                      role: contact.role || "",
-                      isPrimary: contact.isPrimary,
-                    }))
-                  : [];
-              const vendorWa = (vendor.whatsappId || vendor.phone || "").trim();
-              const hasPhone = mapped.some((contact) => Boolean(contact.phone));
-              if (vendorWa && !hasPhone) {
-                mapped.push({
-                  id: `vendor-${vendor.id}-wa`,
-                  name: vendor.name,
-                  email: vendor.email || "",
-                  phone: vendorWa,
-                  role: "WhatsApp",
-                  isPrimary: mapped.length === 0,
-                });
-              } else if (mapped.length === 0 && (vendor.email || vendorWa)) {
-                mapped.push({
-                  id: `vendor-${vendor.id}`,
-                  name: vendor.name,
-                  email: vendor.email || "",
-                  phone: vendorWa,
-                  role: "",
-                  isPrimary: true,
-                });
-              }
-              return mapped;
-            })(),
+            contacts: contactsForMatchedCategory(vendor, bestForLine.vendorCategoryId),
           },
           bestCategory: bestForLine,
           matchedLines: [lineQuote],
@@ -360,6 +411,10 @@ export async function matchVendorsToRfq(
         }
         if (bestForLine.score > existing.bestCategory.score) {
           existing.bestCategory = bestForLine;
+          existing.vendor.contacts = contactsForMatchedCategory(
+            vendor,
+            bestForLine.vendorCategoryId
+          );
         }
         if (
           history?.lastQuotedAt &&

@@ -192,6 +192,27 @@ export function outlookMessageToParsedMail(msg: OutlookMessage): ParsedMail {
     ? referencesRaw.split(/\s+/).filter(Boolean)
     : [];
 
+  // Preserve bulk/promo headers so inbox ingest can skip non-RFQ mail.
+  const headers = new Map<string, string>();
+  for (const header of msg.internetMessageHeaders || []) {
+    const key = (header.name || "").trim().toLowerCase();
+    const value = (header.value || "").trim();
+    if (!key || !value) continue;
+    if (
+      key === "list-unsubscribe" ||
+      key === "precedence" ||
+      key === "auto-submitted" ||
+      key === "x-campaign" ||
+      key === "x-campaign-id" ||
+      key === "x-mailgun-campaign-id" ||
+      key === "x-sg-eid" ||
+      key === "in-reply-to" ||
+      key === "references"
+    ) {
+      headers.set(key, value);
+    }
+  }
+
   return {
     messageId: (msg.internetMessageId || msg.id || "").trim(),
     subject: msg.subject || "",
@@ -204,7 +225,7 @@ export function outlookMessageToParsedMail(msg: OutlookMessage): ParsedMail {
     text: isHtml ? "" : content,
     html: isHtml ? content : "",
     attachments: [],
-    headers: new Map(),
+    headers,
     headerLines: [],
   } as unknown as ParsedMail;
 }

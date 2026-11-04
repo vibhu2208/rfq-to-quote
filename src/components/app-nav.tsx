@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   BookMarked,
   BookOpen,
@@ -15,10 +16,10 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
-  MessageCircle,
+  NotebookTabs,
   Package,
   Receipt,
-  Sparkles,
+  Settings2,
   Truck,
   Users,
   Warehouse,
@@ -34,19 +35,21 @@ type NavItem = {
 const overview: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: Inbox },
-  { href: "/copilot", label: "Copilot", icon: Sparkles },
 ];
 
 const sales: NavItem[] = [
   { href: "/quotes", label: "Quotes", icon: FileText },
   { href: "/proformas", label: "Proformas", icon: ClipboardList },
   { href: "/invoices", label: "Invoices", icon: Receipt },
+];
+
+const ledger: NavItem[] = [
   { href: "/clients", label: "Clients", icon: Users },
+  { href: "/vendors", label: "Vendors", icon: Truck },
 ];
 
 const operations: NavItem[] = [
   { href: "/products", label: "Products", icon: Package },
-  { href: "/vendors", label: "Vendors", icon: Truck },
   { href: "/inventory", label: "Inventory", icon: Warehouse },
   { href: "/knowledge", label: "Knowledge", icon: BookMarked },
 ];
@@ -56,19 +59,26 @@ const finance: NavItem[] = [
   { href: "/gst", label: "GST", icon: Landmark },
 ];
 
+const admin: NavItem[] = [
+  { href: "/admin/vendors", label: "Vendor mapping", icon: Settings2 },
+];
+
 const desktopLinks: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/inbox", label: "Inbox", icon: Inbox },
   ...sales,
   ...operations,
   ...finance,
+  ...admin,
 ];
 
 const groups = [
   { title: "Overview", items: overview },
   { title: "Sales", items: sales },
+  { title: "Ledger", items: ledger },
   { title: "Operations", items: operations },
   { title: "Finance", items: finance },
+  { title: "Admin", items: admin },
 ];
 
 function isActive(pathname: string, href: string) {
@@ -77,6 +87,10 @@ function isActive(pathname: string, href: string) {
     pathname.startsWith(`${href}/`) ||
     (href === "/inbox" && pathname.startsWith("/rfq/"))
   );
+}
+
+function isLedgerActive(pathname: string) {
+  return ledger.some((item) => isActive(pathname, item.href));
 }
 
 function initialsFromEmail(email?: string | null) {
@@ -100,7 +114,6 @@ function NavLink({
 }) {
   const active = isActive(pathname, item.href);
   const Icon = item.icon;
-  const featured = item.href === "/copilot";
 
   return (
     <Link
@@ -111,14 +124,168 @@ function NavLink({
       } ${
         active
           ? "bg-background/15 text-background shadow-[inset_0_0_0_1px_rgba(245,241,232,0.08)]"
-          : featured
-            ? "text-background/90 hover:bg-background/10"
-            : "text-light-green hover:bg-background/10 hover:text-background"
+          : "text-light-green hover:bg-background/10 hover:text-background"
       }`}
     >
       <Icon className={compact ? "h-4 w-4" : "h-3.5 w-3.5"} strokeWidth={1.6} />
       {item.label}
     </Link>
+  );
+}
+
+function LedgerDropdown({
+  pathname,
+  onNavigate,
+}: {
+  pathname: string;
+  onNavigate?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
+  const active = isLedgerActive(pathname);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  function clearCloseTimer() {
+    if (closeTimer.current != null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }
+
+  function updatePosition() {
+    const button = buttonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    setMenuPos({
+      top: rect.bottom + 6,
+      left: Math.max(8, rect.left),
+    });
+  }
+
+  function openMenu() {
+    clearCloseTimer();
+    updatePosition();
+    setOpen(true);
+  }
+
+  function scheduleClose() {
+    clearCloseTimer();
+    closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+  }
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+    function onReposition() {
+      updatePosition();
+    }
+    window.addEventListener("resize", onReposition);
+    window.addEventListener("scroll", onReposition, true);
+    return () => {
+      window.removeEventListener("resize", onReposition);
+      window.removeEventListener("scroll", onReposition, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointer(e: MouseEvent) {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+      clearCloseTimer();
+    };
+  }, [open]);
+
+  const menu =
+    mounted && open
+      ? createPortal(
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ top: menuPos.top, left: menuPos.left }}
+            className="fixed z-[100] min-w-[12rem] overflow-hidden rounded-xl border border-dark-primary/10 bg-white py-1 text-dark-primary shadow-[0_12px_40px_rgba(11,43,38,0.22)]"
+            onMouseEnter={openMenu}
+            onMouseLeave={scheduleClose}
+          >
+            {ledger.map((item) => {
+              const Icon = item.icon;
+              const itemActive = isActive(pathname, item.href);
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    onNavigate?.();
+                  }}
+                  className={`flex items-center gap-2 px-3 py-2.5 text-sm transition ${
+                    itemActive
+                      ? "bg-dark-primary/8 font-medium text-dark-primary"
+                      : "text-dark-primary/90 hover:bg-dark-primary/5"
+                  }`}
+                >
+                  <Icon className="h-4 w-4 text-mid-green" strokeWidth={1.6} />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>,
+          document.body
+        )
+      : null;
+
+  return (
+    <div
+      className="relative shrink-0"
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          openMenu();
+        }}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] transition ${
+          active || open
+            ? "bg-background/15 text-background shadow-[inset_0_0_0_1px_rgba(245,241,232,0.08)]"
+            : "text-light-green hover:bg-background/10 hover:text-background"
+        }`}
+      >
+        <NotebookTabs className="h-3.5 w-3.5" strokeWidth={1.6} />
+        Ledger
+        <ChevronDown
+          className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`}
+          strokeWidth={1.8}
+        />
+      </button>
+      {menu}
+    </div>
   );
 }
 
@@ -160,6 +327,9 @@ export function AppNav({ email: userEmail }: { email: string }) {
     };
   }, [mobileOpen]);
 
+  // Insert Ledger after Invoices (end of sales cluster) on desktop.
+  const ledgerInsertAfter = "/invoices";
+
   return (
     <header className="sticky top-0 z-40 shrink-0 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
       <div className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
@@ -179,25 +349,18 @@ export function AppNav({ email: userEmail }: { email: string }) {
           <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] lg:flex [&::-webkit-scrollbar]:hidden">
+        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-visible lg:flex">
           {desktopLinks.map((item) => (
-            <NavLink key={item.href} item={item} pathname={pathname} />
+            <span key={item.href} className="contents">
+              <NavLink item={item} pathname={pathname} />
+              {item.href === ledgerInsertAfter ? (
+                <LedgerDropdown pathname={pathname} />
+              ) : null}
+            </span>
           ))}
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Link
-            href="/copilot"
-            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[13px] font-medium sm:px-3 ${
-              isActive(pathname, "/copilot")
-                ? "bg-light-green text-dark-primary"
-                : "bg-mid-green text-background hover:bg-light-green hover:text-dark-primary"
-            }`}
-          >
-            <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.7} />
-            <span className="hidden sm:inline">Copilot</span>
-          </Link>
-
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"

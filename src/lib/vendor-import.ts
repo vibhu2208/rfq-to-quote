@@ -93,6 +93,9 @@ function rowToVendor(row: SourceRow): VendorInput {
               phone,
               role: "",
               isPrimary: true,
+              vendorCategoryId: null,
+              category: "",
+              subcategory: "",
             },
           ]
         : [],

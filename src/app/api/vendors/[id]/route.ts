@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { serializeVendor, vendorInputSchema } from "@/lib/vendor-schema";
+import { replaceVendorWithRelations } from "@/lib/vendor-persist";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -14,7 +15,10 @@ export async function GET(_request: NextRequest, { params }: Params) {
     where: { id },
     include: {
       categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
-      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
+      contacts: {
+        orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
+        include: { vendorCategory: true },
+      },
       productHistory: { orderBy: { lastQuotedAt: "desc" } },
     },
   });
@@ -34,42 +38,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const data = parsed.data;
   try {
-    const vendor = await prisma.$transaction(async (transaction) => {
-      await transaction.vendorCategory.deleteMany({ where: { vendorId: id } });
-      await transaction.vendorContact.deleteMany({ where: { vendorId: id } });
-      return transaction.vendor.update({
-        where: { id },
-        data: {
-          name: data.name,
-          phone: data.phone || null,
-          email: data.email || null,
-          whatsappId: data.whatsappId || null,
-          preferredChannel: data.preferredChannel,
-          active: data.active,
-          categories: {
-            create: data.categories.map((category) => ({
-              category: category.category,
-              subcategory: category.subcategory,
-              keywords: category.keywords,
-            })),
-          },
-          contacts: {
-            create: data.contacts
-              .filter((contact) => contact.name || contact.email || contact.phone)
-              .map((contact, index) => ({
-                name: contact.name,
-                email: contact.email,
-                phone: contact.phone,
-                role: contact.role,
-                isPrimary: contact.isPrimary || index === 0,
-              })),
-          },
-        },
-        include: { categories: true, contacts: true, productHistory: true },
-      });
-    });
+    const vendor = await replaceVendorWithRelations(id, parsed.data);
     return NextResponse.json(serializeVendor(vendor));
   } catch {
     return NextResponse.json({ error: "Vendor update failed" }, { status: 400 });
@@ -84,7 +54,11 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
   const vendor = await prisma.vendor.update({
     where: { id },
     data: { active: false },
-    include: { categories: true, contacts: true, productHistory: true },
+    include: {
+      categories: true,
+      contacts: { include: { vendorCategory: true } },
+      productHistory: true,
+    },
   });
   return NextResponse.json(serializeVendor(vendor));
 }

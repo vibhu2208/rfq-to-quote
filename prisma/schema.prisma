@@ -386,6 +386,8 @@ model QuoteLineItem {
 
 model Vendor {
   id               String                 @id @default(cuid())
+  /// Linked client master row when this vendor came from Party.isVendor
+  partyId          String?                @unique
   name             String
   phone            String?
   email            String?
@@ -395,6 +397,7 @@ model Vendor {
   createdAt        DateTime               @default(now())
   updatedAt        DateTime               @updatedAt
 
+  party          Party?                 @relation(fields: [partyId], references: [id], onDelete: SetNull)
   categories     VendorCategory[]
   contacts       VendorContact[]
   productHistory VendorProductHistory[]
@@ -407,21 +410,26 @@ model Vendor {
 }
 
 /// Point of contact at a vendor — Recore can email one or many.
+/// Optional vendorCategoryId scopes the POC to a department (category/subcategory).
 model VendorContact {
-  id        String   @id @default(cuid())
-  vendorId  String
-  name      String   @default("")
-  email     String   @default("")
-  phone     String   @default("")
-  role      String   @default("")
-  isPrimary Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(cuid())
+  vendorId         String
+  name             String   @default("")
+  email            String   @default("")
+  phone            String   @default("")
+  role             String   @default("")
+  isPrimary        Boolean  @default(false)
+  /// Null = company-level POC; set = department POC for that VendorCategory.
+  vendorCategoryId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor         Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendorCategory VendorCategory? @relation(fields: [vendorCategoryId], references: [id], onDelete: SetNull)
 
   @@index([vendorId])
   @@index([email])
+  @@index([vendorCategoryId])
 }
 
 model VendorCategory {
@@ -431,11 +439,24 @@ model VendorCategory {
   subcategory String @default("")
   keywords    Json   @default("[]")
 
-  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor   Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  contacts VendorContact[]
 
   @@unique([vendorId, category, subcategory])
   @@index([category])
   @@index([vendorId])
+}
+
+/// Admin-defined subcategory labels that persist even before vendors are mapped.
+model AdminSubcategory {
+  id          String   @id @default(cuid())
+  category    String
+  subcategory String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([category, subcategory])
+  @@index([category])
 }
 
 model VendorProductHistory {
@@ -1078,6 +1099,7 @@ model Party {
   gstRegistration   GSTRegistration?   @relation(fields: [gstRegistrationId], references: [id], onDelete: SetNull)
   addresses         Address[]
   contacts          PartyContact[]
+  vendor            Vendor?
   proformaInvoices  ProformaInvoice[]
   invoices          Invoice[]
   creditDebitNotes  CreditDebitNote[]
@@ -1089,6 +1111,7 @@ model Party {
   @@index([organisationId, legalName])
   @@index([gstin])
   @@index([ledgerGroup])
+  @@index([isVendor])
 }
 
 model Address {

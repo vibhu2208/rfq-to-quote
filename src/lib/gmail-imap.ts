@@ -17,6 +17,8 @@ import {
   outlookMessageToParsedMail,
   searchOutlookMessages,
 } from "@/lib/outlook-graph";
+import { emailLooksLikeRequirement } from "@/lib/inbound-requirement";
+import { emailBodyFromParts } from "@/lib/email-text";
 
 export type PolledEmail = {
   messageId: string;
@@ -95,7 +97,7 @@ async function ingestInboundEmail(
   fallbackMessageId: string,
   attachmentNames?: Array<{ name: string; contentType?: string }>
 ): Promise<{
-  kind: "vendor" | "quote" | "empty" | "duplicate" | "rfq";
+  kind: "vendor" | "quote" | "empty" | "duplicate" | "not_requirement" | "rfq";
   rfq?: { id: string; status: string; subject: string; fromEmail: string };
 }> {
   const vendorReply = await handleVendorReplyEmail(parsed);
@@ -109,9 +111,7 @@ async function ingestInboundEmail(
     typeof fromRaw === "string" ? fromRaw : String(fromRaw)
   );
   const subject = parsed.subject || "(no subject)";
-  const text =
-    (parsed.text || "").trim() ||
-    (parsed.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const text = emailBodyFromParts(parsed.text, parsed.html);
   const messageId = (parsed.messageId || fallbackMessageId)
     .replace(/[<>]/g, "")
     .slice(0, 240);
@@ -123,6 +123,19 @@ async function ingestInboundEmail(
     select: { id: true },
   });
   if (existing) return { kind: "duplicate" };
+
+  // Only product / RFQ requirement mail becomes an inbox RFQ.
+  // Promo, newsletter, and bulk Microsoft marketing mail are skipped.
+  if (
+    !emailLooksLikeRequirement({
+      subject,
+      text,
+      fromEmail,
+      headers: parsed.headers ?? null,
+    })
+  ) {
+    return { kind: "not_requirement" };
+  }
 
   const attachments =
     attachmentNames ||
@@ -156,7 +169,7 @@ async function ingestInboundEmail(
 /**
  * Fetch unread INBOX messages from the configured mailbox.
  * Outlook uses Microsoft Graph; Gmail still uses IMAP when Graph is not set.
- * Every unmatched message becomes an RFQ after AI parse + vendor matching on the UI.
+ * Only requirement-like mail becomes an RFQ (promo/newsletters are skipped).
  * By default, the first poll starts from the newest current email so old unread
  * mail does not flood the RFQ inbox.
  */

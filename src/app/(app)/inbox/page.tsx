@@ -162,7 +162,7 @@ export default function InboxPage() {
         parts.push(`Outlook · ${email.error}`);
       } else {
         parts.push(
-          `Outlook · fetched ${email?.fetched ?? data.fetched ?? 0} · RFQs ${email?.created ?? 0} · vendor ${email?.vendorReplies ?? data.vendorReplies ?? 0} · quote ${email?.quoteReplies ?? data.quoteReplies ?? 0}`
+          `Outlook · fetched ${email?.fetched ?? data.fetched ?? 0} · RFQs ${email?.created ?? 0} · skipped ${email?.skipped ?? data.skipped ?? 0} (requirements only) · vendor ${email?.vendorReplies ?? data.vendorReplies ?? 0} · quote ${email?.quoteReplies ?? data.quoteReplies ?? 0}`
         );
       }
       if (whatsapp) {

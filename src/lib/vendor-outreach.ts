@@ -1,7 +1,7 @@
 import type { ParsedMail } from "mailparser";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { normalizeOutboundEmailText } from "@/lib/email-text";
+import { emailBodyFromParts, normalizeOutboundEmailText } from "@/lib/email-text";
 import { sendGmailEmail } from "@/lib/gmail-smtp";
 import {
   normalizeWhatsAppNumber,
@@ -127,10 +127,7 @@ function collectReferenceIds(parsed: ParsedMail): string[] {
 }
 
 function emailBody(parsed: ParsedMail): string {
-  return (
-    (parsed.text || "").trim() ||
-    (parsed.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
-  );
+  return emailBodyFromParts(parsed.text, parsed.html);
 }
 
 /** Set outreach status via SQL so new enum values work even if the Prisma engine is stale. */

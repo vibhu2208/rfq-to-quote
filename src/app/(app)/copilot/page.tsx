@@ -1,9 +1,6 @@
-import { AdminCopilot } from "@/components/admin-copilot";
+import { redirect } from "next/navigation";
 
+/** Copilot lives in the floating Quote Agent — keep this route as a friendly redirect. */
 export default function CopilotPage() {
-  return (
-    <div className="relative left-1/2 flex min-h-0 w-screen max-w-[100vw] flex-1 -translate-x-1/2 flex-col overflow-hidden -my-8">
-      <AdminCopilot />
-    </div>
-  );
+  redirect("/dashboard");
 }

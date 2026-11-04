@@ -2,10 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { nextQuoteNumber, decimalToNumber } from "@/lib/quotes";
 import { catalogSellPrice, resolveQuoteUnitPrice } from "@/lib/product-price";
 import { extractRfqItems } from "@/lib/rfq-items";
-import {
-  matchProductsToRfq,
-  matchProductsToRfqItems,
-} from "@/lib/product-match";
+import { matchProductsToRfqItems } from "@/lib/product-match";
+import { matchRfqCatalogHybrid } from "@/lib/hybrid-catalog-match";
 import {
   quoteLinePresentation,
   requirementForProduct,
@@ -297,13 +295,13 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
     rawText: rfq.rawText,
   };
 
-  const itemMatches = matchProductsToRfqItems(products, input);
+  const { itemMatches, matches: overall } = await matchRfqCatalogHybrid(products, input);
   const lines: QuoteFromRfqLine[] = [];
   const used = new Set<string>();
 
   for (const item of itemMatches) {
     const top = item.matches[0];
-    if (!top || top.score < 6 || used.has(top.product.id)) continue;
+    if (!top || used.has(top.product.id)) continue;
     used.add(top.product.id);
     lines.push({
       productId: top.product.id,
@@ -313,14 +311,11 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
     });
   }
 
-  if (lines.length === 0) {
-    const overall = matchProductsToRfq(products, input, 5);
+  if (lines.length === 0 && overall[0]) {
     const specs = rfq.parsedSpecs as Record<string, unknown> | null;
     const defaultQty =
       typeof specs?.quantity === "number" && specs.quantity > 0 ? specs.quantity : 1;
-    if (overall[0]) {
-      lines.push({ productId: overall[0].product.id, qty: defaultQty });
-    }
+    lines.push({ productId: overall[0].product.id, qty: defaultQty });
   }
 
   return lines;

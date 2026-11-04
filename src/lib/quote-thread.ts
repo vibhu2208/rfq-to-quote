@@ -18,6 +18,7 @@ import {
   stripQuotedHistory,
   stripCompanySignature,
 } from "@/lib/ai/knowledge";
+import { emailBodyFromParts } from "@/lib/email-text";
 
 const QUOTE_NUMBER_RE = /\b(Q-\d{4}-\d+)\b/i;
 const QREF_RE = /\[QREF[:\-]([^\]]+)\]/i;
@@ -61,10 +62,7 @@ function collectReferenceIds(parsed: ParsedMail): string[] {
 }
 
 function emailBody(parsed: ParsedMail): string {
-  return (
-    (parsed.text || "").trim() ||
-    (parsed.html || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()
-  );
+  return emailBodyFromParts(parsed.text, parsed.html);
 }
 
 export function extractQuoteNumberFromText(...parts: string[]): string | null {

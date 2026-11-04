@@ -140,6 +140,8 @@ export async function GET(req: NextRequest) {
                 { gstin: { startsWith: q, mode: "insensitive" } },
                 { sourceClientId: { startsWith: q, mode: "insensitive" } },
                 { managedByName: { contains: q, mode: "insensitive" } },
+                { email: { contains: q, mode: "insensitive" } },
+                { phone: { contains: q, mode: "insensitive" } },
                 {
                   contacts: {
                     some: {
@@ -158,6 +160,7 @@ export async function GET(req: NextRequest) {
       select: {
         id: true,
         code: true,
+        type: true,
         legalName: true,
         tradeName: true,
         gstin: true,

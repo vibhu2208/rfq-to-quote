@@ -2,25 +2,31 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
-import { vendorContactSchema } from "@/lib/vendor-schema";
+import {
+  normalizeVendorCategory,
+  resolveVendorCategoryId,
+  vendorContactSchema,
+} from "@/lib/vendor-schema";
 
 type Params = { params: Promise<{ id: string }> };
 
-const createBodySchema = vendorContactSchema.extend({
-  name: z.string().trim().optional().default(""),
-  email: z.union([z.string().trim().email(), z.literal("")]).optional().default(""),
-  phone: z.string().trim().optional().default(""),
-  role: z.string().trim().optional().default(""),
-  isPrimary: z.boolean().optional().default(false),
-}).superRefine((contact, context) => {
-  if (!contact.name?.trim() && !contact.email?.trim() && !contact.phone?.trim()) {
-    context.addIssue({
-      code: "custom",
-      message: "Name, email, or phone is required",
-      path: ["name"],
-    });
-  }
-});
+const createBodySchema = vendorContactSchema
+  .extend({
+    name: z.string().trim().optional().default(""),
+    email: z.union([z.string().trim().email(), z.literal("")]).optional().default(""),
+    phone: z.string().trim().optional().default(""),
+    role: z.string().trim().optional().default(""),
+    isPrimary: z.boolean().optional().default(false),
+  })
+  .superRefine((contact, context) => {
+    if (!contact.name?.trim() && !contact.email?.trim() && !contact.phone?.trim()) {
+      context.addIssue({
+        code: "custom",
+        message: "Name, email, or phone is required",
+        path: ["name"],
+      });
+    }
+  });
 
 /** Add a POC to a vendor (saved for future Recore sends). */
 export async function POST(request: NextRequest, { params }: Params) {
@@ -45,6 +51,39 @@ export async function POST(request: NextRequest, { params }: Params) {
   const data = parsed.data;
   const makePrimary = data.isPrimary || vendor._count.contacts === 0;
 
+  const categories = await prisma.vendorCategory.findMany({
+    where: { vendorId },
+    select: { id: true, category: true, subcategory: true },
+  });
+
+  let vendorCategoryId = resolveVendorCategoryId(data, categories);
+  if (
+    !vendorCategoryId &&
+    (data.category?.trim() || data.vendorCategoryId)
+  ) {
+    const category = normalizeVendorCategory(String(data.category || "").trim());
+    const subcategory = String(data.subcategory || "").trim();
+    if (category) {
+      const row = await prisma.vendorCategory.upsert({
+        where: {
+          vendorId_category_subcategory: {
+            vendorId,
+            category,
+            subcategory,
+          },
+        },
+        create: {
+          vendorId,
+          category,
+          subcategory,
+          keywords: [],
+        },
+        update: {},
+      });
+      vendorCategoryId = row.id;
+    }
+  }
+
   const contact = await prisma.$transaction(async (tx) => {
     if (makePrimary) {
       await tx.vendorContact.updateMany({
@@ -60,7 +99,9 @@ export async function POST(request: NextRequest, { params }: Params) {
         phone: data.phone.trim(),
         role: data.role.trim(),
         isPrimary: makePrimary,
+        vendorCategoryId,
       },
+      include: { vendorCategory: true },
     });
   });
 
@@ -71,5 +112,8 @@ export async function POST(request: NextRequest, { params }: Params) {
     phone: contact.phone,
     role: contact.role,
     isPrimary: contact.isPrimary,
+    vendorCategoryId: contact.vendorCategoryId,
+    category: contact.vendorCategory?.category || "",
+    subcategory: contact.vendorCategory?.subcategory || "",
   });
 }

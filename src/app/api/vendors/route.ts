@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { serializeVendor, vendorInputSchema } from "@/lib/vendor-schema";
+import { createVendorWithRelations } from "@/lib/vendor-persist";
+import {
+  deleteDummyVendors,
+  syncVendorsFromIsVendorParties,
+} from "@/lib/sync-vendors-from-parties";
 
 export async function GET(request: NextRequest) {
   const { error } = await requireSession();
@@ -9,6 +14,24 @@ export async function GET(request: NextRequest) {
 
   const q = request.nextUrl.searchParams.get("q")?.trim() || "";
   const active = request.nextUrl.searchParams.get("active");
+  const sync = request.nextUrl.searchParams.get("sync");
+  const light = request.nextUrl.searchParams.get("light") === "1";
+  const limitParam = Number(request.nextUrl.searchParams.get("limit") || "");
+  const take =
+    Number.isFinite(limitParam) && limitParam > 0
+      ? Math.min(Math.floor(limitParam), 100)
+      : light
+        ? 40
+        : undefined;
+
+  if (sync === "true" || sync === "1") {
+    await deleteDummyVendors();
+    const result = await syncVendorsFromIsVendorParties();
+    if (request.nextUrl.searchParams.get("syncOnly") === "1") {
+      return NextResponse.json(result);
+    }
+  }
+
   const vendors = await prisma.vendor.findMany({
     where: {
       AND: [
@@ -49,31 +72,64 @@ export async function GET(request: NextRequest) {
           : {},
       ],
     },
-    include: {
-      categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
-      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
-      productHistory: { orderBy: { lastQuotedAt: "desc" }, take: 1 },
-      outreaches: {
-        where: { status: "DECLINED" },
-        orderBy: { repliedAt: "desc" },
-        take: 3,
-        select: {
-          id: true,
-          rfqId: true,
-          status: true,
-          replyIntent: true,
-          repliedAt: true,
-          quotedPrice: true,
+    include: light
+      ? {
+          categories: {
+            orderBy: [{ category: "asc" }, { subcategory: "asc" }],
+            take: 12,
+          },
+          contacts: {
+            orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
+            take: 8,
+            include: { vendorCategory: true },
+          },
+        }
+      : {
+          categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
+          contacts: {
+            orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
+            include: { vendorCategory: true },
+          },
+          productHistory: { orderBy: { lastQuotedAt: "desc" }, take: 1 },
+          outreaches: {
+            where: { status: "DECLINED" },
+            orderBy: { repliedAt: "desc" },
+            take: 3,
+            select: {
+              id: true,
+              rfqId: true,
+              status: true,
+              replyIntent: true,
+              repliedAt: true,
+              quotedPrice: true,
+            },
+          },
         },
-      },
-    },
     orderBy: [{ active: "desc" }, { name: "asc" }],
+    ...(take ? { take } : {}),
   });
 
   return NextResponse.json(
     vendors.map((vendor) => {
       const serialized = serializeVendor(vendor);
-      const declined = vendor.outreaches || [];
+      if (light || !("outreaches" in vendor)) {
+        return {
+          ...serialized,
+          declinedOutreaches: [],
+          declinedCount: 0,
+        };
+      }
+      const declined =
+        (
+          vendor as {
+            outreaches?: Array<{
+              id: string;
+              rfqId: string;
+              repliedAt: Date | null;
+              quotedPrice: unknown;
+            }>;
+          }
+        ).outreaches || [];
       return {
         ...serialized,
         declinedOutreaches: declined.map((row) => ({
@@ -97,40 +153,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const data = parsed.data;
-  const vendor = await prisma.vendor.create({
-    data: {
-      name: data.name,
-      phone: data.phone || null,
-      email: data.email || null,
-      whatsappId: data.whatsappId || null,
-      preferredChannel: data.preferredChannel,
-      active: data.active,
-      categories: {
-        create: data.categories.map((category) => ({
-          category: category.category,
-          subcategory: category.subcategory,
-          keywords: category.keywords,
-        })),
-      },
-      contacts: {
-        create: data.contacts
-          .filter((contact) => contact.name || contact.email || contact.phone)
-          .map((contact, index) => ({
-            name: contact.name,
-            email: contact.email,
-            phone: contact.phone,
-            role: contact.role,
-            isPrimary: contact.isPrimary || index === 0,
-          })),
-      },
-    },
-    include: {
-      categories: true,
-      contacts: true,
-      productHistory: true,
-    },
-  });
-
+  const vendor = await createVendorWithRelations(parsed.data);
   return NextResponse.json(serializeVendor(vendor), { status: 201 });
 }

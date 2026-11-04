@@ -36,12 +36,24 @@ import {
 } from "@/lib/vendor-line-price";
 import type { CatalogRequirementInput } from "@/lib/catalog-product-draft";
 import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import { structureEmailBodyForDisplay } from "@/lib/email-text";
 import {
   clearRecoreDraft,
   loadRecoreDraft,
   saveRecoreDraft,
   type RecoreChannel,
 } from "@/lib/recore-draft";
+
+function EmailBodyText({
+  body,
+  className = "whitespace-pre-wrap font-sans text-sm leading-relaxed text-dark-primary",
+}: {
+  body: string;
+  className?: string;
+}) {
+  const structured = structureEmailBodyForDisplay(body);
+  return <pre className={className}>{structured}</pre>;
+}
 
 type ProductMatch = {
   score: number;
@@ -201,6 +213,55 @@ type VendorDirectoryRow = {
   }>;
 };
 
+type PartyDirectoryRow = {
+  id: string;
+  legalName: string;
+  tradeName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  code?: string | null;
+  type?: string | null;
+  isVendor?: boolean;
+  contacts?: Array<{
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    isPrimary?: boolean;
+  }>;
+};
+
+type DirectoryHit = {
+  kind: "vendor" | "client";
+  key: string;
+  name: string;
+  subtitle: string;
+  already: boolean;
+  vendor?: VendorDirectoryRow;
+  party?: PartyDirectoryRow;
+  matchedVendor?: VendorDirectoryRow;
+};
+
+function phoneTail(value?: string | null) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.length >= 10 ? digits.slice(-10) : digits;
+}
+
+function contactsOverlap(
+  a: { email?: string | null; phone?: string | null },
+  b: { email?: string | null; phone?: string | null }
+) {
+  const emailA = String(a.email || "")
+    .trim()
+    .toLowerCase();
+  const emailB = String(b.email || "")
+    .trim()
+    .toLowerCase();
+  if (emailA && emailB && emailA === emailB) return true;
+  const phoneA = phoneTail(a.phone);
+  const phoneB = phoneTail(b.phone);
+  return Boolean(phoneA && phoneB && phoneA === phoneB);
+}
+
 function buildContactsForVendor(vendor: {
   id: string;
   name: string;
@@ -260,19 +321,15 @@ function vendorDirectoryToMatch(
   const category = vendor.categories?.[0]?.category || "Manual";
   const subcategory = vendor.categories?.[0]?.subcategory || "";
   const productKey = options?.productKey || "manual";
-  const history = vendor.productHistory?.[0];
-  const lastPrice =
-    history?.lastPrice != null && Number.isFinite(Number(history.lastPrice))
-      ? Number(history.lastPrice)
-      : null;
+  // Never invent a cost from an unrelated past quote when manually adding a
+  // vendor to a first-time product. Prices appear after Recore / reply.
   const matchedLines = (options?.lines || []).map((line) => ({
     lineNumber: line.lineNumber,
     description: line.description,
     quantity: line.quantity,
     unit: line.unit,
-    unitPrice: lastPrice,
-    lineTotal:
-      lastPrice != null ? lastPrice * (line.quantity > 0 ? line.quantity : 1) : null,
+    unitPrice: null,
+    lineTotal: null,
     productKey,
   }));
   return {
@@ -290,14 +347,10 @@ function vendorDirectoryToMatch(
     matchedKeywords: ["manual"],
     score: 0,
     productKey,
-    lastPrice,
-    lastQuotedAt: history?.lastQuotedAt || null,
+    lastPrice: null,
+    lastQuotedAt: null,
     matchedLines,
-    estimatedTotal:
-      matchedLines.length > 0 &&
-      matchedLines.every((line) => line.lineTotal != null)
-        ? matchedLines.reduce((sum, line) => sum + (line.lineTotal || 0), 0)
-        : lastPrice,
+    estimatedTotal: null,
     outreach: null,
   };
 }
@@ -567,130 +620,217 @@ function VendorPriceDetailModal({
     (lines.every((l) => l.lineTotal != null)
       ? lines.reduce((acc, l) => acc + (l.lineTotal || 0), 0)
       : null);
+  const pricedCount = lines.filter((line) => line.unitPrice != null).length;
+  const [mounted, setMounted] = useState(false);
 
-  return (
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const main = document.querySelector("main");
+    const locked: Array<{ el: HTMLElement; overflow: string }> = [];
+    for (const el of [document.documentElement, document.body, main]) {
+      if (!(el instanceof HTMLElement)) continue;
+      locked.push({ el, overflow: el.style.overflow });
+      el.style.overflow = "hidden";
+    }
+    return () => {
+      for (const entry of locked) {
+        entry.el.style.overflow = entry.overflow;
+      }
+    };
+  }, []);
+
+  if (!mounted) return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 p-4"
+      className="fixed inset-0 z-[80] flex items-center justify-center overscroll-none bg-dark-primary/50 p-3 backdrop-blur-[2px] sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="vendor-price-title"
       onClick={onClose}
+      onWheel={(event) => event.stopPropagation()}
+      onTouchMove={(event) => event.stopPropagation()}
     >
       <div
-        className="max-h-[85vh] w-full max-w-lg overflow-auto rounded-xl bg-white p-5 shadow-xl"
+        className="flex max-h-[min(92vh,820px)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-light-green/30 bg-white shadow-[0_24px_80px_rgba(11,43,38,0.22)]"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-start justify-between gap-3">
-          <div>
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-light-green/25 bg-[linear-gradient(180deg,rgba(232,242,236,0.55),rgba(255,255,255,0.95))] px-5 py-4 sm:px-6">
+          <div className="min-w-0">
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-mid-green/10 px-2.5 py-1 text-[11px] font-medium text-mid-green">
+              Vendor costs
+              {display.source ? ` · ${display.source}` : ""}
+            </div>
             <h3
               id="vendor-price-title"
-              className="text-base font-semibold text-dark-primary"
+              className="mt-2 text-lg font-semibold tracking-tight text-dark-primary"
             >
               {match.vendor.name}
             </h3>
-            <p className="mt-0.5 text-xs text-mid-green">
-              Quote by product
-              {display.source ? ` · ${display.source}` : ""}
+            <p className="mt-1 text-sm text-mid-green">
+              {lines.length > 0
+                ? `${pricedCount}/${lines.length} line${lines.length === 1 ? "" : "s"} priced`
+                : "Per-product quote from this vendor"}
+              {match.category ? ` · ${match.category}` : ""}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-mid-green hover:bg-dark-secondary/10"
-            aria-label="Close"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex shrink-0 items-start gap-3">
+            <div className="rounded-xl border border-light-green/30 bg-white px-3 py-2 text-right shadow-sm">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                Total cost
+              </div>
+              <div className="mt-0.5 text-base font-semibold tabular-nums text-dark-primary">
+                {sum != null ? <Money value={sum} /> : "—"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+          {lines.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-light-green/40 bg-light-green/10 px-4 py-10 text-center">
+              <p className="text-sm font-medium text-dark-primary">
+                No per-product prices yet
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-mid-green">
+                Send a Recore — when the vendor replies with line prices, they show
+                up here.
+              </p>
+            </div>
+          ) : (
+            <ul className="space-y-2.5">
+              {lines.map((line) => {
+                const selected = selectedByLine[line.lineNumber];
+                const priced = line.unitPrice != null;
+                return (
+                  <li
+                    key={line.lineNumber}
+                    className={`rounded-2xl border px-4 py-3 transition ${
+                      priced
+                        ? "border-light-green/35 bg-[#f7faf8]/70"
+                        : "border-dashed border-light-green/40 bg-white"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[10px] font-medium tabular-nums text-mid-green">
+                            Line {line.lineNumber}
+                          </span>
+                          <span className="text-[11px] tabular-nums text-mid-green">
+                            qty {line.quantity} {line.unit}
+                          </span>
+                          {!priced ? (
+                            <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+                              Awaiting price
+                            </span>
+                          ) : null}
+                        </div>
+                        <p className="mt-1.5 text-sm font-medium leading-snug text-dark-primary">
+                          {line.description}
+                        </p>
+                        {selected ? (
+                          <p className="mt-1 truncate text-[11px] text-mid-green">
+                            Catalog · {selected.name}
+                          </p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-mid-green/80">
+                            No catalog product selected for this line
+                          </p>
+                        )}
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                          Line total
+                        </div>
+                        <div className="mt-0.5 text-sm font-semibold tabular-nums text-dark-primary">
+                          {line.lineTotal != null ? (
+                            <Money value={line.lineTotal} />
+                          ) : (
+                            "—"
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid gap-2 border-t border-light-green/20 pt-3 sm:grid-cols-2">
+                      <div className="rounded-xl bg-white/90 px-3 py-2">
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                          Vendor unit
+                        </div>
+                        <div className="mt-0.5 text-sm tabular-nums text-dark-primary">
+                          {line.unitPrice != null ? (
+                            <Money value={line.unitPrice} />
+                          ) : (
+                            <span className="text-mid-green">—</span>
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-xl bg-white/90 px-3 py-2">
+                        <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                          Your last / sell
+                        </div>
+                        <div className="mt-1">
+                          {selected ? (
+                            <ProductLastPriceInput
+                              productId={selected.id}
+                              value={selected.offerPrice || line.unitPrice || 0}
+                              onSaved={(price) =>
+                                onProductPriceSaved(selected.id, price)
+                              }
+                            />
+                          ) : (
+                            <span className="text-xs text-mid-green">
+                              Pick a product on the RFQ first
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
 
-        {lines.length === 0 ? (
-          <p className="mt-4 text-sm text-mid-green">
-            No per-product prices yet. Send a Recore email — the vendor reply will
-            fill line prices here.
+        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-light-green/25 bg-white px-5 py-3.5 sm:px-6">
+          <p className="text-xs text-mid-green">
+            {lines.length > 0
+              ? `${lines.length} product line${lines.length === 1 ? "" : "s"} from this vendor`
+              : "Costs appear after a priced vendor reply"}
           </p>
-        ) : (
-          <div className="mt-4 overflow-x-auto rounded-lg border border-dark-secondary/10">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-dark-secondary/5 text-xs text-mid-green">
-                <tr>
-                  <th className="px-3 py-2 font-medium">#</th>
-                  <th className="px-3 py-2 font-medium">Product</th>
-                  <th className="px-3 py-2 text-right font-medium">Qty</th>
-                  <th className="px-3 py-2 text-right font-medium">Vendor</th>
-                  <th className="px-3 py-2 text-right font-medium">Last price</th>
-                  <th className="px-3 py-2 text-right font-medium">Line</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lines.map((line) => (
-                  <tr
-                    key={line.lineNumber}
-                    className="border-t border-dark-secondary/10"
-                  >
-                    <td className="px-3 py-2 text-mid-green">{line.lineNumber}</td>
-                    <td className="px-3 py-2 text-dark-primary">
-                      {line.description}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {line.quantity} {line.unit}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {line.unitPrice != null ? (
-                        <Money value={line.unitPrice} />
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {selectedByLine[line.lineNumber] ? (
-                        <ProductLastPriceInput
-                          productId={selectedByLine[line.lineNumber]!.id}
-                          value={
-                            selectedByLine[line.lineNumber]!.offerPrice ||
-                            line.unitPrice ||
-                            0
-                          }
-                          onSaved={(price) =>
-                            onProductPriceSaved(
-                              selectedByLine[line.lineNumber]!.id,
-                              price
-                            )
-                          }
-                        />
-                      ) : (
-                        <span className="text-xs font-normal text-mid-green">
-                          Pick a product
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums">
-                      {line.lineTotal != null ? (
-                        <Money value={line.lineTotal} />
-                      ) : (
-                        "—"
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr className="border-t border-dark-secondary/20 bg-mid-green/10">
-                  <td
-                    colSpan={5}
-                    className="px-3 py-2.5 text-right text-sm font-medium text-dark-primary"
-                  >
-                    Sum
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-sm font-semibold tabular-nums text-dark-primary">
-                    {sum != null ? <Money value={sum} /> : "—"}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                Sum
+              </div>
+              <div className="text-sm font-semibold tabular-nums text-dark-primary">
+                {sum != null ? <Money value={sum} /> : "—"}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl bg-mid-green px-4 py-2 text-sm font-medium text-background shadow-[0_8px_20px_rgba(45,106,79,0.2)] transition hover:bg-dark-secondary"
+            >
+              Done
+            </button>
           </div>
-        )}
+        </footer>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -1012,6 +1152,29 @@ function VendorRecoreLinePickerModal({
       : Boolean(contact.email?.trim());
   }
 
+  function normalizeContacts(
+    list: VendorContact[],
+    vendorId: string
+  ): VendorContact[] {
+    const seen = new Set<string>();
+    const out: VendorContact[] = [];
+    list.forEach((contact, index) => {
+      const fallback = `vendor-${vendorId}-c${index}-${contact.email || contact.phone || contact.name || "x"}`;
+      const id = String(contact.id || "").trim() || fallback;
+      if (seen.has(id)) return;
+      seen.add(id);
+      out.push({
+        id,
+        name: contact.name || "",
+        email: contact.email || "",
+        phone: contact.phone || "",
+        role: contact.role || "",
+        isPrimary: Boolean(contact.isPrimary),
+      });
+    });
+    return out;
+  }
+
   function buildVendorContacts(vendor: VendorMatch["vendor"]): VendorContact[] {
     let list =
       vendor.contacts && vendor.contacts.length > 0 ? [...vendor.contacts] : [];
@@ -1041,7 +1204,7 @@ function VendorRecoreLinePickerModal({
         },
       ];
     }
-    return list;
+    return normalizeContacts(list, vendor.id);
   }
 
   function pickDefaultChannel(
@@ -1275,7 +1438,7 @@ function VendorRecoreLinePickerModal({
         const next = created.isPrimary
           ? withoutSynthetic.map((contact) => ({ ...contact, isPrimary: false }))
           : withoutSynthetic;
-        return [...next, created];
+        return normalizeContacts([...next, created], match.vendor.id);
       });
       setSelectedContactIds((prev) => new Set([...prev, created.id]));
       resetNewRecipientForm();
@@ -1370,7 +1533,10 @@ function VendorRecoreLinePickerModal({
         setLocalError("");
         if (Array.isArray(data.contacts) && data.contacts.length > 0) {
           contactsLoadedRef.current = true;
-          const nextContacts = data.contacts as VendorContact[];
+          const nextContacts = normalizeContacts(
+            data.contacts as VendorContact[],
+            match.vendor.id
+          );
           setContacts(nextContacts);
           const nextChannel = pickDefaultChannel(
             nextContacts,
@@ -1695,14 +1861,14 @@ function VendorRecoreLinePickerModal({
                 </div>
               ) : (
                 <ul className="space-y-2">
-                  {contacts.map((contact) => {
+                  {contacts.map((contact, index) => {
                     const reachable =
                       channel === "WHATSAPP"
                         ? Boolean(contact.phone)
                         : Boolean(contact.email);
                     const selected = selectedContactIds.has(contact.id);
                     return (
-                      <li key={contact.id}>
+                      <li key={contact.id || `recore-contact-${index}`}>
                         <label
                           className={`flex cursor-pointer gap-3 rounded-xl border px-3 py-2.5 transition ${
                             selected
@@ -1779,11 +1945,11 @@ function VendorRecoreLinePickerModal({
                 </div>
               ) : (
                 <ul className="space-y-2">
-                  {items.map((item) => {
+                  {items.map((item, index) => {
                     const matched = matchedSet.has(item.lineNumber);
                     const selected = checked.has(item.lineNumber);
                     return (
-                      <li key={item.lineNumber}>
+                      <li key={`recore-line-${item.lineNumber}-${index}`}>
                         <label
                           className={`flex cursor-pointer gap-3 rounded-xl border px-3 py-2.5 transition ${
                             selected
@@ -1848,9 +2014,9 @@ function VendorRecoreLinePickerModal({
                 </div>
                 <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {selectedRecipients.length > 0 ? (
-                    selectedRecipients.map((contact) => (
+                    selectedRecipients.map((contact, index) => (
                       <span
-                        key={contact.id}
+                        key={contact.id || `recore-to-${index}`}
                         className="inline-flex max-w-full items-center gap-1 rounded-full bg-mid-green/10 px-2.5 py-1 text-[11px] text-dark-primary"
                       >
                         <span className="truncate font-medium">
@@ -2044,11 +2210,14 @@ function VendorThreadModal({
                     {format(new Date(message.createdAt), "dd MMM yyyy HH:mm")}
                   </span>
                 </div>
-                <pre className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-dark-primary">
-                  {message.body.length > 4000
-                    ? `${message.body.slice(0, 4000)}…`
-                    : message.body}
-                </pre>
+                <EmailBodyText
+                  className="whitespace-pre-wrap font-sans text-xs leading-relaxed text-dark-primary"
+                  body={
+                    message.body.length > 4000
+                      ? `${message.body.slice(0, 4000)}…`
+                      : message.body
+                  }
+                />
               </div>
             ))
           )}
@@ -2214,11 +2383,21 @@ export default function RfqDetailPage() {
   const [vendorsLoading, setVendorsLoading] = useState(false);
   const [addVendorOpen, setAddVendorOpen] = useState(false);
   const [vendorSearch, setVendorSearch] = useState("");
-  const [vendorSearchResults, setVendorSearchResults] = useState<
-    VendorDirectoryRow[]
-  >([]);
+  const [directoryHits, setDirectoryHits] = useState<DirectoryHit[]>([]);
   const [vendorSearchBusy, setVendorSearchBusy] = useState(false);
+  const [addingDirectoryHit, setAddingDirectoryHit] = useState(false);
+  const [directoryError, setDirectoryError] = useState("");
+  const [pendingClient, setPendingClient] = useState<{
+    hit: DirectoryHit;
+    phone: string;
+    email: string;
+  } | null>(null);
   const manualVendorIdsRef = useRef<Set<string>>(new Set());
+  const vendorMatchesRef = useRef(vendorMatches);
+  vendorMatchesRef.current = vendorMatches;
+  const addedVendorIdsKey = vendorMatches
+    .map((match) => match.vendor.id)
+    .join("|");
   const [recoreBusy, setRecoreBusy] = useState("");
   const [recoreVendor, setRecoreVendor] = useState<VendorMatch | null>(null);
   const [checkRepliesBusy, setCheckRepliesBusy] = useState(false);
@@ -2441,14 +2620,115 @@ export default function RfqDetailPage() {
     const timer = window.setTimeout(async () => {
       setVendorSearchBusy(true);
       try {
-        const params = new URLSearchParams({ active: "true" });
-        if (vendorSearch.trim()) params.set("q", vendorSearch.trim());
-        const res = await fetch(`/api/vendors?${params}`);
-        const data = await res.json().catch(() => []);
+        const q = vendorSearch.trim();
+        const vendorParams = new URLSearchParams({ active: "true" });
+        const partyParams = new URLSearchParams({
+          active: "true",
+          take: "25",
+        });
+        if (q) {
+          vendorParams.set("q", q);
+          partyParams.set("q", q);
+        }
+        const [vendorRes, partyRes] = await Promise.all([
+          fetch(`/api/vendors?${vendorParams}`),
+          fetch(`/api/parties?${partyParams}`),
+        ]);
+        const vendorData = await vendorRes.json().catch(() => []);
+        const partyData = await partyRes.json().catch(() => []);
         if (cancelled) return;
-        setVendorSearchResults(Array.isArray(data) ? data : []);
+
+        const vendors = (
+          Array.isArray(vendorData) ? vendorData : []
+        ) as VendorDirectoryRow[];
+        const partiesRaw = Array.isArray(partyData)
+          ? partyData
+          : Array.isArray(partyData?.items)
+            ? partyData.items
+            : [];
+        const parties = partiesRaw as PartyDirectoryRow[];
+
+        const addedIds = new Set(
+          addedVendorIdsKey ? addedVendorIdsKey.split("|") : []
+        );
+        const hits: DirectoryHit[] = vendors.slice(0, 25).map((vendor) => ({
+          kind: "vendor" as const,
+          key: `vendor:${vendor.id}`,
+          name: vendor.name,
+          subtitle: [
+            vendor.categories?.[0]?.category,
+            vendor.email || vendor.whatsappId || vendor.phone || "No contact",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          already: addedIds.has(vendor.id),
+          vendor,
+        }));
+
+        for (const party of parties.slice(0, 25)) {
+          const partyContacts = [
+            { email: party.email, phone: party.phone },
+            ...(party.contacts || []).map((contact) => ({
+              email: contact.email,
+              phone: contact.phone,
+            })),
+          ];
+          const matchedVendor = vendors.find((vendor) => {
+            const vendorContacts = [
+              { email: vendor.email, phone: vendor.phone },
+              ...(vendor.contacts || []).map((contact) => ({
+                email: contact.email,
+                phone: contact.phone,
+              })),
+            ];
+            return partyContacts.some((partyContact) =>
+              vendorContacts.some((vendorContact) =>
+                contactsOverlap(partyContact, vendorContact)
+              )
+            );
+          });
+          // Same org already listed as a vendor — skip duplicate row.
+          if (matchedVendor) continue;
+
+          const alreadyByContact = vendorMatchesRef.current.some((match) => {
+            const vendorContacts = [
+              {
+                email: match.vendor.email,
+                phone: match.vendor.phone || match.vendor.whatsappId,
+              },
+              ...(match.vendor.contacts || []).map((contact) => ({
+                email: contact.email,
+                phone: contact.phone,
+              })),
+            ];
+            return partyContacts.some((partyContact) =>
+              vendorContacts.some((vendorContact) =>
+                contactsOverlap(partyContact, vendorContact)
+              )
+            );
+          });
+
+          hits.push({
+            kind: "client",
+            key: `client:${party.id}`,
+            name: party.tradeName || party.legalName,
+            subtitle: [
+              party.isVendor || party.type === "VENDOR" || party.type === "BOTH"
+                ? "Client · also marked vendor"
+                : "Client",
+              party.code || null,
+              party.email || party.phone || "No contact on file",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            already: alreadyByContact,
+            party,
+          });
+        }
+
+        setDirectoryHits(hits);
       } catch {
-        if (!cancelled) setVendorSearchResults([]);
+        if (!cancelled) setDirectoryHits([]);
       } finally {
         if (!cancelled) setVendorSearchBusy(false);
       }
@@ -2457,12 +2737,51 @@ export default function RfqDetailPage() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [addVendorOpen, vendorSearch]);
+  }, [addVendorOpen, vendorSearch, addedVendorIdsKey]);
+
+  function resetDirectoryPanel() {
+    setAddVendorOpen(false);
+    setVendorSearch("");
+    setDirectoryHits([]);
+    setDirectoryError("");
+    setPendingClient(null);
+  }
+
+  function formatVendorCreateError(payload: unknown): string {
+    if (!payload || typeof payload !== "object") {
+      return "Could not add client as vendor";
+    }
+    const error = (payload as { error?: unknown }).error;
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+      const flat = error as {
+        formErrors?: string[];
+        fieldErrors?: Record<string, string[] | undefined>;
+      };
+      const messages = [
+        ...(flat.formErrors || []),
+        ...Object.values(flat.fieldErrors || {}).flatMap(
+          (values) => values || []
+        ),
+      ].filter(Boolean);
+      if (messages[0]) return messages[0];
+    }
+    return "Could not add client as vendor";
+  }
+
+  function partyHasReachableContact(party: PartyDirectoryRow) {
+    if (String(party.email || "").trim() || String(party.phone || "").trim()) {
+      return true;
+    }
+    return (party.contacts || []).some(
+      (contact) =>
+        String(contact.email || "").trim() || String(contact.phone || "").trim()
+    );
+  }
 
   function intakeVendorFromDirectory(vendor: VendorDirectoryRow) {
     if (vendorMatches.some((match) => match.vendor.id === vendor.id)) {
-      setAddVendorOpen(false);
-      setVendorSearch("");
+      resetDirectoryPanel();
       return;
     }
     const lines =
@@ -2483,10 +2802,178 @@ export default function RfqDetailPage() {
     });
     manualVendorIdsRef.current.add(vendor.id);
     setVendorMatches((prev) => [...prev, match]);
-    setAddVendorOpen(false);
-    setVendorSearch("");
-    setVendorSearchResults([]);
+    resetDirectoryPanel();
     setError("");
+  }
+
+  async function createVendorFromParty(
+    party: PartyDirectoryRow,
+    contactOverride?: { phone?: string; email?: string }
+  ) {
+    const primaryContact =
+      (party.contacts || []).find((contact) => contact.isPrimary) ||
+      (party.contacts || [])[0];
+    const phone = String(
+      contactOverride?.phone || party.phone || primaryContact?.phone || ""
+    ).trim();
+    const email = String(
+      contactOverride?.email || party.email || primaryContact?.email || ""
+    ).trim();
+    if (!phone && !email) {
+      setDirectoryError("Add a phone or email to use this client as a vendor.");
+      return;
+    }
+
+    // Prefer an existing vendor with the same phone/email before creating one.
+    const lookupParams = new URLSearchParams({ active: "true" });
+    const lookupQ = email || phoneTail(phone) || party.legalName.trim();
+    if (lookupQ) lookupParams.set("q", lookupQ);
+    const existingRes = await fetch(`/api/vendors?${lookupParams}`);
+    const existingData = await existingRes.json().catch(() => []);
+    const existingVendors = (
+      Array.isArray(existingData) ? existingData : []
+    ) as VendorDirectoryRow[];
+    const partyContacts = [
+      { email, phone },
+      { email: party.email, phone: party.phone },
+      ...(party.contacts || []).map((contact) => ({
+        email: contact.email,
+        phone: contact.phone,
+      })),
+    ];
+    const existing = existingVendors.find((vendor) => {
+      const vendorContacts = [
+        { email: vendor.email, phone: vendor.phone },
+        ...(vendor.contacts || []).map((contact) => ({
+          email: contact.email,
+          phone: contact.phone,
+        })),
+      ];
+      return partyContacts.some((partyContact) =>
+        vendorContacts.some((vendorContact) =>
+          contactsOverlap(partyContact, vendorContact)
+        )
+      );
+    });
+    if (existing) {
+      intakeVendorFromDirectory(existing);
+      return;
+    }
+
+    const category =
+      rfq?.parsedCategory &&
+      rfq.parsedCategory !== "Misc" &&
+      rfq.parsedCategory !== "General / Uncategorized"
+          ? rfq.parsedCategory
+          : "Misc";
+    const createRes = await fetch("/api/vendors", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: party.tradeName || party.legalName,
+        phone,
+        email,
+        whatsappId: "",
+        preferredChannel: "EMAIL",
+        active: true,
+        categories: [
+          {
+            category,
+            subcategory: "",
+            keywords: [party.legalName, party.code || ""]
+              .filter(Boolean)
+              .map((value) => String(value).toLowerCase()),
+          },
+        ],
+        contacts: [
+          {
+            name: primaryContact?.name || party.legalName,
+            email,
+            phone,
+            role: "",
+            isPrimary: true,
+          },
+          ...(party.contacts || [])
+            .filter(
+              (contact) =>
+                (contact.email || contact.phone) &&
+                !contactsOverlap(
+                  { email: contact.email, phone: contact.phone },
+                  { email, phone }
+                )
+            )
+            .map((contact) => ({
+              name: contact.name || party.legalName,
+              email: contact.email || "",
+              phone: contact.phone || "",
+              role: "",
+              isPrimary: false,
+            })),
+        ],
+      }),
+    });
+    const created = await createRes.json().catch(() => ({}));
+    if (!createRes.ok) {
+      setDirectoryError(formatVendorCreateError(created));
+      return;
+    }
+    intakeVendorFromDirectory(created as VendorDirectoryRow);
+  }
+
+  async function intakeDirectoryHit(hit: DirectoryHit) {
+    if (hit.already) return;
+    if (hit.kind === "vendor" && hit.vendor) {
+      intakeVendorFromDirectory(hit.vendor);
+      return;
+    }
+    if (hit.kind === "client" && hit.matchedVendor) {
+      intakeVendorFromDirectory(hit.matchedVendor);
+      return;
+    }
+    const party = hit.party;
+    if (!party) return;
+
+    setDirectoryError("");
+    if (!partyHasReachableContact(party)) {
+      setPendingClient({
+        hit,
+        phone: "",
+        email: "",
+      });
+      return;
+    }
+
+    setAddingDirectoryHit(true);
+    try {
+      await createVendorFromParty(party);
+    } catch (err) {
+      setDirectoryError(
+        err instanceof Error ? err.message : "Could not add client as vendor"
+      );
+    } finally {
+      setAddingDirectoryHit(false);
+    }
+  }
+
+  async function confirmPendingClient() {
+    if (!pendingClient?.hit.party) return;
+    const phone = pendingClient.phone.trim();
+    const email = pendingClient.email.trim();
+    if (!phone && !email) {
+      setDirectoryError("Add a phone or email to continue.");
+      return;
+    }
+    setAddingDirectoryHit(true);
+    setDirectoryError("");
+    try {
+      await createVendorFromParty(pendingClient.hit.party, { phone, email });
+    } catch (err) {
+      setDirectoryError(
+        err instanceof Error ? err.message : "Could not add client as vendor"
+      );
+    } finally {
+      setAddingDirectoryHit(false);
+    }
   }
 
   const loadMarketplacePrices = useCallback(
@@ -2896,9 +3383,9 @@ export default function RfqDetailPage() {
 
     if (lineNumber != null) {
       setExtraMatchesByLine((prev) => {
-        const existing = prev[lineNumber] ?? [];
-        if (existing.some((m) => m.product.id === product.id)) return prev;
-        return { ...prev, [lineNumber]: [...existing, match] };
+        const existing = (prev[lineNumber] ?? []).filter((m) => m.product.id !== product.id);
+        // Newest manual pick stays at the front so it appears in the visible top row.
+        return { ...prev, [lineNumber]: [match, ...existing] };
       });
       setLineSelection((prev) => {
         const oldPid = prev[lineNumber];
@@ -2950,11 +3437,18 @@ export default function RfqDetailPage() {
   function lineMatches(item: RequirementMatch): ProductMatch[] {
     const extras = extraMatchesByLine[item.lineNumber] || [];
     const seen = new Set<string>();
-    return [...item.matches, ...extras].filter((m) => {
+    // Manual picks first in extras, then suggestions — selected product is pinned on top.
+    const all = [...extras, ...item.matches].filter((m) => {
       if (seen.has(m.product.id)) return false;
       seen.add(m.product.id);
       return true;
     });
+    const selectedId = lineSelection[item.lineNumber];
+    if (!selectedId) return all;
+    const selectedIdx = all.findIndex((m) => m.product.id === selectedId);
+    if (selectedIdx <= 0) return all;
+    const selected = all[selectedIdx];
+    return [selected, ...all.slice(0, selectedIdx), ...all.slice(selectedIdx + 1)];
   }
 
   function pickCatalogProduct(product: PickableProduct) {
@@ -3765,16 +4259,18 @@ export default function RfqDetailPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setAddVendorOpen((open) => !open);
                   if (addVendorOpen) {
-                    setVendorSearch("");
-                    setVendorSearchResults([]);
+                    resetDirectoryPanel();
+                    return;
                   }
+                  setAddVendorOpen(true);
+                  setDirectoryError("");
+                  setPendingClient(null);
                 }}
                 className="inline-flex h-8 items-center gap-1 rounded-full bg-mid-green/15 px-2.5 text-[11px] font-medium text-dark-primary hover:bg-mid-green/25"
               >
                 <Plus className="h-3 w-3" strokeWidth={1.75} />
-                Add vendor
+                Add
               </button>
               <button
                 type="button"
@@ -3801,66 +4297,157 @@ export default function RfqDetailPage() {
             </p>
           ) : null}
           {addVendorOpen ? (
-            <div className="border-b border-light-green/15 bg-light-green/10 px-3 py-3">
-              <div className="relative">
-                <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green/70"
-                  strokeWidth={1.75}
-                />
-                <input
-                  value={vendorSearch}
-                  onChange={(event) => setVendorSearch(event.target.value)}
-                  placeholder="Search vendors by name, phone, email…"
-                  className="h-9 w-full rounded-xl border border-light-green/35 bg-white pl-8 pr-3 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
-                  autoFocus
-                />
-              </div>
-              <div className="mt-2 max-h-48 overflow-y-auto rounded-xl border border-light-green/25 bg-white">
-                {vendorSearchBusy ? (
-                  <p className="px-3 py-4 text-center text-xs text-mid-green">
-                    Searching…
-                  </p>
-                ) : vendorSearchResults.length === 0 ? (
-                  <p className="px-3 py-4 text-center text-xs text-mid-green">
-                    No vendors found. Add them on the Vendors page first.
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-light-green/15">
-                    {vendorSearchResults.map((vendor) => {
-                      const already = vendorMatches.some(
-                        (match) => match.vendor.id === vendor.id
-                      );
-                      return (
-                        <li key={vendor.id}>
-                          <button
-                            type="button"
-                            disabled={already}
-                            onClick={() => intakeVendorFromDirectory(vendor)}
-                            className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left transition hover:bg-light-green/15 disabled:cursor-default disabled:opacity-55"
-                          >
-                            <span className="min-w-0">
-                              <span className="block truncate text-sm font-medium text-dark-primary">
-                                {vendor.name}
+            <div className="border-b border-light-green/15 bg-[#f7faf8] px-3 py-3">
+              {pendingClient ? (
+                <div className="space-y-2.5">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-medium text-mid-green">
+                        Contact needed
+                      </p>
+                      <p className="mt-0.5 truncate text-sm font-medium text-dark-primary">
+                        {pendingClient.hit.name}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-mid-green">
+                        This client has no phone or email on file. Add one to use
+                        them as a vendor.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingClient(null);
+                        setDirectoryError("");
+                      }}
+                      className="shrink-0 text-[11px] font-medium text-mid-green hover:text-dark-primary"
+                    >
+                      Back
+                    </button>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <input
+                      value={pendingClient.phone}
+                      onChange={(event) =>
+                        setPendingClient((prev) =>
+                          prev ? { ...prev, phone: event.target.value } : prev
+                        )
+                      }
+                      placeholder="Phone"
+                      className="h-9 rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                      autoFocus
+                    />
+                    <input
+                      value={pendingClient.email}
+                      onChange={(event) =>
+                        setPendingClient((prev) =>
+                          prev ? { ...prev, email: event.target.value } : prev
+                        )
+                      }
+                      placeholder="Email"
+                      type="email"
+                      className="h-9 rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                    />
+                  </div>
+                  {directoryError ? (
+                    <p className="text-[11px] text-red-700">{directoryError}</p>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={addingDirectoryHit}
+                    onClick={() => void confirmPendingClient()}
+                    className="inline-flex h-8 items-center rounded-full bg-mid-green/20 px-3 text-[11px] font-medium text-dark-primary hover:bg-mid-green/30 disabled:opacity-60"
+                  >
+                    {addingDirectoryHit ? "Adding…" : "Add as vendor"}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-[11px] font-medium text-mid-green">
+                      Search vendors & clients
+                    </p>
+                    {addingDirectoryHit ? (
+                      <span className="text-[11px] text-mid-green">Adding…</span>
+                    ) : null}
+                  </div>
+                  <div className="relative mt-2">
+                    <Search
+                      className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green/70"
+                      strokeWidth={1.75}
+                    />
+                    <input
+                      value={vendorSearch}
+                      onChange={(event) => {
+                        setVendorSearch(event.target.value);
+                        setDirectoryError("");
+                      }}
+                      placeholder="Name, phone, email, client code…"
+                      className="h-9 w-full rounded-xl border border-light-green/35 bg-white pl-8 pr-3 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
+                      autoFocus
+                    />
+                  </div>
+                  {directoryError ? (
+                    <p className="mt-2 text-[11px] text-red-700">{directoryError}</p>
+                  ) : null}
+                  <div className="mt-2 max-h-56 overflow-y-auto rounded-xl border border-light-green/25 bg-white">
+                    {vendorSearchBusy ? (
+                      <p className="px-3 py-5 text-center text-xs text-mid-green">
+                        Searching directory…
+                      </p>
+                    ) : directoryHits.length === 0 ? (
+                      <div className="px-3 py-5 text-center">
+                        <p className="text-xs font-medium text-dark-primary">
+                          No matches
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-mid-green">
+                          Try another name, or add the vendor on Vendors / client
+                          on Clients first.
+                        </p>
+                      </div>
+                    ) : (
+                      <ul className="divide-y divide-light-green/15">
+                        {directoryHits.map((hit) => (
+                          <li key={hit.key}>
+                            <button
+                              type="button"
+                              disabled={hit.already || addingDirectoryHit}
+                              onClick={() => void intakeDirectoryHit(hit)}
+                              className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left transition hover:bg-light-green/15 disabled:cursor-default disabled:opacity-55"
+                            >
+                              <span className="min-w-0">
+                                <span className="flex flex-wrap items-center gap-1.5">
+                                  <span className="truncate text-sm font-medium text-dark-primary">
+                                    {hit.name}
+                                  </span>
+                                  <span
+                                    className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                                      hit.kind === "vendor"
+                                        ? "bg-mid-green/15 text-dark-primary"
+                                        : "bg-dark-secondary/8 text-mid-green"
+                                    }`}
+                                  >
+                                    {hit.kind === "vendor" ? "Vendor" : "Client"}
+                                  </span>
+                                </span>
+                                <span className="mt-0.5 block truncate text-[11px] text-mid-green">
+                                  {hit.subtitle}
+                                </span>
                               </span>
-                              <span className="mt-0.5 block truncate text-[11px] text-mid-green">
-                                {vendor.categories?.[0]?.category || "Vendor"}
-                                {" · "}
-                                {vendor.email ||
-                                  vendor.whatsappId ||
-                                  vendor.phone ||
-                                  "No contact"}
+                              <span className="shrink-0 text-[11px] font-medium text-mid-green">
+                                {hit.already
+                                  ? "Added"
+                                  : hit.kind === "client"
+                                    ? "Use"
+                                    : "Add"}
                               </span>
-                            </span>
-                            <span className="shrink-0 text-[11px] font-medium text-mid-green">
-                              {already ? "Added" : "Add"}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           ) : null}
 
@@ -3878,7 +4465,7 @@ export default function RfqDetailPage() {
                   className="inline-flex h-8 items-center gap-1 rounded-full bg-mid-green px-3 text-xs font-medium text-background hover:bg-dark-secondary"
                 >
                   <Plus className="h-3 w-3" strokeWidth={1.75} />
-                  Pick from vendor list
+                  Add from directory
                 </button>
               </div>
             ) : (
@@ -4442,7 +5029,10 @@ export default function RfqDetailPage() {
                       </span>
                       <span>{format(new Date(m.createdAt), "dd MMM HH:mm")}</span>
                     </div>
-                    <p className="whitespace-pre-wrap">{m.body}</p>
+                    <EmailBodyText
+                      className="whitespace-pre-wrap font-sans text-sm leading-relaxed text-dark-primary"
+                      body={m.body}
+                    />
                   </li>
                 ))
               )}
@@ -4519,9 +5109,10 @@ export default function RfqDetailPage() {
             {rfq.subject ? (
               <p className="mt-4 text-sm font-medium">{rfq.subject}</p>
             ) : null}
-            <pre className="mt-3 whitespace-pre-wrap text-sm text-dark-primary">
-              {rfq.rawText || "No message content."}
-            </pre>
+            <EmailBodyText
+              className="mt-3 whitespace-pre-wrap font-sans text-sm leading-relaxed text-dark-primary"
+              body={rfq.rawText || "No message content."}
+            />
           </div>
         </div>
       ) : null}

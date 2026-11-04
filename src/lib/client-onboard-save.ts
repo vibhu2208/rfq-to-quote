@@ -86,6 +86,10 @@ export async function applyPartyOnboardPayload(partyId: string, payload: PartyOn
   }
 
   await saveOnboardContacts(partyId, payload.contacts);
+  const { syncVendorsFromIsVendorParties } = await import(
+    "@/lib/sync-vendors-from-parties"
+  );
+  await syncVendorsFromIsVendorParties({ partyId });
 }
 
 export async function createPartyFromOnboard(payload: PartyOnboardPayload) {
@@ -150,6 +154,10 @@ export async function createPartyFromOnboard(payload: PartyOnboardPayload) {
   });
 
   await saveOnboardContacts(created.id, payload.contacts);
+  const { syncVendorsFromIsVendorParties } = await import(
+    "@/lib/sync-vendors-from-parties"
+  );
+  await syncVendorsFromIsVendorParties({ partyId: created.id });
 
   return created.id;
 }

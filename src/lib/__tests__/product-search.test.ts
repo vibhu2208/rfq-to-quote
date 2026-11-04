@@ -6,7 +6,16 @@ import {
   scoreProductSearchHit,
   searchTokens,
 } from "@/lib/product-search";
-import { matchProductsToRfq, matchProductsToRfqItems } from "@/lib/product-match";
+import {
+  buildCatalogMatchContext,
+  matchProductsToRfq,
+  matchProductsToRfqItems,
+  retrieveCatalogCandidates,
+  wordWeight,
+  WEIGHT_BRAND,
+  WEIGHT_TYPE,
+  tokenize,
+} from "@/lib/product-match";
 import type { Product } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 
@@ -216,5 +225,126 @@ describe("matchProductsToRfq name matching", () => {
     expect(itemMatches[0].matches[0]?.product.code).toBe("LAP-I5-14");
     expect(itemMatches[1].matches[0]?.product.code).toBe("CAB-1");
     expect(itemMatches[2].matches[0]?.product.code).toBe("UPS-1KVA");
+  });
+});
+
+describe("weighted catalog retrieval (brand / type / IDF)", () => {
+  it("weights catalog brands highest and type tokens above rare IDF words", () => {
+    const products = [
+      fakeProduct({
+        id: "1",
+        code: "IFP-1",
+        name: "ViewSonic IFP 86",
+        brand: "ViewSonic",
+        category: "INTERACTIVE PANELS",
+      }),
+      fakeProduct({ id: "2", code: "147606", name: "MIC", description: "microphone" }),
+    ];
+    const ctx = buildCatalogMatchContext(products);
+    expect(wordWeight("viewsonic", ctx)).toBe(WEIGHT_BRAND);
+    expect(wordWeight("ifp", ctx)).toBe(WEIGHT_TYPE);
+    expect(wordWeight("mic", ctx)).toBeLessThan(WEIGHT_TYPE);
+  });
+
+  it("ranks ViewSonic IFP above feature accessories listed in the same RFQ line", () => {
+    const products = [
+      fakeProduct({
+        id: "ifp",
+        code: "IFP-86-VS",
+        name: "ViewSonic IFP 86 Interactive Panel",
+        brand: "ViewSonic",
+        category: "INTERACTIVE PANELS",
+        description: "86 inch interactive front panel",
+      }),
+      fakeProduct({ id: "mic", code: "147606", name: "MIC", description: "mic accessory" }),
+      fakeProduct({ id: "ops", code: "151334", name: "OPS", description: "ops module" }),
+      fakeProduct({
+        id: "ssd",
+        code: "147444",
+        name: "SSD 512GB",
+        category: "SSD",
+        description: "solid state drive",
+      }),
+      fakeProduct({
+        id: "wifi",
+        code: "151874",
+        name: "WIFI CAMERA",
+        description: "wifi camera module",
+      }),
+    ];
+
+    const description =
+      'INTERACTIVE FRONT PANEL VIEWSONIC 86" 8GB, 64GB IFP with OPS i5, 13GEN, 16GB RAM, 512GB SSD, Octa Core, Android 16 Upgradable, Inbuild OEM wifi, LAN, 50MP Camera, Mic Warranty 3Years, With Installation';
+
+    const itemMatches = matchProductsToRfqItems(products, {
+      parsedSpecs: {
+        items: [
+          {
+            description,
+            brand: "ViewSonic",
+            category: "INTERACTIVE PANELS",
+            quantity: 1,
+            unit: "pcs",
+          },
+        ],
+      },
+    });
+
+    expect(itemMatches).toHaveLength(1);
+    expect(itemMatches[0].matches[0]?.product.code).toBe("IFP-86-VS");
+    const topCodes = itemMatches[0].matches.slice(0, 4).map((m) => m.product.code);
+    expect(topCodes[0]).toBe("IFP-86-VS");
+  });
+
+  it("still allows a short mic RFQ to match MIC", () => {
+    const products = [
+      fakeProduct({ id: "mic", code: "147606", name: "MIC", description: "microphone" }),
+      fakeProduct({
+        id: "ifp",
+        code: "IFP-86-VS",
+        name: "ViewSonic IFP 86",
+        brand: "ViewSonic",
+        category: "INTERACTIVE PANELS",
+      }),
+    ];
+
+    const matches = matchProductsToRfq(products, {
+      rawText: "Need mic",
+      subject: "mic",
+    });
+
+    expect(matches[0]?.product.code).toBe("147606");
+  });
+
+  it("force-includes brand catalog rows into the top-20 window", () => {
+    const products = [
+      fakeProduct({
+        id: "vs1",
+        code: "VS-ODD",
+        name: "VS-IFP8650",
+        brand: "ViewSonic",
+        category: "INTERACTIVE PANELS",
+      }),
+      ...Array.from({ length: 25 }, (_, i) =>
+        fakeProduct({
+          id: `noise-${i}`,
+          code: `N-${i}`,
+          name: `Accessory ${i} wifi camera mic ops ssd`,
+          description: "wifi camera mic ops ssd ram",
+        })
+      ),
+    ];
+
+    const ctx = buildCatalogMatchContext(products);
+    const keywords = tokenize(
+      "VIEWSONIC interactive panel with wifi camera mic ops ssd"
+    );
+    const retrieved = retrieveCatalogCandidates(
+      ctx,
+      { keywords, parsedBrand: "ViewSonic", parsedCategory: "INTERACTIVE PANELS" },
+      20
+    );
+
+    expect(retrieved.some((m) => m.product.code === "VS-ODD")).toBe(true);
   });
 });

@@ -1,0 +1,209 @@
+import { prisma } from "@/lib/prisma";
+import {
+  normalizeKeywords,
+  normalizeVendorCategory,
+  serializeVendor,
+} from "@/lib/vendor-schema";
+
+export type VendorMapContactInput = {
+  name?: string;
+  email?: string;
+  phone?: string;
+  role?: string;
+  isPrimary?: boolean;
+};
+
+export type VendorMapInput = {
+  vendorId?: string;
+  vendor?: {
+    name: string;
+    phone?: string;
+    email?: string;
+    whatsappId?: string;
+    preferredChannel?: "EMAIL" | "WHATSAPP";
+  };
+  category: string;
+  subcategory?: string;
+  keywords?: string[];
+  /** Preferred: multiple department POCs for this subcategory. */
+  contacts?: VendorMapContactInput[];
+  /** Legacy single contact — merged into contacts when provided. */
+  contact?: VendorMapContactInput;
+};
+
+function normalizeContactRows(
+  contacts: VendorMapContactInput[] | undefined,
+  contact: VendorMapContactInput | undefined
+) {
+  const rows = [...(contacts || []), ...(contact ? [contact] : [])]
+    .map((row) => ({
+      name: String(row.name || "").trim(),
+      email: String(row.email || "").trim(),
+      phone: String(row.phone || "").trim(),
+      role: String(row.role || "").trim(),
+      isPrimary: Boolean(row.isPrimary),
+    }))
+    .filter((row) => row.name || row.email || row.phone);
+
+  if (rows.length === 0) return [];
+  const primaryIndex = rows.findIndex((row) => row.isPrimary);
+  return rows.map((row, index) => ({
+    ...row,
+    isPrimary: primaryIndex >= 0 ? index === primaryIndex : index === 0,
+    role: row.role || "Department POC",
+  }));
+}
+
+export async function mapVendorToCategory(input: VendorMapInput) {
+  const category = normalizeVendorCategory(input.category.trim());
+  const subcategory = String(input.subcategory || "").trim();
+  const keywords = normalizeKeywords(input.keywords || []);
+  const contactRows = normalizeContactRows(input.contacts, input.contact);
+
+  if (!category) throw new Error("Category is required");
+
+  return prisma.$transaction(async (tx) => {
+    let vendorId = input.vendorId?.trim() || "";
+
+    if (!vendorId) {
+      const name = String(input.vendor?.name || "").trim();
+      if (!name) throw new Error("Vendor name or vendorId is required");
+      const created = await tx.vendor.create({
+        data: {
+          name,
+          phone: input.vendor?.phone?.trim() || null,
+          email: input.vendor?.email?.trim() || null,
+          whatsappId: input.vendor?.whatsappId?.trim() || null,
+          preferredChannel: input.vendor?.preferredChannel || "EMAIL",
+          active: true,
+        },
+      });
+      vendorId = created.id;
+    } else {
+      const existing = await tx.vendor.findUnique({
+        where: { id: vendorId },
+        select: { id: true },
+      });
+      if (!existing) throw new Error("Vendor not found");
+    }
+
+    const vendorCategory = await tx.vendorCategory.upsert({
+      where: {
+        vendorId_category_subcategory: {
+          vendorId,
+          category,
+          subcategory,
+        },
+      },
+      create: {
+        vendorId,
+        category,
+        subcategory,
+        keywords,
+      },
+      update: keywords.length > 0 ? { keywords } : {},
+    });
+
+    let scopedContacts: Array<{
+      id: string;
+      name: string;
+      email: string;
+      phone: string;
+      role: string;
+      isPrimary: boolean;
+    }> = [];
+
+    if (contactRows.length > 0) {
+      await tx.vendorContact.deleteMany({
+        where: { vendorId, vendorCategoryId: vendorCategory.id },
+      });
+
+      const remainingContacts = await tx.vendorContact.count({
+        where: { vendorId },
+      });
+      await tx.vendorContact.createMany({
+        data: contactRows.map((row, index) => ({
+          vendorId,
+          vendorCategoryId: vendorCategory.id,
+          name: row.name,
+          email: row.email,
+          phone: row.phone,
+          role: row.role,
+          isPrimary: remainingContacts === 0 && index === 0,
+        })),
+      });
+    }
+
+    scopedContacts = await tx.vendorContact.findMany({
+      where: { vendorId, vendorCategoryId: vendorCategory.id },
+      orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        isPrimary: true,
+      },
+    });
+
+    const vendor = await tx.vendor.findUniqueOrThrow({
+      where: { id: vendorId },
+      include: {
+        categories: {
+          orderBy: [{ category: "asc" }, { subcategory: "asc" }],
+        },
+        contacts: {
+          orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
+          include: { vendorCategory: true },
+        },
+      },
+    });
+
+    return {
+      vendor: serializeVendor(vendor),
+      vendorCategoryId: vendorCategory.id,
+      category,
+      subcategory,
+      contactCount: scopedContacts.length,
+      mapping: {
+        vendorId,
+        vendorName: vendor.name,
+        vendorCategoryId: vendorCategory.id,
+        active: vendor.active,
+        phone: vendor.phone || "",
+        email: vendor.email || "",
+        contacts: scopedContacts,
+      },
+    };
+  });
+}
+
+export async function unlinkVendorFromCategory(input: {
+  vendorId: string;
+  category: string;
+  subcategory?: string;
+}) {
+  const category = normalizeVendorCategory(input.category.trim());
+  const subcategory = String(input.subcategory || "").trim();
+  if (!input.vendorId || !category) {
+    throw new Error("vendorId and category are required");
+  }
+
+  const row = await prisma.vendorCategory.findUnique({
+    where: {
+      vendorId_category_subcategory: {
+        vendorId: input.vendorId,
+        category,
+        subcategory,
+      },
+    },
+  });
+
+  if (!row) {
+    return { deleted: false, vendorId: input.vendorId, category, subcategory };
+  }
+
+  await prisma.vendorCategory.delete({ where: { id: row.id } });
+  return { deleted: true, vendorId: input.vendorId, category, subcategory };
+}

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useState } from "react";
-import { Pencil, Plus, Search, Upload, X } from "lucide-react";
+import { Pencil, Plus, RefreshCw, Search, Upload, X } from "lucide-react";
 import { PRODUCT_CATEGORIES } from "@/lib/categories";
 
 type VendorCategory = {
@@ -19,6 +19,9 @@ type VendorContact = {
   phone: string;
   role: string;
   isPrimary: boolean;
+  vendorCategoryId?: string | null;
+  category?: string;
+  subcategory?: string;
 };
 
 type Vendor = {
@@ -48,6 +51,9 @@ const emptyContact = (): VendorContact => ({
   phone: "",
   role: "",
   isPrimary: false,
+  vendorCategoryId: null,
+  category: "",
+  subcategory: "",
 });
 
 const emptyForm = (): VendorForm => ({
@@ -79,8 +85,8 @@ export default function VendorsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<VendorForm>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
-
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
@@ -93,9 +99,29 @@ export default function VendorsPage() {
   }, [q, activeFilter]);
 
   useEffect(() => {
-    const timeout = setTimeout(load, 300);
+    const timeout = setTimeout(() => void load(), 300);
     return () => clearTimeout(timeout);
   }, [load]);
+
+  async function syncFromClients() {
+    setSyncing(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/vendors?sync=1&syncOnly=1");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setMessage(apiError(data.error) || "Could not sync vendors from clients");
+        return;
+      }
+      setMessage(
+        `Synced from Is Vendor clients — ${data.created || 0} added, ${data.updated || 0} updated` +
+          (data.deactivated ? `, ${data.deactivated} deactivated` : "")
+      );
+      await load();
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function openCreate() {
     setEditingId(null);
@@ -126,6 +152,9 @@ export default function VendorsPage() {
               phone: contact.phone,
               role: contact.role,
               isPrimary: contact.isPrimary,
+              vendorCategoryId: contact.vendorCategoryId || null,
+              category: contact.category || "",
+              subcategory: contact.subcategory || "",
             }))
           : [
               {
@@ -134,6 +163,9 @@ export default function VendorsPage() {
                 phone: vendor.phone,
                 role: "",
                 isPrimary: true,
+                vendorCategoryId: null,
+                category: "",
+                subcategory: "",
               },
             ],
     });
@@ -170,6 +202,9 @@ export default function VendorsPage() {
         email: contact.email.trim(),
         phone: contact.phone.trim(),
         role: contact.role.trim(),
+        vendorCategoryId: contact.vendorCategoryId || null,
+        category: (contact.category || "").trim(),
+        subcategory: (contact.subcategory || "").trim(),
       }))
       .filter((contact) => contact.name || contact.email || contact.phone);
     const primaryIndex = contacts.findIndex((contact) => contact.isPrimary);
@@ -218,10 +253,31 @@ export default function VendorsPage() {
         <div>
           <h1 className="text-2xl font-semibold">Vendors</h1>
           <p className="mt-1 text-sm text-mid-green">
-            Supplier contacts, categories, and deterministic matching keywords
+            Clients marked Is Vendor, plus categories and matching keywords.{" "}
+            <Link href="/admin/vendors" className="underline underline-offset-2 hover:text-dark-secondary">
+              Manage department mapping in Admin
+            </Link>
           </p>
         </div>
         <div className="flex gap-2">
+          <Link
+            href="/admin/vendors"
+            className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
+          >
+            Admin mapping
+          </Link>
+          <button
+            type="button"
+            onClick={() => void syncFromClients()}
+            disabled={syncing}
+            className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20 disabled:opacity-60"
+          >
+            <RefreshCw
+              className={`h-4 w-4 text-mid-green ${syncing ? "animate-spin" : ""}`}
+              strokeWidth={1.5}
+            />
+            {syncing ? "Syncing…" : "Sync from clients"}
+          </button>
           <Link
             href="/vendors/import"
             className="inline-flex items-center gap-2 rounded-lg border border-light-green/50 bg-white/50 px-3 py-2 text-sm hover:bg-light-green/20"
@@ -326,16 +382,43 @@ export default function VendorsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex max-w-sm flex-wrap gap-1">
-                      {vendor.categories.map((category) => (
-                        <span
-                          key={`${category.category}-${category.subcategory}`}
-                          className="rounded bg-mid-green/10 px-2 py-0.5 text-xs text-mid-green"
-                        >
-                          {category.category}
-                          {category.subcategory ? ` / ${category.subcategory}` : ""}
-                        </span>
-                      ))}
+                      {vendor.categories.map((category) => {
+                        const departmentPoc = (vendor.contacts || []).find(
+                          (contact) =>
+                            contact.vendorCategoryId &&
+                            (contact.vendorCategoryId === category.id ||
+                              (contact.category === category.category &&
+                                (contact.subcategory || "") ===
+                                  (category.subcategory || "")))
+                        );
+                        return (
+                          <span
+                            key={`${category.category}-${category.subcategory}`}
+                            className="rounded bg-mid-green/10 px-2 py-0.5 text-xs text-mid-green"
+                            title={
+                              departmentPoc
+                                ? `POC: ${departmentPoc.name || departmentPoc.email || departmentPoc.phone}`
+                                : undefined
+                            }
+                          >
+                            {category.category}
+                            {category.subcategory ? ` / ${category.subcategory}` : ""}
+                            {departmentPoc?.name ? (
+                              <span className="text-dark-secondary/70">
+                                {" "}
+                                · {departmentPoc.name}
+                              </span>
+                            ) : null}
+                          </span>
+                        );
+                      })}
                     </div>
+                    <Link
+                      href={`/admin/vendors?vendorId=${vendor.id}`}
+                      className="mt-1 inline-block text-[11px] text-mid-green underline underline-offset-2 hover:text-dark-secondary"
+                    >
+                      Departments
+                    </Link>
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -548,6 +631,22 @@ export default function VendorsPage() {
                       />
                       Primary
                     </label>
+                    {contact.category ? (
+                      <p className="text-[11px] text-mid-green sm:col-span-2">
+                        Department: {contact.category}
+                        {contact.subcategory ? ` / ${contact.subcategory}` : ""}{" "}
+                        <Link
+                          href={
+                            editingId
+                              ? `/admin/vendors?vendorId=${editingId}`
+                              : "/admin/vendors"
+                          }
+                          className="underline underline-offset-2"
+                        >
+                          Edit in Admin
+                        </Link>
+                      </p>
+                    ) : null}
                     {form.contacts.length > 1 ? (
                       <button
                         type="button"
@@ -592,7 +691,13 @@ export default function VendorsPage() {
                     className="grid gap-2 rounded-lg bg-white/50 p-3 sm:grid-cols-2"
                   >
                     <select
-                      value={category.category}
+                      value={
+                        (PRODUCT_CATEGORIES as readonly string[]).includes(
+                          category.category
+                        )
+                          ? category.category
+                          : "Misc"
+                      }
                       onChange={(event) =>
                         updateCategory(index, { category: event.target.value })
                       }
