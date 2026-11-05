@@ -127,7 +127,7 @@ function collectReferenceIds(parsed: ParsedMail): string[] {
 }
 
 function emailBody(parsed: ParsedMail): string {
-  return emailBodyFromParts(parsed.text, parsed.html);
+  return emailBodyFromParts(parsed.text || undefined, parsed.html || undefined);
 }
 
 /** Set outreach status via SQL so new enum values work even if the Prisma engine is stale. */

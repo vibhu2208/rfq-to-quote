@@ -79,7 +79,11 @@ export function htmlToPlainText(html: string): string {
 }
 
 /** Prefer plain text; fall back to structured HTML→text (keeps line breaks). */
-export function emailBodyFromParts(text?: string | null, html?: string | null): string {
+export function emailBodyFromParts(
+  text?: string | false | null,
+  html?: string | false | null
+): string {
+  // mailparser types text/html as `string | false`
   const plain = String(text || "").trim();
   if (plain) {
     // Legacy IMAP/HTML strip often left &nbsp; / &quot; in "plain" text.

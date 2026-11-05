@@ -111,7 +111,10 @@ async function ingestInboundEmail(
     typeof fromRaw === "string" ? fromRaw : String(fromRaw)
   );
   const subject = parsed.subject || "(no subject)";
-  const text = emailBodyFromParts(parsed.text, parsed.html);
+  const text = emailBodyFromParts(
+    parsed.text || undefined,
+    parsed.html || undefined
+  );
   const messageId = (parsed.messageId || fallbackMessageId)
     .replace(/[<>]/g, "")
     .slice(0, 240);

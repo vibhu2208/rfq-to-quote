@@ -62,7 +62,7 @@ function collectReferenceIds(parsed: ParsedMail): string[] {
 }
 
 function emailBody(parsed: ParsedMail): string {
-  return emailBodyFromParts(parsed.text, parsed.html);
+  return emailBodyFromParts(parsed.text || undefined, parsed.html || undefined);
 }
 
 export function extractQuoteNumberFromText(...parts: string[]): string | null {

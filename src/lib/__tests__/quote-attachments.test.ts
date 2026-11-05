@@ -67,14 +67,14 @@ describe("quoteAttachmentObjectPath", () => {
 
 describe("s3ConfigFromEnv", () => {
   it("reads S3 credentials and defaults the quote-attachments bucket", () => {
-    expect(s3ConfigFromEnv({})).toBeNull();
+    expect(s3ConfigFromEnv({} as NodeJS.ProcessEnv)).toBeNull();
     expect(
       s3ConfigFromEnv({
         S3_ACCESS_KEY_ID: "access",
         S3_SECRET_ACCESS_KEY: "secret",
         S3_ENDPOINT: "https://example.storage.supabase.co/storage/v1/s3",
         S3_REGION: "eu-west-1",
-      })
+      } as NodeJS.ProcessEnv)
     ).toMatchObject({
       accessKeyId: "access",
       bucket: "quote-attachments",
