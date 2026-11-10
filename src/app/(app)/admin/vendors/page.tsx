@@ -1,8 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  FormEvent,
+  ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   Link2Off,
   Plus,
@@ -83,19 +91,24 @@ type MapPoc = {
 
 type MapForm = {
   mode: "existing" | "new";
-  vendorId: string;
+  /** Selected existing vendors to map in one save. */
+  vendorIds: string[];
+  /** POCs keyed by vendor id (existing mode). */
+  vendorContacts: Record<string, MapPoc[]>;
   name: string;
   phone: string;
   email: string;
+  /** POCs for new-vendor mode. */
   contacts: MapPoc[];
   keywords: string;
 };
 
-type DepartmentForm = {
+type CategoryAssignForm = {
   category: string;
-  subcategory: string;
+  subcategories: string[];
+  /** Keywords keyed by subcategory name. */
+  subcategoryKeywords: Record<string, string>;
   contacts: MapPoc[];
-  keywords: string;
 };
 
 const emptyPoc = (): MapPoc => ({
@@ -107,7 +120,8 @@ const emptyPoc = (): MapPoc => ({
 
 const emptyMapForm = (): MapForm => ({
   mode: "existing",
-  vendorId: "",
+  vendorIds: [],
+  vendorContacts: {},
   name: "",
   phone: "",
   email: "",
@@ -115,12 +129,113 @@ const emptyMapForm = (): MapForm => ({
   keywords: "",
 });
 
-const emptyDepartmentForm = (): DepartmentForm => ({
+function normalizeMapContacts(contacts: MapPoc[]) {
+  return contacts
+    .map((contact) => ({
+      name: contact.name.trim(),
+      email: contact.email.trim(),
+      phone: contact.phone.trim(),
+      role: contact.role.trim() || "Department POC",
+    }))
+    .filter((contact) => contact.name || contact.email || contact.phone);
+}
+
+function seedVendorMapContacts(vendor: VendorListItem): MapPoc[] {
+  const companyContacts = (vendor.contacts || []).filter(
+    (contact) => !contact.vendorCategoryId
+  );
+  if (companyContacts.length > 0) {
+    return companyContacts.map((contact) => ({
+      name: contact.name || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      role: contact.role || "",
+    }));
+  }
+  return [
+    {
+      name: vendor.name || "",
+      email: vendor.email || "",
+      phone: vendor.phone || "",
+      role: "",
+    },
+  ];
+}
+
+const emptyCategoryAssignForm = (): CategoryAssignForm => ({
   category: PRODUCT_CATEGORIES[0],
-  subcategory: "",
+  subcategories: [],
+  subcategoryKeywords: {},
   contacts: [emptyPoc()],
-  keywords: "",
 });
+
+/** Prefill Assign with this vendor's existing maps under a category. */
+function assignFormFromVendor(
+  vendor: VendorListItem | null | undefined,
+  category: string
+): CategoryAssignForm {
+  const mapped = (vendor?.categories || []).filter(
+    (row) => row.category === category
+  );
+  const subcategories: string[] = [];
+  const subcategoryKeywords: Record<string, string> = {};
+  for (const row of mapped) {
+    const subcategory = row.subcategory || "";
+    if (!subcategories.includes(subcategory)) {
+      subcategories.push(subcategory);
+    }
+    subcategoryKeywords[subcategory] = (row.keywords || []).join(", ");
+  }
+  return {
+    category,
+    subcategories,
+    subcategoryKeywords,
+    contacts: [emptyPoc()],
+  };
+}
+
+function parseKeywordInput(value: string) {
+  return value
+    .split(/[|,;]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function MappingPanel({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`rounded-2xl border border-light-green/25 bg-white/80 shadow-[0_8px_28px_rgba(11,43,38,0.06)] backdrop-blur-sm ${className}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function MappingEmptyState({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-xl border border-dashed border-light-green/40 bg-background/50 px-4 py-8 text-center text-sm text-mid-green">
+      {children}
+    </div>
+  );
+}
+
+function pocKey(contact: {
+  name?: string;
+  email?: string;
+  phone?: string;
+  id?: string;
+}) {
+  if (contact.id) return `id:${contact.id}`;
+  return `${(contact.email || "").toLowerCase()}|${contact.phone || ""}|${(
+    contact.name || ""
+  ).toLowerCase()}`;
+}
 
 function apiError(value: unknown): string {
   if (typeof value === "string") return value;
@@ -132,17 +247,43 @@ function apiError(value: unknown): string {
 }
 
 function AdminVendorsPageInner() {
+  const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const { toast } = useToast();
   const initialVendorId = searchParams.get("vendorId") || "";
+  const initialTab =
+    searchParams.get("tab") === "vendor" || initialVendorId
+      ? "vendor"
+      : "category";
 
-  const [tab, setTab] = useState<"category" | "vendor">(
-    initialVendorId ? "vendor" : "category"
+  const [tab, setTab] = useState<"category" | "vendor">(initialTab);
+
+  const syncVendorMappingUrl = useCallback(
+    (next: { tab: "category" | "vendor"; vendorId?: string }) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next.tab === "vendor") {
+        params.set("tab", "vendor");
+      } else {
+        params.delete("tab");
+      }
+      const vendorId = (next.vendorId ?? "").trim();
+      if (next.tab === "vendor" && vendorId) {
+        params.set("vendorId", vendorId);
+      } else {
+        params.delete("vendorId");
+      }
+      const query = params.toString();
+      router.replace(query ? `${pathname}?${query}` : pathname, {
+        scroll: false,
+      });
+    },
+    [pathname, router, searchParams]
   );
   const [taxonomy, setTaxonomy] = useState<TaxonomyCategory[]>([]);
   const [vendors, setVendors] = useState<VendorListItem[]>([]);
   const [mapSearchResults, setMapSearchResults] = useState<VendorListItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialTab === "category");
   const [vendorSearching, setVendorSearching] = useState(false);
   const [mapSearching, setMapSearching] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>(
@@ -165,14 +306,32 @@ function AdminVendorsPageInner() {
   const [mapSaving, setMapSaving] = useState(false);
   const [mapVendorSearch, setMapVendorSearch] = useState("");
   const [mapSearchOpen, setMapSearchOpen] = useState(false);
-  const [mapVendorDetails, setMapVendorDetails] = useState<VendorListItem | null>(
-    null
+  const [mapSelectedVendors, setMapSelectedVendors] = useState<VendorListItem[]>(
+    []
   );
   const [mapVendorLoading, setMapVendorLoading] = useState(false);
 
-  const [deptOpen, setDeptOpen] = useState(false);
-  const [deptForm, setDeptForm] = useState<DepartmentForm>(emptyDepartmentForm);
-  const [deptSaving, setDeptSaving] = useState(false);
+  const [subcategoryVendors, setSubcategoryVendors] = useState<
+    TaxonomyVendor[]
+  >([]);
+  const [subcategoryVendorsLoading, setSubcategoryVendorsLoading] =
+    useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [companyPocsOpen, setCompanyPocsOpen] = useState(false);
+  const [assignForm, setAssignForm] = useState<CategoryAssignForm>(
+    emptyCategoryAssignForm()
+  );
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [assignCustomSubcategory, setAssignCustomSubcategory] = useState("");
+  const [assignCustomKeywords, setAssignCustomKeywords] = useState("");
+  const [assignAddingSubcategory, setAssignAddingSubcategory] = useState(false);
+  const [assignRemovingSubcategory, setAssignRemovingSubcategory] = useState<
+    string | null
+  >(null);
+  const [availablePocs, setAvailablePocs] = useState<
+    VendorListItem["contacts"]
+  >([]);
+  const [availablePocsLoading, setAvailablePocsLoading] = useState(false);
 
   const upsertVendorLocal = useCallback((vendor: VendorListItem) => {
     setVendors((current) => {
@@ -203,6 +362,15 @@ function AdminVendorsPageInner() {
       };
     }) => {
       const { category, subcategory, vendor, mapping } = payload;
+      const vendorEntry: TaxonomyVendor = {
+        vendorId: mapping.vendorId,
+        vendorName: mapping.vendorName,
+        vendorCategoryId: mapping.vendorCategoryId,
+        active: mapping.active,
+        phone: mapping.phone,
+        email: mapping.email,
+        contacts: mapping.contacts,
+      };
       upsertVendorLocal(vendor);
       setTaxonomy((current) => {
         const next = current.map((row) => ({
@@ -226,6 +394,7 @@ function AdminVendorsPageInner() {
         let subRow = categoryRow.subcategories.find(
           (sub) => sub.subcategory === subcategory
         );
+        const isNewSub = !subRow;
         if (!subRow) {
           subRow = {
             subcategory,
@@ -239,31 +408,39 @@ function AdminVendorsPageInner() {
             a.subcategory.localeCompare(b.subcategory)
           );
         }
-        const vendorEntry: TaxonomyVendor = {
-          vendorId: mapping.vendorId,
-          vendorName: mapping.vendorName,
-          vendorCategoryId: mapping.vendorCategoryId,
-          active: mapping.active,
-          phone: mapping.phone,
-          email: mapping.email,
-          contacts: mapping.contacts,
-        };
         const existingIndex = subRow.vendors.findIndex(
           (row) => row.vendorId === mapping.vendorId
         );
+        const isNewVendor = existingIndex < 0;
         if (existingIndex >= 0) subRow.vendors[existingIndex] = vendorEntry;
         else subRow.vendors.push(vendorEntry);
-        subRow.vendorCount = subRow.vendors.length;
+        if (isNewVendor) subRow.vendorCount += 1;
+        subRow.vendorCount = Math.max(subRow.vendorCount, subRow.vendors.length);
         categoryRow.subcategoryCount = categoryRow.subcategories.length;
-        categoryRow.vendorCount = new Set(
-          categoryRow.subcategories.flatMap((sub) =>
-            sub.vendors.map((row) => row.vendorId)
-          )
-        ).size;
+        if (isNewSub || isNewVendor) {
+          categoryRow.vendorCount += isNewVendor ? 1 : 0;
+        }
         return [...next];
       });
+      setSubcategoryVendors((current) => {
+        if (
+          selectedCategory !== category ||
+          selectedSubcategory !== subcategory
+        ) {
+          return current;
+        }
+        const existingIndex = current.findIndex(
+          (row) => row.vendorId === mapping.vendorId
+        );
+        if (existingIndex >= 0) {
+          const next = [...current];
+          next[existingIndex] = vendorEntry;
+          return next;
+        }
+        return [...current, vendorEntry];
+      });
     },
-    [upsertVendorLocal]
+    [selectedCategory, selectedSubcategory, upsertVendorLocal]
   );
 
   const loadTaxonomy = useCallback(
@@ -286,22 +463,23 @@ function AdminVendorsPageInner() {
       } catch {
         if (!silent) toast("Could not load taxonomy", "error");
       } finally {
-        if (!silent) setLoading(false);
+        setLoading(false);
       }
     },
     [toast]
   );
 
   useEffect(() => {
-    void loadTaxonomy();
-  }, [loadTaxonomy]);
+    // Skip blocking spinner on By vendor; taxonomy still prefetches in background.
+    void loadTaxonomy(initialTab !== "category");
+  }, [loadTaxonomy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    setTab(initialTab);
     if (initialVendorId) {
-      setTab("vendor");
       setSelectedVendorId(initialVendorId);
     }
-  }, [initialVendorId]);
+  }, [initialTab, initialVendorId]);
 
   useEffect(() => {
     if (!selectedVendorId) {
@@ -309,13 +487,15 @@ function AdminVendorsPageInner() {
       return;
     }
     const cached = vendors.find((vendor) => vendor.id === selectedVendorId);
-    if (cached && cached.categories) {
+    if (cached && cached.categories?.length) {
       setSelectedVendor(cached);
     }
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch(`/api/vendors/${selectedVendorId}`);
+        const response = await fetch(
+          `/api/vendors/${selectedVendorId}?light=1`
+        );
         const data = await response.json();
         if (!response.ok || cancelled) return;
         const vendor = data as VendorListItem;
@@ -332,13 +512,51 @@ function AdminVendorsPageInner() {
     };
   }, [selectedVendorId, upsertVendorLocal]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const loadSubcategoryVendors = useCallback(
+    async (category: string, subcategory: string) => {
+      setSubcategoryVendorsLoading(true);
+      try {
+        const params = new URLSearchParams({
+          category,
+          subcategory,
+        });
+        const response = await fetch(
+          `/api/admin/taxonomy/vendors?${params.toString()}`
+        );
+        const data = await response.json().catch(() => null);
+        if (!response.ok) {
+          setSubcategoryVendors([]);
+          return;
+        }
+        setSubcategoryVendors(
+          Array.isArray(data?.vendors) ? (data.vendors as TaxonomyVendor[]) : []
+        );
+      } catch {
+        setSubcategoryVendors([]);
+      } finally {
+        setSubcategoryVendorsLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (tab !== "category" || selectedSubcategory == null) {
+      setSubcategoryVendors([]);
+      setSubcategoryVendorsLoading(false);
+      return;
+    }
+    void loadSubcategoryVendors(selectedCategory, selectedSubcategory);
+  }, [
+    tab,
+    selectedCategory,
+    selectedSubcategory,
+    loadSubcategoryVendors,
+  ]);
+
   useEffect(() => {
     if (tab !== "vendor") return;
     const q = vendorQuery.trim();
-    if (!q) {
-      setVendorSearching(false);
-      return;
-    }
     const handle = window.setTimeout(() => {
       void (async () => {
         setVendorSearching(true);
@@ -346,9 +564,10 @@ function AdminVendorsPageInner() {
           const params = new URLSearchParams({
             active: "true",
             light: "1",
-            limit: "40",
-            q,
+            // Default list shows a top slice; search expands the pool.
+            limit: q ? "40" : "10",
           });
+          if (q) params.set("q", q);
           const response = await fetch(`/api/vendors?${params}`);
           const data = await response.json();
           setVendors(Array.isArray(data) ? data : []);
@@ -358,7 +577,7 @@ function AdminVendorsPageInner() {
           setVendorSearching(false);
         }
       })();
-    }, 250);
+    }, q ? 250 : 0);
     return () => window.clearTimeout(handle);
   }, [tab, vendorQuery, toast]);
 
@@ -426,16 +645,86 @@ function AdminVendorsPageInner() {
     );
   }, [taxonomy, categoryQuery]);
 
+  const taxonomyStats = useMemo(() => {
+    const subcategories = taxonomy.reduce(
+      (sum, row) => sum + row.subcategoryCount,
+      0
+    );
+    const vendorsMapped = taxonomy.reduce(
+      (sum, row) => sum + row.vendorCount,
+      0
+    );
+    return {
+      categories: taxonomy.length,
+      subcategories,
+      vendorsMapped,
+    };
+  }, [taxonomy]);
+
   const filteredVendors = vendors;
 
-  const subcategoryOptionsForDept = useMemo(() => {
-    const category = deptForm.category;
+  const subcategoryOptionsForAssign = useMemo(() => {
+    const category = assignForm.category;
     const row = taxonomy.find((item) => item.category === category);
     const fromApi = (row?.subcategories || []).map((sub) => sub.subcategory);
-    return [...new Set(fromApi.filter(Boolean))].sort((a, b) =>
-      a.localeCompare(b)
+    const selectedExtra = assignForm.subcategories.filter(
+      (sub) => sub && !fromApi.includes(sub)
     );
-  }, [taxonomy, deptForm.category]);
+    return [...new Set([...fromApi.filter(Boolean), ...selectedExtra])].sort(
+      (a, b) => a.localeCompare(b)
+    );
+  }, [taxonomy, assignForm.category, assignForm.subcategories]);
+
+  useEffect(() => {
+    if (!assignOpen || !selectedVendorId || assignForm.subcategories.length === 0) {
+      setAvailablePocs([]);
+      setAvailablePocsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setAvailablePocsLoading(true);
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/vendors/${selectedVendorId}?light=1`
+        );
+        const data = await response.json().catch(() => null);
+        if (cancelled) return;
+        if (!response.ok || !data) {
+          setAvailablePocs([]);
+          setAvailablePocsLoading(false);
+          return;
+        }
+        const vendor = data as VendorListItem;
+        const selected = new Set(
+          assignForm.subcategories.map((sub) => sub.trim().toLowerCase())
+        );
+        const contacts = (vendor.contacts || []).filter((contact) => {
+          if (!contact.vendorCategoryId) return false;
+          if (
+            (contact.category || "").trim().toLowerCase() !==
+            assignForm.category.trim().toLowerCase()
+          ) {
+            return false;
+          }
+          return selected.has((contact.subcategory || "").trim().toLowerCase());
+        });
+        setAvailablePocs(contacts);
+      } catch {
+        if (!cancelled) setAvailablePocs([]);
+      } finally {
+        if (!cancelled) setAvailablePocsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    assignOpen,
+    selectedVendorId,
+    assignForm.category,
+    assignForm.subcategories,
+  ]);
 
   const mapVendorMatches = mapSearchResults;
 
@@ -443,15 +732,41 @@ function AdminVendorsPageInner() {
     setSelectedSubcategory(subcategory);
     setMapForm(emptyMapForm());
     setMapVendorSearch("");
-    setMapSearchOpen(false);
-    setMapVendorDetails(null);
+    setMapSearchOpen(true);
+    setMapSelectedVendors([]);
     setMapOpen(true);
   }
 
+  function removeMapSelectedVendor(vendorId: string) {
+    setMapSelectedVendors((current) =>
+      current.filter((vendor) => vendor.id !== vendorId)
+    );
+    setMapForm((current) => {
+      const nextContacts = { ...current.vendorContacts };
+      delete nextContacts[vendorId];
+      return {
+        ...current,
+        vendorIds: current.vendorIds.filter((id) => id !== vendorId),
+        vendorContacts: nextContacts,
+      };
+    });
+  }
+
   async function selectExistingVendor(vendorId: string) {
+    if (mapForm.vendorIds.includes(vendorId)) {
+      removeMapSelectedVendor(vendorId);
+      return;
+    }
+    const alreadyMapped = subcategoryVendors.some(
+      (vendor) => vendor.vendorId === vendorId
+    );
+    if (alreadyMapped) {
+      toast("Vendor is already mapped to this subcategory", "error");
+      return;
+    }
     setMapVendorLoading(true);
     try {
-      const response = await fetch(`/api/vendors/${vendorId}`);
+      const response = await fetch(`/api/vendors/${vendorId}?light=1`);
       const data = await response.json();
       if (!response.ok) {
         toast(apiError(data.error) || "Could not load vendor details", "error");
@@ -459,36 +774,24 @@ function AdminVendorsPageInner() {
         return;
       }
       const vendor = data as VendorListItem;
-      const companyContacts = (vendor.contacts || []).filter(
-        (contact) => !contact.vendorCategoryId
-      );
-      const seedContacts =
-        companyContacts.length > 0
-          ? companyContacts.map((contact) => ({
-              name: contact.name || "",
-              email: contact.email || "",
-              phone: contact.phone || "",
-              role: contact.role || "",
-            }))
-          : [
-              {
-                name: vendor.name || "",
-                email: vendor.email || "",
-                phone: vendor.phone || "",
-                role: "",
-              },
-            ];
-      setMapVendorDetails(vendor);
+      const seeded = seedVendorMapContacts(vendor);
+      setMapSelectedVendors((current) => {
+        if (current.some((row) => row.id === vendor.id)) return current;
+        return [...current, vendor];
+      });
       setMapForm((current) => ({
         ...current,
         mode: "existing",
-        vendorId: vendor.id,
-        name: vendor.name,
-        phone: vendor.phone || "",
-        email: vendor.email || "",
-        contacts: seedContacts.length > 0 ? seedContacts : [emptyPoc()],
+        vendorIds: current.vendorIds.includes(vendor.id)
+          ? current.vendorIds
+          : [...current.vendorIds, vendor.id],
+        vendorContacts: {
+          ...current.vendorContacts,
+          [vendor.id]: current.vendorContacts[vendor.id] || seeded,
+        },
       }));
-      setMapVendorSearch(vendor.name);
+      setMapVendorSearch("");
+      setMapSearchOpen(true);
     } catch {
       toast("Could not load vendor details", "error");
     }
@@ -504,8 +807,57 @@ function AdminVendorsPageInner() {
     }));
   }
 
-  function updateDeptPoc(index: number, patch: Partial<MapPoc>) {
-    setDeptForm((current) => ({
+  function updateMapVendorPoc(
+    vendorId: string,
+    index: number,
+    patch: Partial<MapPoc>
+  ) {
+    setMapForm((current) => {
+      const rows = current.vendorContacts[vendorId] || [emptyPoc()];
+      return {
+        ...current,
+        vendorContacts: {
+          ...current.vendorContacts,
+          [vendorId]: rows.map((contact, contactIndex) =>
+            contactIndex === index ? { ...contact, ...patch } : contact
+          ),
+        },
+      };
+    });
+  }
+
+  function addMapVendorPoc(vendorId: string) {
+    setMapForm((current) => {
+      const rows = current.vendorContacts[vendorId] || [emptyPoc()];
+      return {
+        ...current,
+        vendorContacts: {
+          ...current.vendorContacts,
+          [vendorId]: [...rows, emptyPoc()],
+        },
+      };
+    });
+  }
+
+  function removeMapVendorPoc(vendorId: string, index: number) {
+    setMapForm((current) => {
+      const rows = current.vendorContacts[vendorId] || [emptyPoc()];
+      const next =
+        rows.length > 1
+          ? rows.filter((_, contactIndex) => contactIndex !== index)
+          : [emptyPoc()];
+      return {
+        ...current,
+        vendorContacts: {
+          ...current.vendorContacts,
+          [vendorId]: next,
+        },
+      };
+    });
+  }
+
+  function updateAssignPoc(index: number, patch: Partial<MapPoc>) {
+    setAssignForm((current) => ({
       ...current,
       contacts: current.contacts.map((contact, contactIndex) =>
         contactIndex === index ? { ...contact, ...patch } : contact
@@ -513,84 +865,433 @@ function AdminVendorsPageInner() {
     }));
   }
 
-  async function submitMap(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedCategory || selectedSubcategory == null) return;
-    if (mapForm.mode === "existing" && !mapForm.vendorId) {
-      toast("Search and select a vendor first", "error");
-      return;
-    }
-    const contacts = mapForm.contacts
+  function upsertTaxonomySubcategoryLocal(
+    category: string,
+    subcategory: string
+  ) {
+    setTaxonomy((current) => {
+      const next = current.map((row) => ({
+        ...row,
+        subcategories: [...row.subcategories],
+      }));
+      let categoryRow = next.find((row) => row.category === category);
+      if (!categoryRow) {
+        categoryRow = {
+          category,
+          subcategoryCount: 0,
+          vendorCount: 0,
+          subcategories: [],
+        };
+        next.push(categoryRow);
+        next.sort((a, b) => a.category.localeCompare(b.category));
+      }
+      if (
+        !categoryRow.subcategories.some((sub) => sub.subcategory === subcategory)
+      ) {
+        categoryRow.subcategories.push({
+          subcategory,
+          fromCatalog: false,
+          fromAdmin: true,
+          vendorCount: 0,
+          vendors: [],
+        });
+        categoryRow.subcategories.sort((a, b) =>
+          a.subcategory.localeCompare(b.subcategory)
+        );
+        categoryRow.subcategoryCount = categoryRow.subcategories.length;
+      }
+      return [...next];
+    });
+  }
+
+  function removeTaxonomySubcategoryLocal(
+    category: string,
+    subcategory: string
+  ) {
+    setTaxonomy((current) =>
+      current.map((row) => {
+        if (row.category !== category) return row;
+        const subcategories = row.subcategories.filter(
+          (sub) => sub.subcategory !== subcategory
+        );
+        return {
+          ...row,
+          subcategories,
+          subcategoryCount: subcategories.length,
+          vendorCount: new Set(
+            subcategories.flatMap((sub) =>
+              sub.vendors.map((vendor) => vendor.vendorId)
+            )
+          ).size,
+        };
+      })
+    );
+  }
+
+  function toggleAssignSubcategory(subcategory: string) {
+    setAssignForm((current) => {
+      const exists = current.subcategories.includes(subcategory);
+      if (exists) {
+        const nextKeywords = { ...current.subcategoryKeywords };
+        delete nextKeywords[subcategory];
+        return {
+          ...current,
+          subcategories: current.subcategories.filter(
+            (value) => value !== subcategory
+          ),
+          subcategoryKeywords: nextKeywords,
+        };
+      }
+      return {
+        ...current,
+        subcategories: [...current.subcategories, subcategory],
+        subcategoryKeywords: {
+          ...current.subcategoryKeywords,
+          [subcategory]: current.subcategoryKeywords[subcategory] || "",
+        },
+      };
+    });
+  }
+
+  function updateAssignSubcategoryKeywords(
+    subcategory: string,
+    keywords: string
+  ) {
+    setAssignForm((current) => ({
+      ...current,
+      subcategoryKeywords: {
+        ...current.subcategoryKeywords,
+        [subcategory]: keywords,
+      },
+    }));
+  }
+
+  function assignContactsPayload() {
+    return assignForm.contacts
       .map((contact) => ({
         name: contact.name.trim(),
         email: contact.email.trim(),
         phone: contact.phone.trim(),
-        role: contact.role.trim() || "Department POC",
+        role: contact.role.trim() || "Category POC",
       }))
       .filter((contact) => contact.name || contact.email || contact.phone);
+  }
 
-    setMapSaving(true);
-    const keywords = mapForm.keywords
-      .split(/[|,;]/)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const body =
-      mapForm.mode === "existing"
-        ? {
-            vendorId: mapForm.vendorId,
-            category: selectedCategory,
-            subcategory: selectedSubcategory,
-            keywords,
-            contacts,
-          }
-        : {
-            vendor: {
-              name: mapForm.name,
-              phone: mapForm.phone,
-              email: mapForm.email,
-            },
-            category: selectedCategory,
-            subcategory: selectedSubcategory,
-            keywords,
-            contacts:
-              contacts.length > 0
-                ? contacts
-                : [
-                    {
-                      name: mapForm.name.trim(),
-                      email: mapForm.email.trim(),
-                      phone: mapForm.phone.trim(),
-                      role: "Department POC",
-                    },
-                  ].filter((contact) => contact.name || contact.email || contact.phone),
-          };
-
+  async function persistVendorSubcategoryMapping(input: {
+    category: string;
+    subcategory: string;
+    keywords: string[];
+    contacts?: ReturnType<typeof assignContactsPayload>;
+  }) {
+    if (!selectedVendorId) {
+      throw new Error("Select a vendor first");
+    }
     const response = await fetch("/api/admin/vendor-maps", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        vendorId: selectedVendorId,
+        category: input.category,
+        subcategory: input.subcategory,
+        keywords: input.keywords,
+        contacts: input.contacts ?? [],
+      }),
     });
-    const data = await response.json();
-    setMapSaving(false);
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      toast(apiError(data.error), "error");
-      return;
+      throw new Error(apiError(data.error) || "Could not save mapping");
     }
-    setMapOpen(false);
     if (data.vendor && data.mapping) {
       applyVendorMappingLocal({
-        category: data.category || selectedCategory,
-        subcategory: data.subcategory ?? selectedSubcategory,
+        category: data.category || input.category,
+        subcategory: data.subcategory ?? input.subcategory,
         vendor: data.vendor as VendorListItem,
         mapping: data.mapping,
       });
     }
+    return data;
+  }
+
+  async function addCustomAssignSubcategory() {
+    const value = assignCustomSubcategory.trim();
+    if (!value || assignAddingSubcategory) return;
+    if (!selectedVendorId) {
+      toast("Select a vendor first", "error");
+      return;
+    }
+    const category = assignForm.category;
+    const keywordsText = assignCustomKeywords.trim();
+    const keywords = parseKeywordInput(keywordsText);
+    setAssignAddingSubcategory(true);
+    try {
+      const taxonomyResponse = await fetch("/api/admin/taxonomy/subcategory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category, subcategory: value }),
+      });
+      const taxonomyData = await taxonomyResponse.json().catch(() => ({}));
+      if (!taxonomyResponse.ok) {
+        toast(
+          apiError(taxonomyData.error) || "Could not save subcategory",
+          "error"
+        );
+        return;
+      }
+
+      await persistVendorSubcategoryMapping({
+        category,
+        subcategory: value,
+        keywords,
+        contacts: assignContactsPayload(),
+      });
+
+      upsertTaxonomySubcategoryLocal(category, value);
+      setAssignForm((current) => ({
+        ...current,
+        subcategories: current.subcategories.includes(value)
+          ? current.subcategories
+          : [...current.subcategories, value],
+        subcategoryKeywords: {
+          ...current.subcategoryKeywords,
+          [value]:
+            keywordsText || current.subcategoryKeywords[value] || "",
+        },
+      }));
+      setAssignCustomSubcategory("");
+      setAssignCustomKeywords("");
+      await loadTaxonomy(true);
+      toast(`Saved ${category} / ${value} for this vendor`);
+    } catch (err) {
+      toast(
+        err instanceof Error ? err.message : "Could not save subcategory",
+        "error"
+      );
+    } finally {
+      setAssignAddingSubcategory(false);
+    }
+  }
+
+  async function removeAssignSubcategory(subcategory: string) {
+    const category = assignForm.category;
+    const label = subcategory || "(category-level)";
+    if (!selectedVendorId) {
+      toast("Select a vendor first", "error");
+      return;
+    }
+    if (
+      !confirm(
+        `Unlink this vendor from "${label}" under ${category}? Other vendors stay mapped.`
+      )
+    ) {
+      return;
+    }
+    setAssignRemovingSubcategory(subcategory);
+    try {
+      const response = await fetch("/api/admin/vendor-maps", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendorId: selectedVendorId,
+          category,
+          subcategory,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        toast(apiError(data.error) || "Could not unlink subcategory", "error");
+        return;
+      }
+      setAssignForm((current) => {
+        const nextKeywords = { ...current.subcategoryKeywords };
+        delete nextKeywords[subcategory];
+        return {
+          ...current,
+          subcategories: current.subcategories.filter(
+            (value) => value !== subcategory
+          ),
+          subcategoryKeywords: nextKeywords,
+        };
+      });
+      setTaxonomy((current) =>
+        current.map((row) => {
+          if (row.category !== category) return row;
+          const subcategories = row.subcategories.map((sub) => {
+            if (sub.subcategory !== subcategory) return sub;
+            const vendorsForSub = sub.vendors.filter(
+              (vendor) => vendor.vendorId !== selectedVendorId
+            );
+            return {
+              ...sub,
+              vendors: vendorsForSub,
+              vendorCount: Math.max(0, sub.vendorCount - 1),
+            };
+          });
+          return {
+            ...row,
+            subcategories,
+            vendorCount: Math.max(0, row.vendorCount - 1),
+          };
+        })
+      );
+      const vendorResponse = await fetch(
+        `/api/vendors/${selectedVendorId}?light=1`
+      );
+      const vendor = await vendorResponse.json().catch(() => null);
+      if (vendor?.id) {
+        setSelectedVendor(vendor);
+        upsertVendorLocal(vendor);
+      }
+      toast(
+        data.deleted
+          ? `Unlinked vendor from ${label}`
+          : `No mapping for ${label}`
+      );
+    } finally {
+      setAssignRemovingSubcategory(null);
+    }
+  }
+
+  function useAvailablePoc(contact: VendorListItem["contacts"][number]) {
+    const next: MapPoc = {
+      name: contact.name || "",
+      email: contact.email || "",
+      phone: contact.phone || "",
+      role: contact.role || "Category POC",
+    };
+    setAssignForm((current) => {
+      const already = current.contacts.some(
+        (row) => pocKey(row) === pocKey(next)
+      );
+      if (already) return current;
+      const blankOnly =
+        current.contacts.length === 1 &&
+        !current.contacts[0].name &&
+        !current.contacts[0].email &&
+        !current.contacts[0].phone;
+      return {
+        ...current,
+        contacts: blankOnly ? [next] : [...current.contacts, next],
+      };
+    });
+  }
+
+  async function submitMap(event: FormEvent) {
+    event.preventDefault();
+    if (!selectedCategory || selectedSubcategory == null) return;
+    if (mapForm.mode === "existing" && mapForm.vendorIds.length === 0) {
+      toast("Search and select at least one vendor", "error");
+      return;
+    }
+
+    setMapSaving(true);
+    const keywords = parseKeywordInput(mapForm.keywords);
+
+    if (mapForm.mode === "new") {
+      const contacts = normalizeMapContacts(mapForm.contacts);
+      const response = await fetch("/api/admin/vendor-maps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendor: {
+            name: mapForm.name,
+            phone: mapForm.phone,
+            email: mapForm.email,
+          },
+          category: selectedCategory,
+          subcategory: selectedSubcategory,
+          keywords,
+          contacts:
+            contacts.length > 0
+              ? contacts
+              : [
+                  {
+                    name: mapForm.name.trim(),
+                    email: mapForm.email.trim(),
+                    phone: mapForm.phone.trim(),
+                    role: "Department POC",
+                  },
+                ].filter(
+                  (contact) => contact.name || contact.email || contact.phone
+                ),
+        }),
+      });
+      const data = await response.json();
+      setMapSaving(false);
+      if (!response.ok) {
+        toast(apiError(data.error), "error");
+        return;
+      }
+      setMapOpen(false);
+      if (data.vendor && data.mapping) {
+        applyVendorMappingLocal({
+          category: data.category || selectedCategory,
+          subcategory: data.subcategory ?? selectedSubcategory,
+          vendor: data.vendor as VendorListItem,
+          mapping: data.mapping,
+        });
+      }
+      await loadSubcategoryVendors(selectedCategory, selectedSubcategory);
+      toast(
+        `Mapped ${data.vendor?.name || "vendor"} to ${selectedCategory}` +
+          (selectedSubcategory ? ` / ${selectedSubcategory}` : "")
+      );
+      return;
+    }
+
+    let saved = 0;
+    let lastError = "";
+    let lastName = "";
+    for (const vendorId of mapForm.vendorIds) {
+      const contacts = normalizeMapContacts(
+        mapForm.vendorContacts[vendorId] || []
+      );
+      const response = await fetch("/api/admin/vendor-maps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vendorId,
+          category: selectedCategory,
+          subcategory: selectedSubcategory,
+          keywords,
+          contacts,
+        }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        lastError = apiError(data.error) || "Could not save mapping";
+        continue;
+      }
+      saved += 1;
+      lastName = data.vendor?.name || lastName;
+      if (data.vendor && data.mapping) {
+        applyVendorMappingLocal({
+          category: data.category || selectedCategory,
+          subcategory: data.subcategory ?? selectedSubcategory,
+          vendor: data.vendor as VendorListItem,
+          mapping: data.mapping,
+        });
+      }
+    }
+
+    setMapSaving(false);
+    if (saved === 0) {
+      toast(lastError || "Could not save mapping", "error");
+      return;
+    }
+    setMapOpen(false);
+    await loadSubcategoryVendors(selectedCategory, selectedSubcategory);
     toast(
-      `Mapped ${data.vendor?.name || "vendor"} to ${selectedCategory}` +
-        (data.contactCount
-          ? ` · ${data.contactCount} POC${data.contactCount === 1 ? "" : "s"}`
-          : "")
+      saved === 1
+        ? `Mapped ${lastName || "vendor"} to ${selectedCategory}${
+            selectedSubcategory ? ` / ${selectedSubcategory}` : ""
+          }`
+        : `Mapped ${saved} vendors to ${selectedCategory}${
+            selectedSubcategory ? ` / ${selectedSubcategory}` : ""
+          }`
     );
+    if (lastError && saved > 0) {
+      toast(`Some mappings failed: ${lastError}`, "error");
+    }
   }
 
   async function unlinkVendor(
@@ -620,23 +1321,22 @@ function AdminVendorsPageInner() {
           return {
             ...sub,
             vendors: vendorsForSub,
-            vendorCount: vendorsForSub.length,
+            vendorCount: Math.max(0, sub.vendorCount - 1),
           };
         });
         return {
           ...row,
           subcategories,
-          vendorCount: new Set(
-            subcategories.flatMap((sub) =>
-              sub.vendors.map((vendor) => vendor.vendorId)
-            )
-          ).size,
+          vendorCount: Math.max(0, row.vendorCount - 1),
         };
       })
     );
+    setSubcategoryVendors((current) =>
+      current.filter((vendor) => vendor.vendorId !== vendorId)
+    );
     if (selectedVendorId === vendorId) {
       setSelectedVendorId(vendorId);
-      void fetch(`/api/vendors/${vendorId}`)
+      void fetch(`/api/vendors/${vendorId}?light=1`)
         .then((res) => res.json())
         .then((vendor) => {
           if (vendor?.id) {
@@ -749,91 +1449,183 @@ function AdminVendorsPageInner() {
     toast(`Saved subcategory “${value}” under ${selectedCategory}`);
   }
 
-  async function submitDepartment(event: FormEvent) {
+  async function submitCategoryAssign(event: FormEvent) {
     event.preventDefault();
     if (!selectedVendorId) return;
-    setDeptSaving(true);
-    const keywords = deptForm.keywords
-      .split(/[|,;]/)
-      .map((value) => value.trim())
-      .filter(Boolean);
-    const contacts = deptForm.contacts
-      .map((contact) => ({
-        name: contact.name.trim(),
-        email: contact.email.trim(),
-        phone: contact.phone.trim(),
-        role: contact.role.trim() || "Department POC",
-      }))
-      .filter((contact) => contact.name || contact.email || contact.phone);
-    const response = await fetch("/api/admin/vendor-maps", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        vendorId: selectedVendorId,
-        category: deptForm.category,
-        subcategory: deptForm.subcategory.trim(),
-        keywords,
-        contacts,
-      }),
-    });
-    const data = await response.json();
-    setDeptSaving(false);
-    if (!response.ok) {
-      toast(apiError(data.error), "error");
+    const subcategories = [
+      ...new Set(assignForm.subcategories.map((s) => s.trim()).filter(Boolean)),
+    ];
+    const existingSubs = [
+      ...new Set(
+        (selectedVendor?.categories || [])
+          .filter((row) => row.category === assignForm.category)
+          .map((row) => row.subcategory || "")
+      ),
+    ];
+    const toUnlink = existingSubs.filter(
+      (subcategory) => !subcategories.includes(subcategory)
+    );
+    if (subcategories.length === 0 && toUnlink.length === 0) {
+      toast("Select at least one subcategory", "error");
       return;
     }
-    setDeptOpen(false);
-    if (data.vendor && data.mapping) {
-      applyVendorMappingLocal({
-        category: data.category || deptForm.category,
-        subcategory: data.subcategory ?? deptForm.subcategory.trim(),
-        vendor: data.vendor as VendorListItem,
-        mapping: data.mapping,
-      });
+    setAssignSaving(true);
+    const contacts = assignContactsPayload();
+
+    let lastError = "";
+    let saved = 0;
+    let unlinked = 0;
+
+    for (const subcategory of toUnlink) {
+      try {
+        const response = await fetch("/api/admin/vendor-maps", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            vendorId: selectedVendorId,
+            category: assignForm.category,
+            subcategory,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          lastError = apiError(data.error) || "Could not unlink subcategory";
+          continue;
+        }
+        if (data.deleted) unlinked += 1;
+      } catch (err) {
+        lastError =
+          err instanceof Error ? err.message : "Could not unlink subcategory";
+      }
     }
-    toast(
-      `Added department ${deptForm.category}${
-        deptForm.subcategory ? ` / ${deptForm.subcategory}` : ""
-      }`
-    );
+
+    for (const subcategory of subcategories) {
+      try {
+        // Ensure taxonomy label exists before mapping.
+        const taxonomyResponse = await fetch(
+          "/api/admin/taxonomy/subcategory",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              category: assignForm.category,
+              subcategory,
+            }),
+          }
+        );
+        if (!taxonomyResponse.ok) {
+          const taxonomyData = await taxonomyResponse.json().catch(() => ({}));
+          lastError =
+            apiError(taxonomyData.error) || "Could not save subcategory";
+          continue;
+        }
+
+        await persistVendorSubcategoryMapping({
+          category: assignForm.category,
+          subcategory,
+          keywords: parseKeywordInput(
+            assignForm.subcategoryKeywords[subcategory] || ""
+          ),
+          contacts,
+        });
+        saved += 1;
+      } catch (err) {
+        lastError =
+          err instanceof Error ? err.message : "Could not save mapping";
+      }
+    }
+
+    setAssignSaving(false);
+    if (saved === 0 && unlinked === 0) {
+      toast(lastError || "Could not save mapping", "error");
+      return;
+    }
+    await loadTaxonomy(true);
+    if (selectedVendorId) {
+      const vendorResponse = await fetch(
+        `/api/vendors/${selectedVendorId}?light=1`
+      );
+      const vendor = await vendorResponse.json().catch(() => null);
+      if (vendor?.id) {
+        setSelectedVendor(vendor);
+        upsertVendorLocal(vendor);
+      }
+    }
+    setAssignOpen(false);
+    const parts: string[] = [];
+    if (saved === 1) {
+      parts.push(`Mapped ${assignForm.category} / ${subcategories[0]}`);
+    } else if (saved > 1) {
+      parts.push(`Mapped ${assignForm.category} to ${saved} subcategories`);
+    }
+    if (unlinked > 0) {
+      parts.push(`unlinked ${unlinked}`);
+    }
+    toast(parts.join(" · ") || "Mapping updated");
+    if (lastError && (saved > 0 || unlinked > 0)) {
+      toast(`Some changes failed: ${lastError}`, "error");
+    }
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-mid-green">
-            Admin
-          </p>
-          <h1 className="text-2xl font-semibold">Vendor mapping</h1>
-          <p className="mt-1 text-sm text-mid-green">
-            Map vendors to category / subcategory with department POCs. Mapped
-            vendors also appear in{" "}
-            <Link href="/vendors" className="underline underline-offset-2">
+    <div className="relative isolate space-y-3">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 -top-2 -z-10 h-28 bg-[radial-gradient(ellipse_at_top,_rgba(142,182,155,0.22),_transparent_70%)]"
+      />
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h1 className="text-xl font-semibold tracking-tight text-dark-primary">
+              Vendor mapping
+            </h1>
+            {!loading || taxonomy.length > 0 ? (
+              <p className="text-xs text-mid-green">
+                {taxonomyStats.categories} categories ·{" "}
+                {taxonomyStats.subcategories} subcategories ·{" "}
+                {taxonomyStats.vendorsMapped} mapped
+              </p>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs text-mid-green">
+            Category / subcategory POCs ·{" "}
+            <Link
+              href="/vendors"
+              className="font-medium text-dark-secondary underline decoration-light-green/60 underline-offset-2 hover:text-dark-primary"
+            >
               Vendors
             </Link>
-            .
           </p>
         </div>
-        <div className="inline-flex rounded-lg border border-light-green/40 bg-white/50 p-1 text-sm">
+        <div className="inline-flex rounded-lg border border-light-green/30 bg-white/80 p-0.5 text-sm">
           <button
             type="button"
-            onClick={() => setTab("category")}
-            className={`rounded-md px-3 py-1.5 ${
+            onClick={() => {
+              setTab("category");
+              syncVendorMappingUrl({ tab: "category" });
+            }}
+            className={`rounded-md px-3 py-1.5 font-medium transition ${
               tab === "category"
-                ? "bg-mid-green text-background"
-                : "text-dark-primary hover:bg-light-green/20"
+                ? "bg-mid-green text-background shadow-sm"
+                : "text-dark-primary/80 hover:bg-light-green/15 hover:text-dark-primary"
             }`}
           >
             By category
           </button>
           <button
             type="button"
-            onClick={() => setTab("vendor")}
-            className={`rounded-md px-3 py-1.5 ${
+            onClick={() => {
+              setTab("vendor");
+              syncVendorMappingUrl({
+                tab: "vendor",
+                vendorId: selectedVendorId,
+              });
+            }}
+            className={`rounded-md px-3 py-1.5 font-medium transition ${
               tab === "vendor"
-                ? "bg-mid-green text-background"
-                : "text-dark-primary hover:bg-light-green/20"
+                ? "bg-mid-green text-background shadow-sm"
+                : "text-dark-primary/80 hover:bg-light-green/15 hover:text-dark-primary"
             }`}
           >
             By vendor
@@ -841,49 +1633,68 @@ function AdminVendorsPageInner() {
         </div>
       </div>
 
-      {loading ? (
-        <p className="text-sm text-mid-green">Loading taxonomy…</p>
+      {loading && tab === "category" ? (
+        <MappingEmptyState>Loading taxonomy…</MappingEmptyState>
       ) : tab === "category" ? (
-        <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-          <aside className="rounded-xl bg-white/40 p-3 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-            <div className="relative mb-2">
+        <div className="grid animate-[login-fade-up_0.35s_ease-out] gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
+          <MappingPanel className="sticky top-4 self-start p-3">
+            <div className="relative mb-3">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green" />
               <input
                 value={categoryQuery}
                 onChange={(event) => setCategoryQuery(event.target.value)}
                 placeholder="Filter categories"
-                className="w-full rounded-lg border border-light-green/40 bg-white/70 py-1.5 pl-8 pr-2 text-sm outline-none focus:border-mid-green"
+                className="w-full rounded-xl border border-light-green/35 bg-background/60 py-2 pl-8 pr-2 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
               />
             </div>
-            <div className="max-h-[70vh] space-y-0.5 overflow-y-auto">
-              {filteredCategories.map((row) => (
-                <button
-                  key={row.category}
-                  type="button"
-                  onClick={() => {
-                    setSelectedCategory(row.category);
-                    setSelectedSubcategory(null);
-                  }}
-                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-sm ${
-                    selectedCategory === row.category
-                      ? "bg-mid-green/15 font-medium text-dark-primary"
-                      : "text-dark-primary/90 hover:bg-light-green/20"
-                  }`}
-                >
-                  <span className="truncate pr-2">{row.category}</span>
-                  <span className="shrink-0 text-[11px] text-mid-green">
-                    {row.vendorCount}
-                  </span>
-                </button>
-              ))}
+            <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
+              {filteredCategories.length === 0 ? (
+                <p className="px-2 py-6 text-center text-xs text-mid-green">
+                  No categories match
+                </p>
+              ) : (
+                filteredCategories.map((row) => {
+                  const active = selectedCategory === row.category;
+                  return (
+                    <button
+                      key={row.category}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory(row.category);
+                        setSelectedSubcategory(null);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                        active
+                          ? "bg-mid-green text-background shadow-sm"
+                          : "text-dark-primary/90 hover:bg-light-green/20"
+                      }`}
+                    >
+                      <span className="truncate pr-2 font-medium">
+                        {row.category}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] tabular-nums ${
+                          active
+                            ? "bg-background/20 text-background"
+                            : "bg-light-green/25 text-mid-green"
+                        }`}
+                      >
+                        {row.vendorCount}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
             </div>
-          </aside>
+          </MappingPanel>
 
-          <section className="space-y-4 rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-            <div className="flex flex-wrap items-center justify-between gap-3">
+          <MappingPanel className="space-y-5 p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-light-green/20 pb-4">
               <div>
-                <h2 className="text-lg font-semibold">{selectedCategory}</h2>
-                <p className="text-xs text-mid-green">
+                <h2 className="text-xl font-semibold tracking-tight text-dark-primary">
+                  {selectedCategory}
+                </h2>
+                <p className="mt-0.5 text-xs text-mid-green">
                   {subcategoryRows.length} subcategories ·{" "}
                   {categoryRow?.vendorCount || 0} mapped vendors
                 </p>
@@ -893,7 +1704,7 @@ function AdminVendorsPageInner() {
                   value={newSubcategory}
                   onChange={(event) => setNewSubcategory(event.target.value)}
                   placeholder="New subcategory"
-                  className="rounded-lg border border-light-green/40 bg-white/70 px-3 py-1.5 text-sm outline-none focus:border-mid-green"
+                  className="rounded-xl border border-light-green/35 bg-background/60 px-3 py-2 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
                   onKeyDown={(event) => {
                     if (event.key === "Enter") {
                       event.preventDefault();
@@ -905,7 +1716,7 @@ function AdminVendorsPageInner() {
                   type="button"
                   onClick={() => void addCustomSubcategory()}
                   disabled={addingSubcategory || !newSubcategory.trim()}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-mid-green px-3 py-1.5 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-mid-green px-3.5 py-2 text-sm font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
                 >
                   <Plus className="h-3.5 w-3.5" strokeWidth={1.6} />
                   {addingSubcategory ? "Saving…" : "Add subcategory"}
@@ -913,12 +1724,14 @@ function AdminVendorsPageInner() {
               </div>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
               {subcategoryRows.length === 0 ? (
-                <p className="text-sm text-mid-green md:col-span-2 xl:col-span-3">
-                  No subcategories yet. Add one above, or map vendors after
-                  products create catalog subcategories.
-                </p>
+                <div className="md:col-span-2 xl:col-span-3">
+                  <MappingEmptyState>
+                    No subcategories yet. Add one above, or map vendors after
+                    products create catalog subcategories.
+                  </MappingEmptyState>
+                </div>
               ) : (
                 subcategoryRows.map((row) => {
                   const active = selectedSubcategory === row.subcategory;
@@ -927,17 +1740,23 @@ function AdminVendorsPageInner() {
                       key={row.subcategory || "__empty__"}
                       type="button"
                       onClick={() => setSelectedSubcategory(row.subcategory)}
-                      className={`rounded-xl border px-3 py-3 text-left transition ${
+                      className={`rounded-xl border px-3.5 py-3.5 text-left transition ${
                         active
-                          ? "border-mid-green bg-mid-green/10"
-                          : "border-light-green/40 bg-white/50 hover:border-mid-green/50"
+                          ? "border-mid-green bg-mid-green text-background shadow-sm"
+                          : "border-light-green/30 bg-background/40 hover:border-mid-green/45 hover:bg-white"
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <p className="font-medium">
                           {row.subcategory || "(category-level)"}
                         </p>
-                        <span className="rounded bg-light-green/30 px-1.5 py-0.5 text-[10px] text-mid-green">
+                        <span
+                          className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                            active
+                              ? "bg-background/20 text-background"
+                              : "bg-light-green/30 text-mid-green"
+                          }`}
+                        >
                           {row.fromCatalog
                             ? "Catalog"
                             : row.fromAdmin
@@ -945,8 +1764,13 @@ function AdminVendorsPageInner() {
                               : "Mapped"}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs text-mid-green">
-                        {row.vendorCount} vendor{row.vendorCount === 1 ? "" : "s"}
+                      <p
+                        className={`mt-1.5 text-xs ${
+                          active ? "text-background/80" : "text-mid-green"
+                        }`}
+                      >
+                        {row.vendorCount} vendor
+                        {row.vendorCount === 1 ? "" : "s"}
                       </p>
                     </button>
                   );
@@ -955,10 +1779,10 @@ function AdminVendorsPageInner() {
             </div>
 
             {selectedSubRow ? (
-              <div className="rounded-xl border border-light-green/40 bg-white/60 p-4">
+              <div className="rounded-2xl border border-light-green/25 bg-background/40 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-semibold">
+                    <h3 className="text-base font-semibold text-dark-primary">
                       {selectedSubRow.subcategory || "(category-level)"}
                     </h3>
                     <p className="text-xs text-mid-green">
@@ -969,17 +1793,17 @@ function AdminVendorsPageInner() {
                     <button
                       type="button"
                       onClick={() => openMapModal(selectedSubRow.subcategory)}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-mid-green px-3 py-1.5 text-sm font-medium text-background hover:bg-dark-secondary"
+                      className="inline-flex items-center gap-1.5 rounded-xl bg-mid-green px-3.5 py-2 text-sm font-medium text-background transition hover:bg-dark-secondary"
                     >
                       <UserPlus className="h-3.5 w-3.5" strokeWidth={1.6} />
-                      Add vendor
+                      Add vendors
                     </button>
                     <button
                       type="button"
                       onClick={() =>
                         void removeSubcategory(selectedSubRow.subcategory)
                       }
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-sm text-red-800 hover:bg-red-100"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-red-200/80 bg-white px-3.5 py-2 text-sm font-medium text-red-800 transition hover:bg-red-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" strokeWidth={1.6} />
                       Remove subcategory
@@ -987,46 +1811,59 @@ function AdminVendorsPageInner() {
                   </div>
                 </div>
 
-                <div className="mt-4 overflow-hidden rounded-lg border border-light-green/30">
+                <div className="mt-4 overflow-hidden rounded-xl border border-light-green/25 bg-white">
                   <table className="w-full text-left text-sm">
-                    <thead className="bg-dark-secondary/5 text-mid-green">
+                    <thead className="sticky top-0 bg-dark-secondary/[0.04] text-xs text-mid-green">
                       <tr>
-                        <th className="px-3 py-2 font-medium">Vendor</th>
-                        <th className="px-3 py-2 font-medium">Department POCs</th>
-                        <th className="px-3 py-2" />
+                        <th className="px-3.5 py-2.5 font-medium">Vendor</th>
+                        <th className="px-3.5 py-2.5 font-medium">
+                          Department POCs
+                        </th>
+                        <th className="px-3.5 py-2.5" />
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedSubRow.vendors.length === 0 ? (
+                      {subcategoryVendorsLoading ? (
                         <tr>
                           <td
                             colSpan={3}
-                            className="px-3 py-6 text-center text-mid-green"
+                            className="px-3.5 py-8 text-center text-mid-green"
+                          >
+                            Loading vendors…
+                          </td>
+                        </tr>
+                      ) : subcategoryVendors.length === 0 ? (
+                        <tr>
+                          <td
+                            colSpan={3}
+                            className="px-3.5 py-8 text-center text-mid-green"
                           >
                             No vendors mapped yet
                           </td>
                         </tr>
                       ) : (
-                        selectedSubRow.vendors.map((vendor) => {
+                        subcategoryVendors.map((vendor, index) => {
                           return (
                             <tr
                               key={vendor.vendorCategoryId}
-                              className="border-t border-light-green/20"
+                              className={`border-t border-light-green/15 transition hover:bg-light-green/10 ${
+                                index % 2 === 1 ? "bg-background/35" : ""
+                              }`}
                             >
-                              <td className="px-3 py-2">
-                                <div className="font-medium">
+                              <td className="px-3.5 py-3">
+                                <div className="font-medium text-dark-primary">
                                   {vendor.vendorName}
                                 </div>
                                 <div className="text-xs text-mid-green">
                                   {vendor.phone || vendor.email || "—"}
                                 </div>
                               </td>
-                              <td className="px-3 py-2">
+                              <td className="px-3.5 py-3">
                                 {vendor.contacts.length > 0 ? (
                                   <ul className="space-y-1.5">
                                     {vendor.contacts.map((poc) => (
                                       <li key={poc.id}>
-                                        <div>
+                                        <div className="text-dark-primary">
                                           {poc.name || "—"}
                                           {poc.role ? (
                                             <span className="text-xs text-mid-green">
@@ -1047,7 +1884,7 @@ function AdminVendorsPageInner() {
                                   <span className="text-mid-green">—</span>
                                 )}
                               </td>
-                              <td className="px-3 py-2 text-right">
+                              <td className="px-3.5 py-3 text-right">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -1057,7 +1894,7 @@ function AdminVendorsPageInner() {
                                       selectedSubRow.subcategory
                                     )
                                   }
-                                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-mid-green hover:bg-light-green/30"
+                                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-mid-green transition hover:bg-light-green/25"
                                   title="Unlink vendor"
                                 >
                                   <Link2Off
@@ -1075,240 +1912,464 @@ function AdminVendorsPageInner() {
                   </table>
                 </div>
               </div>
-            ) : null}
-          </section>
+            ) : (
+              <MappingEmptyState>
+                Select a subcategory to view mapped vendors and POCs.
+              </MappingEmptyState>
+            )}
+          </MappingPanel>
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-          <aside className="rounded-xl bg-white/40 p-3 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
-            <div className="relative mb-2">
+        <div className="grid animate-[login-fade-up_0.35s_ease-out] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <MappingPanel className="sticky top-4 self-start p-3">
+            <div className="relative mb-3">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green" />
               <input
                 value={vendorQuery}
                 onChange={(event) => setVendorQuery(event.target.value)}
                 placeholder="Search vendors"
-                className="w-full rounded-lg border border-light-green/40 bg-white/70 py-1.5 pl-8 pr-2 text-sm outline-none focus:border-mid-green"
+                className="w-full rounded-xl border border-light-green/35 bg-background/60 py-2 pl-8 pr-2 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
               />
             </div>
-            <div className="max-h-[70vh] space-y-0.5 overflow-y-auto">
-              {!vendorQuery.trim() ? (
-                <p className="px-2 py-6 text-center text-xs text-mid-green">
-                  Type to search vendors
-                </p>
-              ) : vendorSearching ? (
-                <p className="px-2 py-6 text-center text-xs text-mid-green">
-                  Searching…
-                </p>
+            <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
+              {vendorSearching && filteredVendors.length === 0 ? (
+                <MappingEmptyState>Loading vendors…</MappingEmptyState>
               ) : filteredVendors.length === 0 ? (
-                <p className="px-2 py-6 text-center text-xs text-mid-green">
-                  No vendors match
-                </p>
+                <MappingEmptyState>
+                  {vendorQuery.trim()
+                    ? "No vendors match"
+                    : "No vendors found"}
+                </MappingEmptyState>
               ) : (
-                filteredVendors.map((vendor) => (
-                  <button
-                    key={vendor.id}
-                    type="button"
-                    onClick={() => setSelectedVendorId(vendor.id)}
-                    className={`flex w-full flex-col rounded-lg px-2.5 py-2 text-left text-sm ${
-                      selectedVendorId === vendor.id
-                        ? "bg-mid-green/15 font-medium text-dark-primary"
-                        : "text-dark-primary/90 hover:bg-light-green/20"
-                    }`}
-                  >
-                    <span className="truncate">{vendor.name}</span>
-                    <span className="text-[11px] font-normal text-mid-green">
-                      {vendor.categories?.length || 0} department
-                      {(vendor.categories?.length || 0) === 1 ? "" : "s"}
-                    </span>
-                  </button>
-                ))
+                <>
+                  {!vendorQuery.trim() ? (
+                    <p className="px-2 pb-1 text-[11px] text-mid-green">
+                      Top {filteredVendors.length} vendors · search for more
+                    </p>
+                  ) : null}
+                  {filteredVendors.map((vendor) => {
+                    const active = selectedVendorId === vendor.id;
+                    return (
+                      <button
+                        key={vendor.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedVendorId(vendor.id);
+                          syncVendorMappingUrl({
+                            tab: "vendor",
+                            vendorId: vendor.id,
+                          });
+                        }}
+                        className={`flex w-full flex-col rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                          active
+                            ? "bg-mid-green text-background shadow-sm"
+                            : "text-dark-primary/90 hover:bg-light-green/20"
+                        }`}
+                      >
+                        <span className="truncate font-medium">
+                          {vendor.name}
+                        </span>
+                        <span
+                          className={`text-[11px] font-normal ${
+                            active ? "text-background/80" : "text-mid-green"
+                          }`}
+                        >
+                          {vendor.categories?.length || 0} categor
+                          {(vendor.categories?.length || 0) === 1
+                            ? "y"
+                            : "ies"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
               )}
             </div>
-          </aside>
+          </MappingPanel>
 
-          <section className="rounded-xl bg-white/40 p-4 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
+          <MappingPanel className="p-5">
             {!selectedVendor ? (
-              <p className="text-sm text-mid-green">
-                Select a vendor to manage departments and POCs.
-              </p>
+              <MappingEmptyState>
+                Select a vendor to assign categories, subcategories, and POCs.
+              </MappingEmptyState>
             ) : (
               <div className="space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg font-semibold">
-                      {selectedVendor.name}
-                    </h2>
-                    <p className="text-xs text-mid-green">
-                      {[selectedVendor.phone, selectedVendor.email]
-                        .filter(Boolean)
-                        .join(" · ") || "No company contact"}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeptForm(emptyDepartmentForm());
-                      setDeptOpen(true);
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-mid-green px-3 py-1.5 text-sm font-medium text-background hover:bg-dark-secondary"
-                  >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.6} />
-                    Add department
-                  </button>
-                </div>
+                {(() => {
+                  const companyPocs = selectedVendor.contacts.filter(
+                    (contact) => !contact.vendorCategoryId
+                  );
+                  const mappedPocCount = selectedVendor.contacts.filter(
+                    (contact) => contact.vendorCategoryId
+                  ).length;
+                  const categoryGroups = Object.entries(
+                    selectedVendor.categories.reduce<
+                      Record<
+                        string,
+                        Array<(typeof selectedVendor.categories)[number]>
+                      >
+                    >((acc, mapping) => {
+                      const key = mapping.category || "Uncategorized";
+                      if (!acc[key]) acc[key] = [];
+                      acc[key].push(mapping);
+                      return acc;
+                    }, {})
+                  )
+                    .map(([category, mappings]) => [
+                      category,
+                      mappings
+                        .slice()
+                        .sort((a, b) =>
+                          (a.subcategory || "").localeCompare(
+                            b.subcategory || ""
+                          )
+                        ),
+                    ] as const)
+                    .sort(([a], [b]) => a.localeCompare(b));
 
-                <div className="overflow-hidden rounded-lg border border-light-green/30">
-                  <table className="w-full text-left text-sm">
-                    <thead className="bg-dark-secondary/5 text-mid-green">
-                      <tr>
-                        <th className="px-3 py-2 font-medium">Department</th>
-                        <th className="px-3 py-2 font-medium">POC</th>
-                        <th className="px-3 py-2" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedVendor.categories.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan={3}
-                            className="px-3 py-6 text-center text-mid-green"
-                          >
-                            No departments yet
-                          </td>
-                        </tr>
-                      ) : (
-                        selectedVendor.categories.map((department) => {
-                          const pocs = selectedVendor.contacts.filter(
-                            (contact) =>
-                              contact.vendorCategoryId === department.id ||
-                              (contact.category === department.category &&
-                                (contact.subcategory || "") ===
-                                  (department.subcategory || ""))
-                          );
-                          return (
-                            <tr
-                              key={`${department.category}-${department.subcategory}`}
-                              className="border-t border-light-green/20"
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-light-green/20 pb-4">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h2 className="text-xl font-semibold tracking-tight text-dark-primary">
+                              {selectedVendor.name}
+                            </h2>
+                            <span
+                              className={`rounded-md px-2 py-0.5 text-[11px] font-medium ${
+                                selectedVendor.active
+                                  ? "bg-mid-green/15 text-mid-green"
+                                  : "bg-dark-primary/10 text-mid-green"
+                              }`}
                             >
-                              <td className="px-3 py-2">
-                                <div className="font-medium">
-                                  {department.category}
-                                  {department.subcategory
-                                    ? ` / ${department.subcategory}`
-                                    : ""}
-                                </div>
-                                {department.keywords?.length ? (
-                                  <div className="text-[11px] text-mid-green">
-                                    Keywords: {department.keywords.join(", ")}
-                                  </div>
-                                ) : null}
-                              </td>
-                              <td className="px-3 py-2">
-                                {pocs.length > 0 ? (
-                                  <ul className="space-y-1.5">
-                                    {pocs.map((poc) => (
-                                      <li
-                                        key={
-                                          poc.id ||
-                                          `${poc.name}-${poc.email}-${poc.phone}`
-                                        }
-                                      >
-                                        <div>
-                                          {poc.name || "—"}
-                                          {poc.role ? (
-                                            <span className="text-xs text-mid-green">
-                                              {" "}
-                                              · {poc.role}
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                        <div className="text-xs text-mid-green">
-                                          {[poc.email, poc.phone]
-                                            .filter(Boolean)
-                                            .join(" · ") || "—"}
-                                        </div>
-                                      </li>
-                                    ))}
-                                  </ul>
-                                ) : (
-                                  <span className="text-mid-green">
-                                    Company-level only
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-3 py-2 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void unlinkVendor(
-                                      selectedVendor.id,
-                                      department.category,
-                                      department.subcategory
-                                    )
-                                  }
-                                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs text-mid-green hover:bg-light-green/30"
-                                >
-                                  <Link2Off
-                                    className="h-3.5 w-3.5"
-                                    strokeWidth={1.6}
-                                  />
-                                  Remove
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                              {selectedVendor.active ? "Active" : "Inactive"}
+                            </span>
+                          </div>
+                          <p className="mt-1.5 text-xs text-mid-green">
+                            {[selectedVendor.phone, selectedVendor.email]
+                              .filter(Boolean)
+                              .join(" · ") || "No company contact"}
+                            {" · "}
+                            {categoryGroups.length} categor
+                            {categoryGroups.length === 1 ? "y" : "ies"}
+                            {" · "}
+                            {selectedVendor.categories.length} subcategor
+                            {selectedVendor.categories.length === 1
+                              ? "y"
+                              : "ies"}
+                            {" · "}
+                            {mappedPocCount} mapped POC
+                            {mappedPocCount === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setCompanyPocsOpen(true)}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-light-green/35 bg-white px-3.5 py-2 text-sm font-medium text-dark-primary transition hover:bg-light-green/15"
+                          >
+                            <Users
+                              className="h-3.5 w-3.5 text-mid-green"
+                              strokeWidth={1.6}
+                            />
+                            Company POCs
+                            <span className="rounded-md bg-mid-green/15 px-1.5 py-0.5 text-[11px] text-mid-green">
+                              {companyPocs.length}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAssignForm(
+                                assignFormFromVendor(
+                                  selectedVendor,
+                                  PRODUCT_CATEGORIES[0]
+                                )
+                              );
+                              setAssignCustomSubcategory("");
+                              setAssignCustomKeywords("");
+                              setAvailablePocs([]);
+                              setAssignOpen(true);
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-mid-green px-3.5 py-2 text-sm font-medium text-background transition hover:bg-dark-secondary"
+                          >
+                            <Plus className="h-3.5 w-3.5" strokeWidth={1.6} />
+                            Assign category
+                          </button>
+                        </div>
+                      </div>
 
-                <div>
-                  <h3 className="text-sm font-medium text-mid-green">
-                    Company-level POCs
-                  </h3>
-                  <ul className="mt-2 space-y-1 text-sm">
-                    {selectedVendor.contacts
-                      .filter((contact) => !contact.vendorCategoryId)
-                      .map((contact) => (
-                        <li key={contact.id || `${contact.email}-${contact.phone}`}>
-                          {contact.name || "POC"}
-                          {contact.role ? ` (${contact.role})` : ""} —{" "}
-                          {[contact.email, contact.phone]
-                            .filter(Boolean)
-                            .join(" · ") || "—"}
-                        </li>
-                      ))}
-                    {selectedVendor.contacts.filter(
-                      (contact) => !contact.vendorCategoryId
-                    ).length === 0 ? (
-                      <li className="text-mid-green">None</li>
-                    ) : null}
-                  </ul>
-                </div>
+                      <div className="overflow-x-auto rounded-xl border border-light-green/25 bg-white">
+                        <table className="w-full min-w-[760px] text-left text-sm">
+                          <thead className="bg-dark-secondary/[0.04] text-xs text-mid-green">
+                            <tr>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                Subcategory
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                Keywords
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                POC name
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                Role
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                Email
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium">
+                                Phone
+                              </th>
+                              <th className="px-3.5 py-2.5 font-medium" />
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {categoryGroups.length === 0 ? (
+                              <tr>
+                                <td
+                                  colSpan={7}
+                                  className="px-3.5 py-10 text-center text-mid-green"
+                                >
+                                  No category mappings yet
+                                </td>
+                              </tr>
+                            ) : (
+                              categoryGroups.flatMap(
+                                ([category, mappings]) => {
+                                  const headerRow = (
+                                    <tr
+                                      key={`cat-${category}`}
+                                      className="border-t border-light-green/20 bg-mid-green/[0.08]"
+                                    >
+                                      <td
+                                        colSpan={7}
+                                        className="px-3.5 py-2.5 font-semibold text-dark-primary"
+                                      >
+                                        {category}
+                                        <span className="ml-2 text-xs font-normal text-mid-green">
+                                          {mappings.length} subcategor
+                                          {mappings.length === 1 ? "y" : "ies"}
+                                        </span>
+                                      </td>
+                                    </tr>
+                                  );
+
+                                  const mappingRows = mappings.flatMap(
+                                    (mapping) => {
+                                      const pocs =
+                                        selectedVendor.contacts.filter(
+                                          (contact) =>
+                                            contact.vendorCategoryId ===
+                                              mapping.id ||
+                                            (contact.category ===
+                                              mapping.category &&
+                                              (contact.subcategory || "") ===
+                                                (mapping.subcategory || ""))
+                                        );
+                                      const rows =
+                                        pocs.length > 0
+                                          ? pocs
+                                          : [
+                                              {
+                                                id: undefined,
+                                                name: "",
+                                                email: "",
+                                                phone: "",
+                                                role: "",
+                                                isPrimary: false,
+                                              },
+                                            ];
+                                      return rows.map((poc, pocIndex) => (
+                                        <tr
+                                          key={`${mapping.id || mapping.category}-${mapping.subcategory}-${poc.id || pocIndex}`}
+                                          className="border-t border-light-green/15 align-top transition hover:bg-light-green/10"
+                                        >
+                                          <td className="px-3.5 py-2.5 font-medium text-dark-primary">
+                                            {pocIndex === 0
+                                              ? mapping.subcategory || "—"
+                                              : ""}
+                                          </td>
+                                          <td className="px-3.5 py-2.5 text-xs text-mid-green">
+                                            {pocIndex === 0
+                                              ? mapping.keywords?.length
+                                                ? mapping.keywords.join(", ")
+                                                : "—"
+                                              : ""}
+                                          </td>
+                                          <td className="px-3.5 py-2.5">
+                                            {poc.name ? (
+                                              <span className="inline-flex items-center gap-1.5">
+                                                {poc.name}
+                                                {poc.isPrimary ? (
+                                                  <span className="rounded-md bg-mid-green/15 px-1.5 py-0.5 text-[10px] font-medium text-mid-green">
+                                                    Primary
+                                                  </span>
+                                                ) : null}
+                                              </span>
+                                            ) : (
+                                              <span className="text-mid-green">
+                                                No subcategory POC
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="px-3.5 py-2.5 text-mid-green">
+                                            {poc.role || "—"}
+                                          </td>
+                                          <td className="px-3.5 py-2.5 text-mid-green">
+                                            {poc.email || "—"}
+                                          </td>
+                                          <td className="px-3.5 py-2.5 text-mid-green">
+                                            {poc.phone || "—"}
+                                          </td>
+                                          <td className="px-3.5 py-2.5 text-right">
+                                            {pocIndex === 0 ? (
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  void unlinkVendor(
+                                                    selectedVendor.id,
+                                                    mapping.category,
+                                                    mapping.subcategory
+                                                  )
+                                                }
+                                                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-mid-green transition hover:bg-light-green/25"
+                                              >
+                                                <Link2Off
+                                                  className="h-3.5 w-3.5"
+                                                  strokeWidth={1.6}
+                                                />
+                                                Remove
+                                              </button>
+                                            ) : null}
+                                          </td>
+                                        </tr>
+                                      ));
+                                    }
+                                  );
+
+                                  return [headerRow, ...mappingRows];
+                                }
+                              )
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
-          </section>
+          </MappingPanel>
         </div>
       )}
 
+      {companyPocsOpen && selectedVendor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/45 p-4 backdrop-blur-[2px]">
+          <div
+            className="flex w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-[0_24px_64px_rgba(11,43,38,0.22)] animate-[login-fade-up_0.3s_ease-out]"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="company-pocs-title"
+          >
+            <div className="flex items-center justify-between gap-4 border-b border-light-green/20 bg-white/70 px-5 py-3.5">
+              <div className="min-w-0">
+                <h2
+                  id="company-pocs-title"
+                  className="truncate text-base font-semibold text-dark-primary"
+                >
+                  Company-level POCs
+                  <span className="ml-2 font-normal text-mid-green">
+                    · {selectedVendor.name}
+                  </span>
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompanyPocsOpen(false)}
+                className="rounded-xl p-1.5 text-mid-green transition hover:bg-light-green/20"
+                aria-label="Close"
+              >
+                <X className="h-4 w-4" strokeWidth={1.6} />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="overflow-x-auto rounded-xl border border-light-green/25 bg-white">
+                <table className="w-full min-w-[560px] text-left text-sm">
+                  <thead className="bg-dark-secondary/[0.04] text-xs text-mid-green">
+                    <tr>
+                      <th className="px-3.5 py-2.5 font-medium">Name</th>
+                      <th className="px-3.5 py-2.5 font-medium">Role</th>
+                      <th className="px-3.5 py-2.5 font-medium">Email</th>
+                      <th className="px-3.5 py-2.5 font-medium">Phone</th>
+                      <th className="px-3.5 py-2.5 font-medium">Primary</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedVendor.contacts.filter(
+                      (contact) => !contact.vendorCategoryId
+                    ).length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-3 py-6 text-center text-mid-green"
+                        >
+                          No company-level contacts
+                        </td>
+                      </tr>
+                    ) : (
+                      selectedVendor.contacts
+                        .filter((contact) => !contact.vendorCategoryId)
+                        .map((contact) => (
+                          <tr
+                            key={
+                              contact.id ||
+                              `${contact.email}-${contact.phone}`
+                            }
+                            className="border-t border-light-green/20"
+                          >
+                            <td className="px-3 py-2.5 font-medium text-dark-primary">
+                              {contact.name || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-mid-green">
+                              {contact.role || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-mid-green">
+                              {contact.email || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-mid-green">
+                              {contact.phone || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-mid-green">
+                              {contact.isPrimary ? "Yes" : "—"}
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {mapOpen && selectedSubcategory != null ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/50 p-3 backdrop-blur-[2px]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/45 p-3 backdrop-blur-[2px]">
           <form
             onSubmit={submitMap}
-            className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-dark-primary/8 bg-background shadow-[0_20px_60px_rgba(11,43,38,0.28)]"
+            className="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-[0_24px_64px_rgba(11,43,38,0.22)] animate-[login-fade-up_0.3s_ease-out]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="map-vendor-title"
           >
-            <div className="shrink-0 border-b border-dark-primary/8 px-4 py-3">
+            <div className="shrink-0 border-b border-light-green/20 bg-white/70 px-5 py-3.5">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
                   <h2
                     id="map-vendor-title"
                     className="truncate text-base font-semibold text-dark-primary"
                   >
-                    Add vendor
+                    Add vendors
                     <span className="ml-2 text-sm font-normal text-mid-green">
                       {selectedCategory}
                       {selectedSubcategory ? ` / ${selectedSubcategory}` : ""}
@@ -1318,13 +2379,13 @@ function AdminVendorsPageInner() {
                 <button
                   type="button"
                   onClick={() => setMapOpen(false)}
-                  className="rounded-md p-1.5 text-mid-green hover:bg-dark-primary/5"
+                  className="rounded-xl p-1.5 text-mid-green transition hover:bg-light-green/20"
                   aria-label="Close"
                 >
                   <X className="h-4 w-4" strokeWidth={1.6} />
                 </button>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-0.5 rounded-lg bg-dark-primary/[0.04] p-0.5">
+              <div className="mt-2.5 grid grid-cols-2 gap-0.5 rounded-xl bg-dark-primary/[0.04] p-0.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -1333,11 +2394,11 @@ function AdminVendorsPageInner() {
                       mode: "existing",
                       keywords: current.keywords,
                     }));
-                    setMapVendorDetails(null);
+                    setMapSelectedVendors([]);
                     setMapVendorSearch("");
-                    setMapSearchOpen(false);
+                    setMapSearchOpen(true);
                   }}
-                  className={`rounded-md px-2 py-1.5 text-xs font-medium ${
+                  className={`rounded-lg px-2 py-1.5 text-xs font-medium transition ${
                     mapForm.mode === "existing"
                       ? "bg-white text-dark-primary shadow-sm"
                       : "text-mid-green"
@@ -1353,11 +2414,11 @@ function AdminVendorsPageInner() {
                       mode: "new",
                       keywords: current.keywords,
                     }));
-                    setMapVendorDetails(null);
+                    setMapSelectedVendors([]);
                     setMapVendorSearch("");
                     setMapSearchOpen(false);
                   }}
-                  className={`rounded-md px-2 py-1.5 text-xs font-medium ${
+                  className={`rounded-lg px-2 py-1.5 text-xs font-medium transition ${
                     mapForm.mode === "new"
                       ? "bg-white text-dark-primary shadow-sm"
                       : "text-mid-green"
@@ -1368,44 +2429,185 @@ function AdminVendorsPageInner() {
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
               {mapForm.mode === "existing" ? (
                 <section className="space-y-2">
-                  {!mapForm.vendorId && !mapSearchOpen ? (
-                    <button
-                      type="button"
-                      onClick={() => setMapSearchOpen(true)}
-                      className="flex w-full items-center gap-2 rounded-lg border border-dark-primary/10 bg-white px-3 py-2 text-left text-sm text-mid-green hover:border-mid-green/40"
-                    >
-                      <Search className="h-3.5 w-3.5" strokeWidth={1.6} />
-                      Search vendor…
-                    </button>
+                  {mapSelectedVendors.length > 0 ? (
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-mid-green">
+                        Selected · {mapSelectedVendors.length}
+                      </p>
+                      <div className="space-y-2">
+                        {mapSelectedVendors.map((vendor) => {
+                          const pocs =
+                            mapForm.vendorContacts[vendor.id] || [emptyPoc()];
+                          return (
+                            <div
+                              key={vendor.id}
+                              className="rounded-lg border border-mid-green/25 bg-mid-green/5 p-3"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate text-sm font-medium">
+                                    {vendor.name}
+                                  </p>
+                                  <p className="truncate text-[11px] text-mid-green">
+                                    {[vendor.phone, vendor.email]
+                                      .filter(Boolean)
+                                      .join(" · ") || "No company contact"}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    removeMapSelectedVendor(vendor.id)
+                                  }
+                                  className="shrink-0 rounded p-1 text-mid-green hover:bg-light-green/30"
+                                  aria-label={`Remove ${vendor.name}`}
+                                >
+                                  <X
+                                    className="h-3.5 w-3.5"
+                                    strokeWidth={1.6}
+                                  />
+                                </button>
+                              </div>
+
+                              <div className="mt-2 space-y-1.5">
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="inline-flex items-center gap-1 text-[11px] font-medium text-dark-primary">
+                                    <Users
+                                      className="h-3 w-3 text-mid-green"
+                                      strokeWidth={1.6}
+                                    />
+                                    POCs for this vendor
+                                  </p>
+                                  <button
+                                    type="button"
+                                    onClick={() => addMapVendorPoc(vendor.id)}
+                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-mid-green hover:text-dark-primary"
+                                  >
+                                    <Plus
+                                      className="h-3 w-3"
+                                      strokeWidth={1.6}
+                                    />
+                                    Add POC
+                                  </button>
+                                </div>
+                                {pocs.map((contact, index) => (
+                                  <div
+                                    key={`${vendor.id}-poc-${index}`}
+                                    className="rounded-md border border-dark-primary/8 bg-white p-2"
+                                  >
+                                    <div className="mb-1 flex items-center justify-between">
+                                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                                        POC {index + 1}
+                                      </span>
+                                      {pocs.length > 1 ? (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            removeMapVendorPoc(
+                                              vendor.id,
+                                              index
+                                            )
+                                          }
+                                          className="text-[11px] text-mid-green hover:text-red-700"
+                                        >
+                                          Remove
+                                        </button>
+                                      ) : null}
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-1.5">
+                                      <input
+                                        value={contact.name}
+                                        onChange={(event) =>
+                                          updateMapVendorPoc(
+                                            vendor.id,
+                                            index,
+                                            { name: event.target.value }
+                                          )
+                                        }
+                                        placeholder="Name"
+                                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                                      />
+                                      <input
+                                        value={contact.role}
+                                        onChange={(event) =>
+                                          updateMapVendorPoc(
+                                            vendor.id,
+                                            index,
+                                            { role: event.target.value }
+                                          )
+                                        }
+                                        placeholder="Role"
+                                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                                      />
+                                      <input
+                                        type="email"
+                                        value={contact.email}
+                                        onChange={(event) =>
+                                          updateMapVendorPoc(
+                                            vendor.id,
+                                            index,
+                                            { email: event.target.value }
+                                          )
+                                        }
+                                        placeholder="Email"
+                                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                                      />
+                                      <input
+                                        value={contact.phone}
+                                        onChange={(event) =>
+                                          updateMapVendorPoc(
+                                            vendor.id,
+                                            index,
+                                            { phone: event.target.value }
+                                          )
+                                        }
+                                        placeholder="Phone"
+                                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                                      />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   ) : null}
 
-                  {!mapForm.vendorId && mapSearchOpen ? (
-                    <div className="space-y-1.5">
-                      <div className="relative">
-                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green" />
-                        <input
-                          autoFocus
-                          value={mapVendorSearch}
-                          onChange={(event) => setMapVendorSearch(event.target.value)}
-                          placeholder="Type name, phone, or email…"
-                          className="w-full rounded-lg border border-dark-primary/10 bg-white py-2 pl-8 pr-8 text-sm outline-none focus:border-mid-green"
-                        />
+                  <div className="space-y-1.5">
+                    <p className="text-xs font-medium text-mid-green">
+                      Search & add more
+                    </p>
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green" />
+                      <input
+                        autoFocus
+                        value={mapVendorSearch}
+                        onChange={(event) => {
+                          setMapVendorSearch(event.target.value);
+                          setMapSearchOpen(true);
+                        }}
+                        onFocus={() => setMapSearchOpen(true)}
+                        placeholder="Type name, phone, or email…"
+                        className="w-full rounded-lg border border-dark-primary/10 bg-white py-2 pl-8 pr-8 text-sm outline-none focus:border-mid-green"
+                      />
+                      {mapVendorSearch ? (
                         <button
                           type="button"
-                          onClick={() => {
-                            setMapSearchOpen(false);
-                            setMapVendorSearch("");
-                          }}
+                          onClick={() => setMapVendorSearch("")}
                           className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-mid-green hover:bg-dark-primary/5"
-                          aria-label="Close search"
+                          aria-label="Clear search"
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
-                      </div>
-                      <div className="max-h-36 overflow-y-auto rounded-lg border border-dark-primary/8 bg-white">
+                      ) : null}
+                    </div>
+                    {mapSearchOpen ? (
+                      <div className="max-h-40 overflow-y-auto rounded-lg border border-dark-primary/8 bg-white">
                         {mapSearching ? (
                           <p className="px-3 py-4 text-center text-xs text-mid-green">
                             Searching…
@@ -1417,69 +2619,56 @@ function AdminVendorsPageInner() {
                               : "Start typing to search"}
                           </p>
                         ) : (
-                          mapVendorMatches.map((vendor) => (
-                            <button
-                              key={vendor.id}
-                              type="button"
-                              onClick={() => {
-                                setMapSearchOpen(false);
-                                void selectExistingVendor(vendor.id);
-                              }}
-                              className="flex w-full flex-col border-b border-dark-primary/5 px-3 py-2 text-left last:border-b-0 hover:bg-mid-green/8"
-                            >
-                              <span className="truncate text-sm font-medium">
-                                {vendor.name}
-                              </span>
-                              <span className="truncate text-[11px] text-mid-green">
-                                {[vendor.phone, vendor.email]
-                                  .filter(Boolean)
-                                  .join(" · ") || "No contact"}
-                              </span>
-                            </button>
-                          ))
+                          mapVendorMatches.map((vendor) => {
+                            const selected = mapForm.vendorIds.includes(
+                              vendor.id
+                            );
+                            const alreadyMapped = subcategoryVendors.some(
+                              (row) => row.vendorId === vendor.id
+                            );
+                            return (
+                              <button
+                                key={vendor.id}
+                                type="button"
+                                disabled={alreadyMapped}
+                                onClick={() =>
+                                  void selectExistingVendor(vendor.id)
+                                }
+                                className={`flex w-full items-start justify-between gap-2 border-b border-dark-primary/5 px-3 py-2 text-left last:border-b-0 disabled:opacity-50 ${
+                                  selected
+                                    ? "bg-mid-green/10"
+                                    : "hover:bg-mid-green/8"
+                                }`}
+                              >
+                                <span className="min-w-0">
+                                  <span className="block truncate text-sm font-medium">
+                                    {vendor.name}
+                                  </span>
+                                  <span className="block truncate text-[11px] text-mid-green">
+                                    {[vendor.phone, vendor.email]
+                                      .filter(Boolean)
+                                      .join(" · ") || "No contact"}
+                                  </span>
+                                </span>
+                                <span className="shrink-0 pt-0.5 text-[10px] font-medium text-mid-green">
+                                  {alreadyMapped
+                                    ? "Mapped"
+                                    : selected
+                                      ? "Selected"
+                                      : "Add"}
+                                </span>
+                              </button>
+                            );
+                          })
                         )}
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
 
                   {mapVendorLoading ? (
                     <p className="py-2 text-center text-xs text-mid-green">
                       Loading…
                     </p>
-                  ) : null}
-
-                  {mapVendorDetails && mapForm.vendorId ? (
-                    <div className="flex items-center justify-between gap-2 rounded-lg border border-mid-green/25 bg-mid-green/5 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {mapVendorDetails.name}
-                        </p>
-                        <p className="truncate text-[11px] text-mid-green">
-                          {[mapVendorDetails.phone, mapVendorDetails.email]
-                            .filter(Boolean)
-                            .join(" · ") || "No company contact"}
-                          {mapVendorDetails.categories.length > 0
-                            ? ` · ${mapVendorDetails.categories.length} dept`
-                            : ""}
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setMapForm((current) => ({
-                            ...emptyMapForm(),
-                            mode: "existing",
-                            keywords: current.keywords,
-                          }));
-                          setMapVendorDetails(null);
-                          setMapVendorSearch("");
-                          setMapSearchOpen(true);
-                        }}
-                        className="shrink-0 text-xs text-mid-green underline"
-                      >
-                        Change
-                      </button>
-                    </div>
                   ) : null}
                 </section>
               ) : (
@@ -1528,108 +2717,118 @@ function AdminVendorsPageInner() {
                 </section>
               )}
 
-              <section className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <p className="inline-flex items-center gap-1 text-xs font-medium text-dark-primary">
-                    <Users className="h-3.5 w-3.5 text-mid-green" strokeWidth={1.6} />
-                    Department POCs
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setMapForm((current) => ({
-                        ...current,
-                        contacts: [...current.contacts, emptyPoc()],
-                      }))
-                    }
-                    className="inline-flex items-center gap-1 text-xs font-medium text-mid-green hover:text-dark-primary"
-                  >
-                    <Plus className="h-3 w-3" strokeWidth={1.6} />
-                    Add POC
-                  </button>
-                </div>
-                {mapForm.contacts.map((contact, index) => (
-                  <div
-                    key={index}
-                    className="rounded-lg border border-dark-primary/8 bg-white p-2.5"
-                  >
-                    <div className="mb-1.5 flex items-center justify-between">
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                        POC {index + 1}
-                      </span>
-                      {mapForm.contacts.length > 1 ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setMapForm((current) => ({
-                              ...current,
-                              contacts: current.contacts.filter(
-                                (_, contactIndex) => contactIndex !== index
-                              ),
-                            }))
-                          }
-                          className="text-[11px] text-mid-green hover:text-red-700"
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <input
-                        value={contact.name}
-                        onChange={(event) =>
-                          updateMapPoc(index, { name: event.target.value })
-                        }
-                        placeholder="Name"
-                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+              {mapForm.mode === "new" ? (
+                <section className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="inline-flex items-center gap-1 text-xs font-medium text-dark-primary">
+                      <Users
+                        className="h-3.5 w-3.5 text-mid-green"
+                        strokeWidth={1.6}
                       />
-                      <input
-                        value={contact.role}
-                        onChange={(event) =>
-                          updateMapPoc(index, { role: event.target.value })
-                        }
-                        placeholder="Role"
-                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
-                      />
-                      <input
-                        type="email"
-                        value={contact.email}
-                        onChange={(event) =>
-                          updateMapPoc(index, { email: event.target.value })
-                        }
-                        placeholder="Email"
-                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
-                      />
-                      <input
-                        value={contact.phone}
-                        onChange={(event) =>
-                          updateMapPoc(index, { phone: event.target.value })
-                        }
-                        placeholder="Phone"
-                        className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
-                      />
-                    </div>
+                      Department POCs
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setMapForm((current) => ({
+                          ...current,
+                          contacts: [...current.contacts, emptyPoc()],
+                        }))
+                      }
+                      className="inline-flex items-center gap-1 text-xs font-medium text-mid-green hover:text-dark-primary"
+                    >
+                      <Plus className="h-3 w-3" strokeWidth={1.6} />
+                      Add POC
+                    </button>
                   </div>
-                ))}
-                <input
-                  value={mapForm.keywords}
-                  onChange={(event) =>
-                    setMapForm((current) => ({
-                      ...current,
-                      keywords: event.target.value,
-                    }))
-                  }
-                  placeholder="Keywords (optional)"
-                  className="w-full rounded-lg border border-dark-primary/10 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
-                />
-              </section>
+                  {mapForm.contacts.map((contact, index) => (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-dark-primary/8 bg-white p-2.5"
+                    >
+                      <div className="mb-1.5 flex items-center justify-between">
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                          POC {index + 1}
+                        </span>
+                        {mapForm.contacts.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setMapForm((current) => ({
+                                ...current,
+                                contacts: current.contacts.filter(
+                                  (_, contactIndex) => contactIndex !== index
+                                ),
+                              }))
+                            }
+                            className="text-[11px] text-mid-green hover:text-red-700"
+                          >
+                            Remove
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <input
+                          value={contact.name}
+                          onChange={(event) =>
+                            updateMapPoc(index, { name: event.target.value })
+                          }
+                          placeholder="Name"
+                          className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                        />
+                        <input
+                          value={contact.role}
+                          onChange={(event) =>
+                            updateMapPoc(index, { role: event.target.value })
+                          }
+                          placeholder="Role"
+                          className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                        />
+                        <input
+                          type="email"
+                          value={contact.email}
+                          onChange={(event) =>
+                            updateMapPoc(index, {
+                              email: event.target.value,
+                            })
+                          }
+                          placeholder="Email"
+                          className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                        />
+                        <input
+                          value={contact.phone}
+                          onChange={(event) =>
+                            updateMapPoc(index, {
+                              phone: event.target.value,
+                            })
+                          }
+                          placeholder="Phone"
+                          className="rounded-md border border-dark-primary/10 bg-background px-2 py-1.5 text-sm outline-none focus:border-mid-green"
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </section>
+              ) : null}
+
+              <input
+                value={mapForm.keywords}
+                onChange={(event) =>
+                  setMapForm((current) => ({
+                    ...current,
+                    keywords: event.target.value,
+                  }))
+                }
+                placeholder="Keywords (optional, shared)"
+                className="w-full rounded-lg border border-dark-primary/10 bg-white px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
+              />
             </div>
 
-            <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 px-4 py-2.5">
+            <div className="flex shrink-0 justify-end gap-2 border-t border-light-green/20 bg-white/50 px-5 py-3">
               <button
                 type="button"
                 onClick={() => setMapOpen(false)}
-                className="rounded-lg px-3 py-1.5 text-sm text-mid-green hover:bg-dark-primary/5"
+                className="rounded-xl px-3.5 py-2 text-sm font-medium text-mid-green transition hover:bg-light-green/20"
               >
                 Cancel
               </button>
@@ -1638,61 +2837,99 @@ function AdminVendorsPageInner() {
                 disabled={
                   mapSaving ||
                   mapVendorLoading ||
-                  (mapForm.mode === "existing" && !mapForm.vendorId)
+                  (mapForm.mode === "existing" &&
+                    mapForm.vendorIds.length === 0)
                 }
-                className="rounded-lg bg-mid-green px-3 py-1.5 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+                className="rounded-xl bg-mid-green px-3.5 py-2 text-sm font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
               >
-                {mapSaving ? "Saving…" : "Save mapping"}
+                {mapSaving
+                  ? "Saving…"
+                  : mapForm.mode === "existing" &&
+                      mapForm.vendorIds.length > 1
+                    ? `Save ${mapForm.vendorIds.length} mappings`
+                    : "Save mapping"}
               </button>
             </div>
           </form>
         </div>
       ) : null}
 
-      {deptOpen && selectedVendor ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/50 p-4 backdrop-blur-[2px]">
+      {assignOpen && selectedVendor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/45 p-4 backdrop-blur-[2px]">
           <form
-            onSubmit={submitDepartment}
-            className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-dark-primary/8 bg-background shadow-[0_24px_80px_rgba(11,43,38,0.28)]"
+            onSubmit={submitCategoryAssign}
+            className="flex w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-[0_24px_64px_rgba(11,43,38,0.22)] animate-[login-fade-up_0.3s_ease-out]"
             role="dialog"
             aria-modal="true"
+            aria-labelledby="assign-category-title"
           >
-            <div className="shrink-0 border-b border-dark-primary/8 px-6 py-5">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-mid-green">
-                    By vendor
-                  </p>
-                  <h2 className="mt-1 text-xl font-semibold tracking-tight">
-                    Add department
-                  </h2>
-                  <p className="mt-1 text-sm text-mid-green">{selectedVendor.name}</p>
-                </div>
+            <div className="flex items-center justify-between gap-4 border-b border-light-green/20 bg-white/70 px-5 py-3.5">
+              <div className="min-w-0">
+                <h2
+                  id="assign-category-title"
+                  className="truncate text-base font-semibold text-dark-primary"
+                >
+                  Assign category
+                  <span className="ml-2 font-normal text-mid-green">
+                    · {selectedVendor.name}
+                  </span>
+                </h2>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setDeptOpen(false)}
-                  className="rounded-lg p-2 text-mid-green transition hover:bg-dark-primary/5"
+                  onClick={() => setAssignOpen(false)}
+                  className="rounded-xl px-3.5 py-1.5 text-sm font-medium text-mid-green transition hover:bg-light-green/20"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={
+                    assignSaving ||
+                    (assignForm.subcategories.length === 0 &&
+                      !(selectedVendor?.categories || []).some(
+                        (row) => row.category === assignForm.category
+                      ))
+                  }
+                  className="rounded-xl bg-mid-green px-3.5 py-1.5 text-sm font-medium text-background transition hover:bg-dark-secondary disabled:opacity-50"
+                >
+                  {assignSaving
+                    ? "Saving…"
+                    : assignForm.subcategories.length > 1
+                      ? `Save ${assignForm.subcategories.length} mappings`
+                      : assignForm.subcategories.length === 0
+                        ? "Save (unlink all)"
+                        : "Save mapping"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAssignOpen(false)}
+                  className="rounded-xl p-1.5 text-mid-green transition hover:bg-light-green/20"
                   aria-label="Close"
                 >
-                  <X className="h-5 w-5" strokeWidth={1.6} />
+                  <X className="h-4 w-4" strokeWidth={1.6} />
                 </button>
               </div>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="block text-sm">
-                  <span className="text-mid-green">Category</span>
+            <div className="grid gap-4 p-5 lg:grid-cols-3">
+              <section className="min-w-0 space-y-3 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
+                <label className="block text-xs">
+                  <span className="mb-1 block font-medium text-mid-green">
+                    Category
+                  </span>
                   <select
-                    value={deptForm.category}
+                    value={assignForm.category}
                     onChange={(event) =>
-                      setDeptForm((current) => ({
-                        ...current,
-                        category: event.target.value,
-                        subcategory: "",
-                      }))
+                      setAssignForm(
+                        assignFormFromVendor(
+                          selectedVendor,
+                          event.target.value
+                        )
+                      )
                     }
-                    className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
+                    className="h-9 w-full rounded-xl border border-light-green/35 bg-white px-2.5 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
                   >
                     {PRODUCT_CATEGORIES.map((category) => (
                       <option key={category} value={category}>
@@ -1701,155 +2938,324 @@ function AdminVendorsPageInner() {
                     ))}
                   </select>
                 </label>
-                <label className="block text-sm">
-                  <span className="text-mid-green">Subcategory</span>
-                  <input
-                    list={`subcats-${deptForm.category}`}
-                    value={deptForm.subcategory}
-                    onChange={(event) =>
-                      setDeptForm((current) => ({
-                        ...current,
-                        subcategory: event.target.value,
-                      }))
-                    }
-                    placeholder="Pick or type a subcategory"
-                    className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
-                  />
-                  <datalist id={`subcats-${deptForm.category}`}>
-                    {subcategoryOptionsForDept.map((subcategory) => (
-                      <option key={subcategory} value={subcategory} />
-                    ))}
-                  </datalist>
-                </label>
-              </div>
 
-              <section className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-dark-primary">
-                      Department POCs
+                <div>
+                  <p className="mb-1.5 text-xs font-medium text-mid-green">
+                    Subcategories
+                    {assignForm.subcategories.length > 0
+                      ? ` · ${assignForm.subcategories.length} selected`
+                      : ""}
+                  </p>
+                  {subcategoryOptionsForAssign.length === 0 ? (
+                    <p className="rounded-lg border border-dashed border-light-green/40 px-3 py-2 text-xs text-mid-green">
+                      No subcategories yet — add one below.
                     </p>
-                    <p className="mt-0.5 text-xs text-mid-green">
-                      Multiple contacts allowed for this product line
+                  ) : (
+                    <div className="space-y-2">
+                      {subcategoryOptionsForAssign.map((subcategory) => {
+                        const checked =
+                          assignForm.subcategories.includes(subcategory);
+                        const removing =
+                          assignRemovingSubcategory === subcategory;
+                        return (
+                          <div
+                            key={subcategory}
+                            className={`rounded-lg border p-2 ${
+                              checked
+                                ? "border-mid-green/40 bg-mid-green/5"
+                                : "border-light-green/35 bg-white"
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  toggleAssignSubcategory(subcategory)
+                                }
+                                className={`min-w-0 flex-1 truncate rounded-md px-2 py-1 text-left text-xs font-medium ${
+                                  checked
+                                    ? "bg-mid-green text-background"
+                                    : "bg-light-green/15 text-dark-primary hover:bg-light-green/25"
+                                }`}
+                              >
+                                {subcategory}
+                                {checked ? " · selected" : ""}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={removing}
+                                onClick={() =>
+                                  void removeAssignSubcategory(subcategory)
+                                }
+                                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-mid-green hover:bg-light-green/25 disabled:opacity-50"
+                                aria-label={`Unlink ${subcategory}`}
+                                title="Unlink this vendor from subcategory"
+                              >
+                                <Trash2
+                                  className="h-3.5 w-3.5"
+                                  strokeWidth={1.6}
+                                />
+                              </button>
+                            </div>
+                            {checked ? (
+                              <input
+                                value={
+                                  assignForm.subcategoryKeywords[
+                                    subcategory
+                                  ] || ""
+                                }
+                                onChange={(event) =>
+                                  updateAssignSubcategoryKeywords(
+                                    subcategory,
+                                    event.target.value
+                                  )
+                                }
+                                placeholder="Keywords (comma separated)"
+                                className="mt-1.5 h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-light-green/40 p-2">
+                    <p className="text-[11px] font-medium text-mid-green">
+                      Add & map subcategory
                     </p>
+                    <p className="text-[10px] text-mid-green">
+                      Saves to taxonomy and maps this vendor immediately.
+                    </p>
+                    <input
+                      value={assignCustomSubcategory}
+                      onChange={(event) =>
+                        setAssignCustomSubcategory(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void addCustomAssignSubcategory();
+                        }
+                      }}
+                      placeholder="Subcategory name"
+                      className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
+                    />
+                    <input
+                      value={assignCustomKeywords}
+                      onChange={(event) =>
+                        setAssignCustomKeywords(event.target.value)
+                      }
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          void addCustomAssignSubcategory();
+                        }
+                      }}
+                      placeholder="Keywords (optional)"
+                      className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
+                    />
+                    <button
+                      type="button"
+                      disabled={
+                        assignAddingSubcategory ||
+                        !assignCustomSubcategory.trim()
+                      }
+                      onClick={() => void addCustomAssignSubcategory()}
+                      className="h-8 w-full rounded-lg border border-light-green/40 bg-white text-xs font-medium hover:bg-light-green/15 disabled:opacity-50"
+                    >
+                      {assignAddingSubcategory
+                        ? "Saving…"
+                        : "Add & map subcategory"}
+                    </button>
                   </div>
+                </div>
+              </section>
+
+              <section className="min-w-0 space-y-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
+                <p className="text-xs font-medium text-mid-green">
+                  Available POCs
+                  {availablePocs.length > 0
+                    ? ` · ${availablePocs.length}`
+                    : ""}
+                </p>
+                {assignForm.subcategories.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-light-green/35 px-3 py-6 text-center text-xs text-mid-green">
+                    Select subcategories to load contacts.
+                  </p>
+                ) : availablePocsLoading ? (
+                  <p className="rounded-lg border border-dashed border-light-green/35 px-3 py-6 text-center text-xs text-mid-green">
+                    Loading…
+                  </p>
+                ) : availablePocs.length === 0 ? (
+                  <p className="rounded-lg border border-dashed border-light-green/35 px-3 py-6 text-center text-xs text-mid-green">
+                    No existing POCs. Enter one in Mapping POCs.
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {availablePocs.map((contact) => {
+                      const alreadyUsed = assignForm.contacts.some(
+                        (row) =>
+                          pocKey({
+                            name: row.name,
+                            email: row.email,
+                            phone: row.phone,
+                          }) ===
+                          pocKey({
+                            name: contact.name,
+                            email: contact.email,
+                            phone: contact.phone,
+                          })
+                      );
+                      const scopeLabel = !contact.vendorCategoryId
+                        ? "Company contact"
+                        : [contact.category, contact.subcategory]
+                            .filter(Boolean)
+                            .join(" / ") || "Mapped contact";
+                      return (
+                        <button
+                          key={pocKey(contact)}
+                          type="button"
+                          disabled={alreadyUsed}
+                          onClick={() => useAvailablePoc(contact)}
+                          className={`w-full rounded-lg border p-3 text-left transition ${
+                            alreadyUsed
+                              ? "border-mid-green/25 bg-mid-green/10"
+                              : "border-light-green/40 bg-white hover:border-mid-green hover:bg-light-green/10"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="truncate text-sm font-medium text-dark-primary">
+                              {contact.name || "Unnamed POC"}
+                            </p>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                alreadyUsed
+                                  ? "bg-mid-green/20 text-mid-green"
+                                  : "bg-light-green/30 text-dark-secondary"
+                              }`}
+                            >
+                              {alreadyUsed ? "Added" : "Use"}
+                            </span>
+                          </div>
+                          <p className="mt-0.5 truncate text-[11px] text-mid-green">
+                            {contact.role || "Category POC"}
+                            {contact.isPrimary ? " · Primary" : ""}
+                          </p>
+                          <div className="mt-2 space-y-0.5 text-[11px] text-dark-secondary">
+                            <p className="truncate">
+                              {contact.email || "No email"}
+                            </p>
+                            <p className="truncate">
+                              {contact.phone || "No phone"}
+                            </p>
+                          </div>
+                          <p className="mt-2 truncate text-[10px] text-mid-green">
+                            {scopeLabel}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              <section className="min-w-0 space-y-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-mid-green">
+                    Mapping POCs
+                  </p>
                   <button
                     type="button"
                     onClick={() =>
-                      setDeptForm((current) => ({
+                      setAssignForm((current) => ({
                         ...current,
                         contacts: [...current.contacts, emptyPoc()],
                       }))
                     }
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-dark-primary/10 bg-white px-2.5 py-1.5 text-xs font-medium hover:bg-mid-green/10"
+                    className="inline-flex items-center gap-1 rounded-md border border-light-green/40 bg-white px-2 py-1 text-[11px] font-medium hover:bg-light-green/15"
                   >
-                    <Plus className="h-3.5 w-3.5" strokeWidth={1.6} />
-                    Add POC
+                    <Plus className="h-3 w-3" strokeWidth={1.6} />
+                    Add
                   </button>
                 </div>
-                {deptForm.contacts.map((contact, index) => (
-                  <div
-                    key={index}
-                    className="rounded-xl border border-dark-primary/8 bg-white p-4"
-                  >
-                    <div className="mb-3 flex items-center justify-between">
-                      <p className="text-xs font-medium uppercase tracking-wide text-mid-green">
-                        POC {index + 1}
-                      </p>
-                      {deptForm.contacts.length > 1 ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setDeptForm((current) => ({
-                              ...current,
-                              contacts: current.contacts.filter(
-                                (_, contactIndex) => contactIndex !== index
-                              ),
-                            }))
-                          }
-                          className="text-xs text-mid-green hover:text-red-700"
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="block text-sm">
-                        <span className="text-mid-green">Name</span>
+                <div className="space-y-2">
+                  {assignForm.contacts.map((contact, index) => (
+                    <div
+                      key={index}
+                      className="rounded-lg border border-light-green/30 bg-white p-3"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-[11px] font-medium text-mid-green">
+                          POC {index + 1}
+                        </p>
+                        {assignForm.contacts.length > 1 ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAssignForm((current) => ({
+                                ...current,
+                                contacts: current.contacts.filter(
+                                  (_, contactIndex) => contactIndex !== index
+                                ),
+                              }))
+                            }
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-light-green/20"
+                            aria-label="Remove POC"
+                          >
+                            <Trash2
+                              className="h-3.5 w-3.5"
+                              strokeWidth={1.6}
+                            />
+                          </button>
+                        ) : null}
+                      </div>
+                      <div className="grid grid-cols-1 gap-2">
                         <input
                           value={contact.name}
                           onChange={(event) =>
-                            updateDeptPoc(index, { name: event.target.value })
+                            updateAssignPoc(index, {
+                              name: event.target.value,
+                            })
                           }
-                          className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-background px-3 py-2 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
+                          placeholder="Name"
+                          className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
                         />
-                      </label>
-                      <label className="block text-sm">
-                        <span className="text-mid-green">Role</span>
                         <input
                           value={contact.role}
                           onChange={(event) =>
-                            updateDeptPoc(index, { role: event.target.value })
+                            updateAssignPoc(index, {
+                              role: event.target.value,
+                            })
                           }
-                          className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-background px-3 py-2 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
+                          placeholder="Role"
+                          className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
                         />
-                      </label>
-                      <label className="block text-sm">
-                        <span className="text-mid-green">Email</span>
                         <input
                           type="email"
                           value={contact.email}
                           onChange={(event) =>
-                            updateDeptPoc(index, { email: event.target.value })
+                            updateAssignPoc(index, {
+                              email: event.target.value,
+                            })
                           }
-                          className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-background px-3 py-2 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
+                          placeholder="Email"
+                          className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
                         />
-                      </label>
-                      <label className="block text-sm">
-                        <span className="text-mid-green">Phone</span>
                         <input
                           value={contact.phone}
                           onChange={(event) =>
-                            updateDeptPoc(index, { phone: event.target.value })
+                            updateAssignPoc(index, {
+                              phone: event.target.value,
+                            })
                           }
-                          className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-background px-3 py-2 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
+                          placeholder="Phone"
+                          className="h-8 w-full rounded-lg border border-light-green/40 bg-white px-2.5 text-xs outline-none focus:border-mid-green"
                         />
-                      </label>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </section>
-
-              <label className="block text-sm">
-                <span className="text-mid-green">Keywords</span>
-                <input
-                  value={deptForm.keywords}
-                  onChange={(event) =>
-                    setDeptForm((current) => ({
-                      ...current,
-                      keywords: event.target.value,
-                    }))
-                  }
-                  className="mt-1.5 w-full rounded-xl border border-dark-primary/10 bg-white px-3 py-2.5 text-sm outline-none focus:border-mid-green focus:ring-2 focus:ring-mid-green/20"
-                />
-              </label>
-            </div>
-
-            <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 bg-dark-primary/[0.02] px-6 py-4">
-              <button
-                type="button"
-                onClick={() => setDeptOpen(false)}
-                className="rounded-xl px-4 py-2.5 text-sm font-medium text-mid-green hover:bg-dark-primary/5"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={deptSaving}
-                className="rounded-xl bg-mid-green px-4 py-2.5 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
-              >
-                {deptSaving ? "Saving…" : "Save department"}
-              </button>
             </div>
           </form>
         </div>

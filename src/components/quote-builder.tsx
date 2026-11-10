@@ -20,7 +20,9 @@ import {
   Store,
   Tag,
   Trash2,
+  TrendingUp,
   Upload,
+  Wallet,
   X,
 } from "lucide-react";
 import {
@@ -62,7 +64,9 @@ import {
 import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
 import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 import { QuoteCalculator } from "@/components/quote-calculator";
+import { CalcMoneyInput } from "@/components/calc-money-input";
 import { QuoteDiscountDialog } from "@/components/quote-discount-dialog";
+import { QuoteMarkupDialog } from "@/components/quote-markup-dialog";
 import {
   MarketplacePriceStack,
   type MarketplacePriceStackValue,
@@ -74,9 +78,22 @@ import {
 } from "@/components/catalog-price-stack";
 import { marketplaceQueryFromText } from "@/lib/marketplace/summary";
 import {
-  applyPercentToLinePrices,
-  type QuoteDiscountMethod,
+  applyPercentToLineDiscounts,
+  clampDiscountPercent,
+  effectiveUnitPrice,
+  uniformLineDiscountPercent,
+  type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
+import { applyMarkupPercentToLines } from "@/lib/quote-markup";
+import {
+  clampWarrantyQty,
+  normalizeWarrantyService,
+  normalizeWarrantyUnit,
+  WARRANTY_SERVICES,
+  WARRANTY_UNITS,
+  type WarrantyService,
+  type WarrantyUnit,
+} from "@/lib/quote-warranty";
 import {
   cheapestVendorQuote,
   selectedVendorQuote,
@@ -113,6 +130,10 @@ type LineItem = {
   unitPrice: number;
   costPrice?: number | null;
   costVendorName?: string;
+  discountPercent?: number;
+  warrantyQty?: number;
+  warrantyUnit?: WarrantyUnit;
+  warrantyService?: WarrantyService;
   vendorQuotes?: QuoteVendorQuote[];
   catalogLastPrice?: number | null;
   catalogOfferPrice?: number | null;
@@ -332,6 +353,10 @@ const emptyQuote = (): QuoteFormState => ({
       unitPrice: 0,
       costPrice: null,
       costVendorName: "",
+      discountPercent: 0,
+      warrantyQty: 0,
+      warrantyUnit: "years",
+      warrantyService: "",
       taxRate: 18,
       hsnCode: "",
     },
@@ -385,6 +410,10 @@ function quoteSavePayload(
       unitPrice: finiteAmount(l.unitPrice),
       costPrice: l.costPrice != null && l.costPrice > 0 ? l.costPrice : null,
       costVendorName: l.costVendorName || "",
+      discountPercent: clampDiscountPercent(l.discountPercent ?? 0),
+      warrantyQty: clampWarrantyQty(l.warrantyQty ?? 0),
+      warrantyUnit: normalizeWarrantyUnit(l.warrantyUnit),
+      warrantyService: normalizeWarrantyService(l.warrantyService),
       taxRate: finiteAmount(l.taxRate),
       sortOrder: i,
     })),
@@ -456,14 +485,18 @@ export function QuoteBuilder({
   const [unitConfirmOpen, setUnitConfirmOpen] = useState(false);
   const [discountDialog, setDiscountDialog] = useState<{
     percent: number;
-    method: QuoteDiscountMethod;
+    methods: QuoteDiscountMethods;
   } | null>(null);
-  const [appliedLineDiscountPercent, setAppliedLineDiscountPercent] = useState<
-    number | null
-  >(null);
+  const [markupDialog, setMarkupDialog] = useState<{ percent: number } | null>(
+    null
+  );
+  const [appliedMarkupPercent, setAppliedMarkupPercent] = useState<number | null>(
+    null
+  );
   const [buyerContacts, setBuyerContacts] = useState<ClientContactHit[]>([]);
   const [selectedContactId, setSelectedContactId] = useState("");
   const [attachOpen, setAttachOpen] = useState(false);
+  const [showVendorCost, setShowVendorCost] = useState(false);
   const [showMarketplace, setShowMarketplace] = useState(false);
   const [marketplaceByQuery, setMarketplaceByQuery] = useState<
     Record<string, { loading: boolean; prices: MarketplacePriceStackValue | null }>
@@ -882,6 +915,7 @@ export function QuoteBuilder({
         qty: l.qty,
         unitPrice: l.unitPrice,
         taxRate: l.taxRate,
+        discountPercent: l.discountPercent ?? 0,
       })),
       withGst: form.withGst,
       buyerState: form.buyerState,
@@ -902,6 +936,14 @@ export function QuoteBuilder({
       },
     });
   }, [form, sellerState]);
+
+  const appliedLineDiscountPercent = useMemo(
+    () => uniformLineDiscountPercent(form.lineItems),
+    [form.lineItems]
+  );
+  const hasAnyLineDiscount = form.lineItems.some(
+    (line) => clampDiscountPercent(line.discountPercent ?? 0) > 0
+  );
 
   const vendorCostTotal = useMemo(() => {
     return form.lineItems.reduce((sum, line) => {
@@ -1033,35 +1075,31 @@ export function QuoteBuilder({
     });
   }
 
-  function restoreLinePriceBasis(lines: LineItem[]): LineItem[] {
-    return lines.map((line) => ({
-      ...line,
-      unitPrice: linePriceBasisRef.current[line.key] ?? line.unitPrice,
-    }));
-  }
-
   function applyHeaderDiscount(percent: number) {
     const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
-    setAppliedLineDiscountPercent(null);
     setForm((f) => ({
       ...f,
       discountPercent: nextPercent,
       discountAmount: 0,
       manualOverrides: { ...f.manualOverrides, discountAmount: false },
-      lineItems: restoreLinePriceBasis(f.lineItems),
     }));
   }
 
   function applyLineDiscount(percent: number) {
     const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
-    setAppliedLineDiscountPercent(nextPercent > 0 ? nextPercent : null);
     setForm((f) => ({
       ...f,
-      discountPercent: 0,
-      discountAmount: 0,
-      manualOverrides: { ...f.manualOverrides, discountAmount: false },
-      lineItems: applyPercentToLinePrices(restoreLinePriceBasis(f.lineItems), nextPercent),
+      lineItems: applyPercentToLineDiscounts(f.lineItems, nextPercent),
     }));
+  }
+
+  function applyDiscountSelection(
+    percent: number,
+    methods: QuoteDiscountMethods
+  ) {
+    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
+    if (methods.lines) applyLineDiscount(nextPercent);
+    if (methods.header) applyHeaderDiscount(nextPercent);
   }
 
   function closeDiscountDialog() {
@@ -1069,10 +1107,44 @@ export function QuoteBuilder({
   }
 
   function openDiscountDialog() {
-    const percent = appliedLineDiscountPercent ?? form.discountPercent ?? 0;
+    const linePct = appliedLineDiscountPercent ?? 0;
+    const headerPct = form.discountPercent ?? 0;
     setDiscountDialog({
-      percent,
-      method: appliedLineDiscountPercent ? "lines" : "header",
+      percent: headerPct || linePct || 0,
+      methods: {
+        header: headerPct > 0 || (!hasAnyLineDiscount && !headerPct),
+        lines: hasAnyLineDiscount || (!headerPct && !hasAnyLineDiscount),
+      },
+    });
+  }
+
+  function openMarkupDialog() {
+    setMarkupDialog({ percent: appliedMarkupPercent ?? 0 });
+  }
+
+  function closeMarkupDialog() {
+    setMarkupDialog(null);
+  }
+
+  function applyMarkup(percent: number) {
+    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
+    setAppliedMarkupPercent(nextPercent > 0 ? nextPercent : null);
+    setForm((f) => {
+      const marked = applyMarkupPercentToLines(f.lineItems, nextPercent);
+      const lineItems = marked.map((line) => ({
+        ...line,
+        discountPercent: 0,
+      }));
+      for (const line of lineItems) {
+        linePriceBasisRef.current[line.key] = line.unitPrice;
+      }
+      return {
+        ...f,
+        discountPercent: 0,
+        discountAmount: 0,
+        manualOverrides: { ...f.manualOverrides, discountAmount: false },
+        lineItems,
+      };
     });
   }
 
@@ -1093,6 +1165,10 @@ export function QuoteBuilder({
           unitPrice: 0,
           costPrice: null,
           costVendorName: "",
+          discountPercent: 0,
+          warrantyQty: 0,
+          warrantyUnit: "years",
+          warrantyService: "",
           taxRate: 18,
           hsnCode: "",
         },
@@ -2003,29 +2079,47 @@ export function QuoteBuilder({
       {discountDialog ? (
         <QuoteDiscountDialog
           percent={discountDialog.percent}
-          method={discountDialog.method}
+          methods={discountDialog.methods}
           lines={form.lineItems.map((line) => ({
             qty: line.qty,
-            unitPrice: linePriceBasisRef.current[line.key] ?? line.unitPrice,
+            unitPrice: line.unitPrice,
+            discountPercent: line.discountPercent ?? 0,
           }))}
           onPercentChange={(percent) =>
             setDiscountDialog((current) =>
               current ? { ...current, percent } : current
             )
           }
-          onMethodChange={(method) =>
+          onMethodsChange={(methods) =>
             setDiscountDialog((current) =>
-              current ? { ...current, method } : current
+              current ? { ...current, methods } : current
             )
           }
           onCancel={closeDiscountDialog}
           onApply={() => {
-            if (discountDialog.method === "lines") {
-              applyLineDiscount(discountDialog.percent);
-            } else {
-              applyHeaderDiscount(discountDialog.percent);
-            }
+            applyDiscountSelection(discountDialog.percent, discountDialog.methods);
             closeDiscountDialog();
+          }}
+        />
+      ) : null}
+
+      {markupDialog ? (
+        <QuoteMarkupDialog
+          percent={markupDialog.percent}
+          lines={form.lineItems.map((line) => ({
+            qty: line.qty,
+            unitPrice: line.unitPrice,
+            costPrice: line.costPrice,
+          }))}
+          onPercentChange={(percent) =>
+            setMarkupDialog((current) =>
+              current ? { ...current, percent } : current
+            )
+          }
+          onCancel={closeMarkupDialog}
+          onApply={() => {
+            applyMarkup(markupDialog.percent);
+            closeMarkupDialog();
           }}
         />
       ) : null}
@@ -2127,6 +2221,17 @@ export function QuoteBuilder({
                     <option value="CGST_SGST">CGST + SGST</option>
                     <option value="IGST">IGST</option>
                   </select>
+                  {showVendorCost ? null : (
+                    <button
+                      type="button"
+                      onClick={() => setShowVendorCost(true)}
+                      className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15"
+                      title="Show vendor cost prices for each product"
+                    >
+                      <Wallet className="h-3 w-3" strokeWidth={1.5} />
+                      Vendor
+                    </button>
+                  )}
                   {showMarketplace ? null : (
                     <button
                       type="button"
@@ -2187,10 +2292,12 @@ export function QuoteBuilder({
                     {form.showHsn ? <col className="w-[6.75rem]" /> : null}
                     <col className="w-[4.25rem]" />
                     {form.showUnit ? <col className="w-[4.75rem]" /> : null}
-                    <col className="w-[10rem]" />
+                    {showVendorCost ? <col className="w-[10rem]" /> : null}
                     {showMarketplace ? <col className="w-[9.5rem]" /> : null}
                     {showCatalog ? <col className="w-[8.5rem]" /> : null}
                     <col className="w-[8.75rem]" />
+                    <col className="w-[4.25rem]" />
+                    <col className="w-[11rem]" />
                     <col className="w-[3.75rem]" />
                     <col className="w-[9.5rem]" />
                     <col className="w-8" />
@@ -2232,7 +2339,22 @@ export function QuoteBuilder({
                           </span>
                         </th>
                       ) : null}
-                      <th className="px-1.5 py-1.5 font-medium">Vendor cost</th>
+                      {showVendorCost ? (
+                        <th className="px-1.5 py-1.5 font-medium">
+                          <span className="inline-flex items-center gap-1">
+                            Vendor cost
+                            <button
+                              type="button"
+                              onClick={() => setShowVendorCost(false)}
+                              className="inline-flex h-4 w-4 items-center justify-center rounded border border-light-green/50 text-mid-green hover:bg-light-green/20"
+                              title="Hide vendor cost"
+                              aria-label="Hide vendor cost"
+                            >
+                              <Minus className="h-2.5 w-2.5" strokeWidth={2.5} />
+                            </button>
+                          </span>
+                        </th>
+                      ) : null}
                       {showMarketplace ? (
                         <th className="px-1.5 py-1.5 font-medium">
                           <span className="inline-flex items-center gap-1">
@@ -2266,6 +2388,10 @@ export function QuoteBuilder({
                         </th>
                       ) : null}
                       <th className="px-1.5 py-1.5 text-xs font-semibold">Sell</th>
+                      <th className="px-1.5 py-1.5 font-medium" title="Per-product discount %">
+                        Disc%
+                      </th>
+                      <th className="px-1.5 py-1.5 font-medium">Warranty</th>
                       <th className="px-1.5 py-1.5 font-medium">Tax%</th>
                       <th className="px-2 py-1.5 text-right text-xs font-semibold">Total</th>
                       <th className="px-1 py-1.5"></th>
@@ -2431,6 +2557,7 @@ export function QuoteBuilder({
                           </select>
                         </td>
                         ) : null}
+                        {showVendorCost ? (
                         <td className="px-1.5 py-1.5 align-top">
                           <QuoteLineVendorCostCell
                             line={line}
@@ -2450,6 +2577,7 @@ export function QuoteBuilder({
                             }
                           />
                         </td>
+                        ) : null}
                         {showMarketplace ? (
                         <td className="px-1.5 py-1.5 align-top">
                           <MarketplacePriceStack
@@ -2493,17 +2621,100 @@ export function QuoteBuilder({
                         </td>
                         ) : null}
                         <td className="px-1.5 py-1.5 align-top">
+                          <CalcMoneyInput
+                            value={line.unitPrice}
+                            onCommit={(unitPrice) => updateLine(idx, { unitPrice })}
+                            className={moneyInput}
+                            title="Sell price on the quotation"
+                            aria-label="Sell price"
+                          />
+                          {clampDiscountPercent(line.discountPercent ?? 0) > 0 ? (
+                            <span className="mt-0.5 block text-[10px] tabular-nums text-mid-green">
+                              Net{" "}
+                              {formatMoney(
+                                effectiveUnitPrice(
+                                  line.unitPrice,
+                                  line.discountPercent
+                                )
+                              )}
+                            </span>
+                          ) : null}
+                        </td>
+                        <td className="px-1.5 py-1.5 align-top">
                           <input
                             type="number"
                             min={0}
+                            max={100}
                             step="0.01"
-                            value={line.unitPrice}
+                            value={line.discountPercent ?? 0}
                             onChange={(e) =>
-                              updateLine(idx, { unitPrice: Number(e.target.value) })
+                              updateLine(idx, {
+                                discountPercent: clampDiscountPercent(
+                                  Number(e.target.value)
+                                ),
+                              })
                             }
-                            className={moneyInput}
-                            title="Sell price on the quotation"
+                            className={numInput}
+                            title="Per-product discount %"
                           />
+                        </td>
+                        <td className="px-1.5 py-1.5 align-top">
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={0}
+                                max={9999}
+                                step={1}
+                                value={line.warrantyQty ?? 0}
+                                onChange={(e) =>
+                                  updateLine(idx, {
+                                    warrantyQty: clampWarrantyQty(
+                                      Number(e.target.value)
+                                    ),
+                                  })
+                                }
+                                className={`${numInput} w-[3.25rem]`}
+                                title="Warranty duration"
+                                aria-label="Warranty duration"
+                              />
+                              <select
+                                value={normalizeWarrantyUnit(line.warrantyUnit)}
+                                onChange={(e) =>
+                                  updateLine(idx, {
+                                    warrantyUnit: e.target.value as WarrantyUnit,
+                                  })
+                                }
+                                className={`${cellInput} px-1 text-[11px]`}
+                                title="Warranty unit"
+                                aria-label="Warranty unit"
+                              >
+                                {WARRANTY_UNITS.map((unit) => (
+                                  <option key={unit.value} value={unit.value}>
+                                    {unit.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <select
+                              value={normalizeWarrantyService(line.warrantyService)}
+                              onChange={(e) =>
+                                updateLine(idx, {
+                                  warrantyService: e.target
+                                    .value as WarrantyService,
+                                })
+                              }
+                              className={`${cellInput} px-1 text-[11px]`}
+                              title="Warranty service type"
+                              aria-label="Warranty service type"
+                            >
+                              {WARRANTY_SERVICES.map((service) => (
+                                <option key={service.value || "none"} value={service.value}>
+                                  {service.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
                         </td>
                         <td className="px-1.5 py-1.5 align-top">
                           <input
@@ -2539,30 +2750,70 @@ export function QuoteBuilder({
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Markup
+                    </span>
+                    <button
+                      type="button"
+                      onClick={openMarkupDialog}
+                      className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
+                      title="Apply trader markup on cost into sell prices"
+                    >
+                      <span className="inline-flex items-center gap-1">
+                        <TrendingUp className="h-3 w-3 text-mid-green" strokeWidth={2} />
+                        <span className="tabular-nums">
+                          {appliedMarkupPercent && appliedMarkupPercent > 0
+                            ? `${appliedMarkupPercent}%`
+                            : "Select"}
+                        </span>
+                      </span>
+                    </button>
+                    {appliedMarkupPercent && appliedMarkupPercent > 0 ? (
+                      <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
+                        Built into sell prices
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Discount
                     </span>
                     <button
                       type="button"
                       onClick={openDiscountDialog}
                       className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
-                      title="Choose how to apply a discount"
+                      title="Whole quote and/or per-product discount"
                     >
                       <span className="inline-flex items-center gap-1">
                         <Percent className="h-3 w-3 text-mid-green" strokeWidth={2} />
                         <span className="tabular-nums">
-                          {(appliedLineDiscountPercent ?? form.discountPercent) > 0
-                            ? `${appliedLineDiscountPercent ?? form.discountPercent}%`
+                          {form.discountPercent > 0 || hasAnyLineDiscount
+                            ? [
+                                form.discountPercent > 0
+                                  ? `${form.discountPercent}% quote`
+                                  : null,
+                                hasAnyLineDiscount
+                                  ? appliedLineDiscountPercent
+                                    ? `${appliedLineDiscountPercent}% lines`
+                                    : "Mixed lines"
+                                  : null,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")
                             : "Select"}
                         </span>
                       </span>
                     </button>
-                    {appliedLineDiscountPercent ? (
-                      <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
-                        Built into unit prices
+                    {form.discountPercent > 0 && hasAnyLineDiscount ? (
+                      <span className="mt-0.5 block max-w-[12rem] text-[10px] leading-snug text-mid-green">
+                        Whole + per product
                       </span>
                     ) : form.discountPercent > 0 ? (
                       <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
                         Shown on the quote
+                      </span>
+                    ) : hasAnyLineDiscount ? (
+                      <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
+                        Per product Disc%
                       </span>
                     ) : null}
                   </div>
@@ -2628,12 +2879,21 @@ export function QuoteBuilder({
                         <span>Vendor cost</span>
                         <span className="tabular-nums font-medium">{formatMoney(vendorCostTotal)}</span>
                       </div>
-                      <div className="flex justify-between text-mid-green">
-                        <span>Margin vs cost</span>
-                        <span className="tabular-nums font-medium">
-                          {formatMoney(calc.subtotal - vendorCostTotal)}
-                        </span>
-                      </div>
+                      {appliedMarkupPercent && appliedMarkupPercent > 0 ? (
+                        <div className="flex justify-between text-mid-green">
+                          <span>Markup {appliedMarkupPercent}%</span>
+                          <span className="tabular-nums font-medium">
+                            +{formatMoney(calc.subtotal - vendorCostTotal)}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-mid-green">
+                          <span>Margin vs cost</span>
+                          <span className="tabular-nums font-medium">
+                            {formatMoney(calc.subtotal - vendorCostTotal)}
+                          </span>
+                        </div>
+                      )}
                     </>
                   ) : null}
                   <label className="flex items-center justify-between gap-3">

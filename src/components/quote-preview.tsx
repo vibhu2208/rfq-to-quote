@@ -23,6 +23,8 @@ import {
   quoteTableColCount,
   quoteWordsColSpan,
 } from "@/lib/quote-format";
+import { effectiveUnitPrice } from "@/lib/quote-discount";
+import { formatWarrantyLabel } from "@/lib/quote-warranty";
 import { Minus, X } from "lucide-react";
 
 export type QuotePreviewCompany = {
@@ -51,6 +53,10 @@ export type QuotePreviewLine = {
   qty: number;
   unit: string;
   unitPrice: number;
+  discountPercent?: number;
+  warrantyQty?: number;
+  warrantyUnit?: string;
+  warrantyService?: string;
   taxRate: number;
   hsnCode?: string | null;
 };
@@ -125,7 +131,12 @@ function EditableBlock({
 }
 
 function lineTaxable(line: QuotePreviewLine) {
-  return Math.round(line.qty * line.unitPrice * 100) / 100;
+  const unit = effectiveUnitPrice(line.unitPrice, line.discountPercent);
+  return Math.round(line.qty * unit * 100) / 100;
+}
+
+function lineDisplayUnitPrice(line: QuotePreviewLine) {
+  return effectiveUnitPrice(line.unitPrice, line.discountPercent);
 }
 
 function lineTax(line: QuotePreviewLine, withGst: boolean) {
@@ -388,6 +399,10 @@ export function QuotePreviewModal({
                   const details = line.aliasName?.trim()
                     ? quoteLineDetails(line.aliasName, line.description)
                     : "";
+                  const warranty = formatWarrantyLabel(line);
+                  const detailBlock = [details, warranty ? `Warranty: ${warranty}` : ""]
+                    .filter(Boolean)
+                    .join("\n");
                   return (
                     <tr key={line.key}>
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
@@ -399,9 +414,9 @@ export function QuotePreviewModal({
                         ) : (
                           <span className="italic text-slate-400">Item…</span>
                         )}
-                        {details ? (
+                        {detailBlock ? (
                           <span className="mt-0.5 block whitespace-pre-line text-[10px] font-normal text-black">
-                            {details}
+                            {detailBlock}
                           </span>
                         ) : null}
                       </td>
@@ -414,7 +429,7 @@ export function QuotePreviewModal({
                         {formatQuoteQty(line.qty, line.unit, includeUnit)}
                       </td>
                       <td className="border border-black px-1.5 py-1.5 text-right align-top tabular-nums">
-                        {formatQuoteAmount(line.unitPrice)}
+                        {formatQuoteAmount(lineDisplayUnitPrice(line))}
                       </td>
                       {withGst ? (
                         <>

@@ -1,9 +1,24 @@
 import { prisma } from "@/lib/prisma";
 import { getDefaultOrgContext } from "@/lib/accounting/context";
-import { getGspConfig, getGspProvider, type GstinVerification } from "@/lib/accounting/gsp";
+import {
+  getGspConfig,
+  getGspProvider,
+  type GstinPanHit,
+  type GstinVerification,
+} from "@/lib/accounting/gsp";
 import { writeAuditEvent } from "@/lib/accounting/audit";
 import { getStateCode, getStateName } from "@/lib/accounting/states";
 import type { Prisma } from "@prisma/client";
+
+export type GstinPreview = {
+  verification: GstinVerification;
+  address: ParsedGstAddress | null;
+};
+
+export type RankedGstinPanHit = GstinPanHit & {
+  score: number;
+  matchReasons: string[];
+};
 
 export type ParsedGstAddress = {
   addressLine1: string;
@@ -100,6 +115,108 @@ async function upsertBillingAddress(partyId: string, address: ParsedGstAddress) 
   }
 }
 
+/** Fetch portal details without writing to the database. */
+export async function previewPartyGstin(gstin: string): Promise<GstinPreview> {
+  const verification = await getGspProvider().verifyGstin(gstin);
+  const address = verification.valid ? parseAddressFromVerification(verification) : null;
+  return { verification, address };
+}
+
+function normalizeMatchText(value: string | undefined | null): string {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenOverlap(a: string, b: string): number {
+  const left = new Set(normalizeMatchText(a).split(" ").filter((t) => t.length > 2));
+  const right = new Set(normalizeMatchText(b).split(" ").filter((t) => t.length > 2));
+  if (left.size === 0 || right.size === 0) return 0;
+  let hit = 0;
+  for (const token of left) if (right.has(token)) hit += 1;
+  return hit / Math.max(left.size, right.size);
+}
+
+/** Rank PAN search hits against known name / address so the UI can suggest a match. */
+export function rankGstinHitsByPartyHints(
+  hits: GstinPanHit[],
+  hints: { name?: string | null; address?: string | null; stateCode?: string | null }
+): RankedGstinPanHit[] {
+  const name = normalizeMatchText(hints.name);
+  const address = normalizeMatchText(hints.address);
+  const stateCode = hints.stateCode?.trim() || "";
+
+  return hits
+    .map((hit) => {
+      let score = 0;
+      const matchReasons: string[] = [];
+      const legal = hit.legalName || "";
+      const trade = hit.tradeName || "";
+
+      if (name) {
+        const legalScore = tokenOverlap(name, legal);
+        const tradeScore = tokenOverlap(name, trade);
+        const best = Math.max(legalScore, tradeScore);
+        if (best > 0) {
+          score += best * 100;
+          matchReasons.push(
+            best >= 0.6 ? "Name strongly matches" : "Partial name match"
+          );
+        }
+        if (normalizeMatchText(legal) === name || normalizeMatchText(trade) === name) {
+          score += 40;
+          matchReasons.push("Exact name match");
+        }
+      }
+
+      if (address && (legal || trade)) {
+        // Address tokens sometimes appear in trade names for small firms.
+        const addrScore = Math.max(tokenOverlap(address, legal), tokenOverlap(address, trade));
+        if (addrScore > 0.2) {
+          score += addrScore * 20;
+          matchReasons.push("Address tokens overlap");
+        }
+      }
+
+      if (stateCode && hit.gstin.startsWith(stateCode)) {
+        score += 15;
+        matchReasons.push("Same state");
+      }
+
+      if ((hit.status || "").toLowerCase() === "active") {
+        score += 5;
+        matchReasons.push("Active");
+      }
+
+      return { ...hit, score, matchReasons };
+    })
+    .sort((a, b) => b.score - a.score || a.gstin.localeCompare(b.gstin));
+}
+
+export async function searchGstinByPan(input: {
+  pan: string;
+  stateCode?: string | null;
+  nameHint?: string | null;
+  addressHint?: string | null;
+}): Promise<{
+  hits: RankedGstinPanHit[];
+  message?: string;
+  raw?: Record<string, unknown>;
+}> {
+  const result = await getGspProvider().searchByPan({
+    pan: input.pan,
+    stateCode: input.stateCode,
+  });
+  const ranked = rankGstinHitsByPartyHints(result.hits, {
+    name: input.nameHint,
+    address: input.addressHint,
+    stateCode: input.stateCode,
+  });
+  return { hits: ranked, message: result.message, raw: result.raw };
+}
+
 export async function verifyAndStorePartyGstin(input: {
   gstin: string;
   partyId?: string;
@@ -108,6 +225,8 @@ export async function verifyAndStorePartyGstin(input: {
   email?: string;
   phone?: string;
   userId?: string;
+  /** When false, only return portal preview (no DB writes). Default true. */
+  persist?: boolean;
 }): Promise<{
   verification: GstinVerification;
   partyId?: string;
@@ -121,6 +240,9 @@ export async function verifyAndStorePartyGstin(input: {
   }
 
   const address = parseAddressFromVerification(verification);
+  if (input.persist === false) {
+    return { verification, address };
+  }
   const placeOfSupplyCode =
     verification.stateCode ||
     address?.stateCode ||

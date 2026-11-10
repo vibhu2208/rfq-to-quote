@@ -1,3 +1,13 @@
+import {
+  canonicalizeProductCategory,
+  categoriesCompatible,
+  dominantProductCategory,
+  inferProductCategoryFromText,
+  isLooseVendorCategory,
+  isUncategorizedCategory,
+  relatedProductCategories,
+  resolveProductCategory,
+} from "@/lib/categories";
 import { prisma } from "@/lib/prisma";
 import { extractKeywords, tokenize, tokensLooselyMatch } from "@/lib/product-match";
 import {
@@ -63,26 +73,170 @@ export type VendorMatch = {
 };
 
 function categoriesEqual(a?: string | null, b?: string | null): boolean {
-  if (!a || !b) return false;
-  if (
-    a === "Misc" ||
-    b === "Misc" ||
-    a === "General / Uncategorized" ||
-    b === "General / Uncategorized"
-  ) {
-    return false;
-  }
-  return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return categoriesCompatible(a, b);
 }
 
-/** Exact token equality or safe plural/stem — no weak substring matches. */
+/**
+ * Company-name tokens that appear in Misc vendor keywords and also in RFQ
+ * specs (e.g. "phantom power", "6 zone", "50MP camera"). Ignore these when
+ * matching uncategorized vendors so UPS firms don't win speaker lines.
+ */
+const WEAK_VENDOR_KEYWORDS = new Set([
+  "power",
+  "input",
+  "output",
+  "zone",
+  "camera",
+  "mic",
+  "mike",
+  "line",
+  "card",
+  "usb",
+  "sd",
+  "fm",
+  "dsp",
+  "ram",
+  "ssd",
+  "hdd",
+  "wifi",
+  "lan",
+  "oem",
+  "ops",
+  "gen",
+  "android",
+  "windows",
+  "core",
+  "octa",
+  "warranty",
+  "installation",
+  "india",
+  "private",
+  "limited",
+  "pvt",
+  "ltd",
+  "llp",
+  "solutions",
+  "technologies",
+  "technology",
+  "tech",
+  "system",
+  "systems",
+  "services",
+  "service",
+  "company",
+  "enterprises",
+  "enterprise",
+  "international",
+  "corp",
+  "corporation",
+  "industries",
+  "industry",
+  "group",
+  "trading",
+  "traders",
+  "electronics",
+  "electrical",
+  "equipment",
+  "equipments",
+  "general",
+  "global",
+  "world",
+  "digital",
+  "media",
+  "info",
+  "infotech",
+  "communications",
+  "communication",
+]);
+
+/** Single-token Misc hits that are enough on their own (brands / head nouns). */
+const HIGH_VALUE_VENDOR_KEYWORDS = new Set([
+  "interactive",
+  "viewsonic",
+  "harman",
+  "ahuja",
+  "jbl",
+  "jabra",
+  "phillips",
+  "philips",
+  "microphone",
+  "speakerphone",
+  "speakers",
+  "speaker",
+  "ifp",
+  "ifpd",
+  "smartboard",
+  "cisco",
+  "syrotech",
+  "samsung",
+  "lg",
+  "dell",
+  "hp",
+  "lenovo",
+  "epson",
+  "canon",
+  "hikvision",
+  "dahua",
+  "cpplus",
+]);
+
+function isStrongVendorKeyword(keyword: string): boolean {
+  const value = keyword.trim().toLowerCase();
+  if (value.length < 3) return false;
+  if (WEAK_VENDOR_KEYWORDS.has(value)) return false;
+  // Pure numbers / account codes from imports are not product signals.
+  if (/^\d+$/.test(value)) return false;
+  return true;
+}
+
+function isHighValueVendorKeyword(keyword: string): boolean {
+  const value = keyword.trim().toLowerCase();
+  if (HIGH_VALUE_VENDOR_KEYWORDS.has(value)) return true;
+  // Long brand-like tokens (e.g. "viewsonic" already listed; catch others).
+  return value.length >= 8 && isStrongVendorKeyword(value);
+}
+
+function looseVendorKeywordEvidence(strongExplicit: string[]): boolean {
+  if (strongExplicit.length >= 2) return true;
+  return strongExplicit.some(isHighValueVendorKeyword);
+}
+
+/** Concrete category for an RFQ line: parsed label, else description cues. */
+export function resolveLineCategory(
+  item: Pick<RfqRequirementItem, "description" | "brand" | "category">,
+  rfqCategory?: string | null
+): string | null {
+  const text = [item.description, item.brand].filter(Boolean).join(" ");
+  const fromItem = resolveProductCategory(item.category, text);
+  if (fromItem && fromItem !== "Misc") return fromItem;
+
+  const fromRfq = canonicalizeProductCategory(rfqCategory);
+  return fromRfq || null;
+}
+
+/**
+ * Phrase-aware keyword overlap.
+ * Vendor maps often store "ip camera" / "interactive flat panel" as one keyword
+ * while RFQ text is tokenized — require all phrase tokens to be present.
+ */
 function exactKeywordOverlap(
   rfqKeywords: string[],
   vendorKeywords: string[]
 ): string[] {
+  const rfqSet = new Set(rfqKeywords);
   const matched: string[] = [];
   for (const vk of vendorKeywords) {
     if (vk.length < 2) continue;
+    const phraseTokens = tokenize(vk);
+    if (phraseTokens.length > 1) {
+      const allPresent = phraseTokens.every(
+        (token) =>
+          rfqSet.has(token) ||
+          rfqKeywords.some((rk) => tokensLooselyMatch(rk, token))
+      );
+      if (allPresent) matched.push(vk);
+      continue;
+    }
     const hit = rfqKeywords.some(
       (rk) => rk === vk || tokensLooselyMatch(rk, vk)
     );
@@ -93,15 +247,28 @@ function exactKeywordOverlap(
 
 function itemKeywords(item: RfqRequirementItem, rfqCategory?: string | null): string[] {
   return extractKeywords({
-    parsedCategory: item.category || rfqCategory,
     parsedSpecs: {
       description: item.description,
       brand: item.brand,
-      quantity: item.quantity,
-      unit: item.unit,
-      category: item.category,
     },
     subject: requirementSearchText(item),
+  });
+}
+
+/** Shared key builder for match lookup and vendor price-history writes. */
+export function productKeyForLine(
+  item: Pick<RfqRequirementItem, "description" | "brand" | "category">,
+  rfqCategory?: string | null
+): string {
+  const category = resolveLineCategory(item, rfqCategory);
+  return normalizeProductKey({
+    parsedCategory: category || item.category || rfqCategory,
+    parsedSpecs: {
+      description: item.description,
+      brand: item.brand,
+      category,
+    },
+    subject: item.description,
   });
 }
 
@@ -109,17 +276,7 @@ function itemProductKey(
   item: RfqRequirementItem,
   rfqCategory?: string | null
 ): string {
-  return normalizeProductKey({
-    parsedCategory: item.category || rfqCategory,
-    parsedSpecs: {
-      description: item.description,
-      brand: item.brand,
-      quantity: item.quantity,
-      unit: item.unit,
-      category: item.category,
-    },
-    subject: requirementSearchText(item),
-  });
+  return productKeyForLine(item, rfqCategory);
 }
 
 type CategoryScore = {
@@ -130,7 +287,8 @@ type CategoryScore = {
   score: number;
 };
 
-function scoreVendorCategoryForItem(input: {
+/** Exported for unit tests — scores one vendor taxonomy row against one RFQ line. */
+export function scoreVendorCategoryForItem(input: {
   vendorCategory: {
     id: string;
     category: string;
@@ -140,57 +298,149 @@ function scoreVendorCategoryForItem(input: {
   itemCategory: string | null | undefined;
   rfqCategory: string | null | undefined;
   rfqKeywords: string[];
+  precomputed?: {
+    explicitKeywords: string[];
+    labelTokens: string[];
+    subcategoryTokens: string[];
+  };
 }): CategoryScore | null {
   const { vendorCategory, itemCategory, rfqCategory, rfqKeywords } = input;
-  const targetCategory = itemCategory || rfqCategory;
+  const targetCategory =
+    canonicalizeProductCategory(itemCategory) ||
+    canonicalizeProductCategory(rfqCategory);
   const exactCategory = categoriesEqual(vendorCategory.category, targetCategory);
+  const looseVendor = isLooseVendorCategory(vendorCategory.category);
 
-  // Require exact category when the RFQ/item has a real category.
-  if (
-    targetCategory &&
-    targetCategory !== "Misc" &&
-    targetCategory !== "General / Uncategorized" &&
-    !exactCategory
-  ) {
+  // Concrete vendor categories must match the line; Misc/Hardware may fall through
+  // to keyword evidence (most of the imported catalog is Misc).
+  if (targetCategory && !exactCategory && !looseVendor) {
     return null;
   }
 
-  const vendorKeywords = [
-    ...normalizeKeywords(vendorCategory.keywords),
-    ...tokenize(`${vendorCategory.category} ${vendorCategory.subcategory}`),
-  ];
-  const matchedKeywords = exactKeywordOverlap(rfqKeywords, vendorKeywords);
+  const explicitKeywords =
+    input.precomputed?.explicitKeywords ??
+    normalizeKeywords(vendorCategory.keywords);
+  const labelTokens =
+    input.precomputed?.labelTokens ??
+    tokenize(`${vendorCategory.category} ${vendorCategory.subcategory}`);
+  const matchedExplicit = exactKeywordOverlap(rfqKeywords, explicitKeywords);
+  const matchedLabel = exactKeywordOverlap(rfqKeywords, labelTokens);
+  const matchedKeywords = [...new Set([...matchedExplicit, ...matchedLabel])];
 
-  const subcategoryTokens = tokenize(vendorCategory.subcategory || "");
+  const subcategoryTokens =
+    input.precomputed?.subcategoryTokens ??
+    tokenize(vendorCategory.subcategory || "");
   const subcategoryHit =
     subcategoryTokens.length > 0 &&
     subcategoryTokens.every((token) =>
       rfqKeywords.some((kw) => kw === token || tokensLooselyMatch(kw, token))
     );
 
-  // Exact category alone is not enough — need keyword or subcategory evidence.
-  if (!exactCategory && matchedKeywords.length === 0 && !subcategoryHit) {
-    return null;
+  const strongExplicit = matchedExplicit.filter(isStrongVendorKeyword);
+
+  if (!exactCategory) {
+    // Loose / uncategorized vendor rows: require distinctive keyword evidence
+    // (brand / product tokens), not component specs like ram/ssd/wifi.
+    if (
+      !looseVendorKeywordEvidence(strongExplicit) &&
+      !subcategoryHit
+    ) {
+      return null;
+    }
   }
-  if (exactCategory && matchedKeywords.length === 0 && !subcategoryHit) {
-    // Allow exact category-only when RFQ keywords are empty (sparse parse).
-    if (rfqKeywords.length > 0) return null;
-  }
+  // Exact category is enough to include the vendor; keywords only improve rank
+  // (covers brand/model lines like "Dell Latitude 5540" under LAPTOP).
 
   const score =
     (exactCategory ? 20 : 0) +
-    matchedKeywords.length * 5 +
-    (subcategoryHit ? 8 : 0);
+    (exactCategory ? matchedExplicit.length : strongExplicit.length) * 6 +
+    // Ignore Misc/Hardware label-token hits — they are not product signals.
+    (exactCategory || !looseVendor ? matchedLabel.length * 3 : 0) +
+    (subcategoryHit ? 10 : 0);
 
   if (score <= 0) return null;
 
   return {
     vendorCategoryId: vendorCategory.id,
-    category: vendorCategory.category,
+    // Surface the RFQ line category when the vendor map is only Misc.
+    category:
+      !exactCategory && looseVendor && targetCategory
+        ? targetCategory
+        : vendorCategory.category,
     subcategory: vendorCategory.subcategory,
-    matchedKeywords,
+    matchedKeywords: exactCategory ? matchedKeywords : strongExplicit,
     score,
   };
+}
+
+/** Best vendor taxonomy row for the lines being emailed (subject / body Category). */
+export function pickOutreachCategory(input: {
+  items: Array<Pick<RfqRequirementItem, "description" | "brand" | "category">>;
+  vendorCategories: Array<{
+    category: string;
+    subcategory: string;
+    keywords?: unknown;
+  }>;
+  rfqCategory?: string | null;
+}): string {
+  const lineCategories = input.items
+    .map((item) => resolveLineCategory(item, input.rfqCategory))
+    .filter((value): value is string => Boolean(value));
+
+  const dominant = dominantProductCategory(lineCategories);
+  if (dominant) {
+    const vendorHasDominant = input.vendorCategories.some((row) =>
+      categoriesEqual(row.category, dominant)
+    );
+    if (vendorHasDominant || input.vendorCategories.length === 0) {
+      return dominant;
+    }
+  }
+
+  let best: CategoryScore | null = null;
+  for (const item of input.items) {
+    const keywords = extractKeywords({
+      parsedCategory: resolveLineCategory(item, input.rfqCategory),
+      parsedSpecs: {
+        description: item.description,
+        brand: item.brand,
+        category: item.category,
+      },
+      subject: requirementSearchText({
+        lineNumber: 1,
+        description: item.description,
+        quantity: 1,
+        unit: "pcs",
+        brand: item.brand,
+        category: item.category,
+      }),
+    });
+    for (const vendorCategory of input.vendorCategories) {
+      const scored = scoreVendorCategoryForItem({
+        vendorCategory: {
+          id: "outreach",
+          category: vendorCategory.category,
+          subcategory: vendorCategory.subcategory,
+          keywords: vendorCategory.keywords,
+        },
+        itemCategory: resolveLineCategory(item, input.rfqCategory),
+        rfqCategory: input.rfqCategory,
+        rfqKeywords: keywords,
+      });
+      if (scored && (!best || scored.score > best.score)) {
+        best = scored;
+      }
+    }
+  }
+  if (best) return best.category;
+
+  const rfqResolved = canonicalizeProductCategory(input.rfqCategory);
+  if (rfqResolved) return rfqResolved;
+
+  const firstVendor = input.vendorCategories.find(
+    (row) => !isUncategorizedCategory(row.category)
+  );
+  return firstVendor?.category || resolveProductCategory(input.rfqCategory);
 }
 
 function contactsForMatchedCategory(
@@ -267,7 +517,11 @@ export async function matchVendorsToRfq(
   limit = 20
 ): Promise<{ productKey: string; keywords: string[]; matches: VendorMatch[] }> {
   const items = extractRfqItems(input.parsedSpecs, input.rawText);
-  const fallbackProductKey = normalizeProductKey(input);
+  const resolvedRfqCategory = canonicalizeProductCategory(input.parsedCategory);
+  const fallbackProductKey = normalizeProductKey({
+    ...input,
+    parsedCategory: resolvedRfqCategory || input.parsedCategory,
+  });
   const globalKeywords = extractKeywords(input);
 
   const lines: Array<{
@@ -277,12 +531,21 @@ export async function matchVendorsToRfq(
     category: string | null;
   }> =
     items.length > 0
-      ? items.map((item) => ({
-          item,
-          keywords: itemKeywords(item, input.parsedCategory),
-          productKey: itemProductKey(item, input.parsedCategory),
-          category: item.category || input.parsedCategory || null,
-        }))
+      ? items.map((item) => {
+          const category = resolveLineCategory(item, resolvedRfqCategory);
+          return {
+            item,
+            keywords: itemKeywords(
+              { ...item, category: category || item.category },
+              category || resolvedRfqCategory
+            ),
+            productKey: itemProductKey(
+              { ...item, category: category || item.category },
+              category || resolvedRfqCategory
+            ),
+            category,
+          };
+        })
       : [
           {
             item: {
@@ -291,34 +554,107 @@ export async function matchVendorsToRfq(
               quantity: 1,
               unit: "pcs",
               brand: null,
-              category: input.parsedCategory || null,
+              category: resolvedRfqCategory,
             },
             keywords: globalKeywords,
             productKey: fallbackProductKey,
-            category: input.parsedCategory || null,
+            category:
+              resolvedRfqCategory ||
+              inferProductCategoryFromText(
+                [input.subject, input.rawText?.slice(0, 400)]
+                  .filter(Boolean)
+                  .join(" ")
+              ),
           },
         ];
 
   const categoryFilters = [
     ...new Set(
       lines
-        .map((line) => line.category)
+        .flatMap((line) => relatedProductCategories(line.category))
         .filter(
           (category): category is string =>
-            Boolean(category) &&
-            category !== "Misc" &&
-            category !== "General / Uncategorized"
+            Boolean(category) && !isUncategorizedCategory(category)
         )
+    ),
+  ];
+  // Include legacy / lowercase aliases so prefilter does not drop remappable rows.
+  const categoryFilterValues = [
+    ...new Set(
+      categoryFilters.flatMap((category) => {
+        const values = [
+          category,
+          category.toLowerCase(),
+          category.toUpperCase(),
+          ...relatedProductCategories(category),
+        ];
+        for (const [legacy, mapped] of Object.entries({
+          "CCTV & Surveillance": "CCTV",
+          "Computers & Laptops": "LAPTOP",
+          "Monitors & Displays": "TFT",
+          "Printers & Scanners": "PRINTER",
+          "Networking & Cables": "NETWORKING",
+          "UPS & Power": "UPS",
+          "Memory (RAM)": "RAM",
+          "Storage (HDD / SSD)": "HDD",
+        })) {
+          if (mapped === category || relatedProductCategories(mapped).includes(category)) {
+            values.push(legacy);
+          }
+        }
+        return values;
+      })
     ),
   ];
 
   const productKeys = [...new Set(lines.map((line) => line.productKey))];
+  const keywordHints = [
+    ...new Set(
+      lines
+        .flatMap((line) => line.keywords)
+        .map((keyword) => keyword.trim().toLowerCase())
+        .filter(isStrongVendorKeyword)
+    ),
+  ].slice(0, 48);
+
+  const looseCategoryValues = [
+    "Misc",
+    "misc",
+    "Hardware",
+    "ACCESSORIES",
+    "Electronic Goods",
+    "Electrical Goods",
+    "General / Uncategorized",
+  ];
 
   const vendors = await prisma.vendor.findMany({
     where: {
       active: true,
-      ...(categoryFilters.length > 0
-        ? { categories: { some: { category: { in: categoryFilters } } } }
+      ...(categoryFilterValues.length > 0
+        ? {
+            OR: [
+              {
+                categories: {
+                  some: { category: { in: categoryFilterValues } },
+                },
+              },
+              // Most imported vendors sit under Misc with product keywords only.
+              ...(keywordHints.length > 0
+                ? [
+                    {
+                      categories: {
+                        some: {
+                          category: { in: looseCategoryValues },
+                          OR: keywordHints.map((keyword) => ({
+                            keywords: { array_contains: [keyword] },
+                          })),
+                        },
+                      },
+                    },
+                  ]
+                : []),
+            ],
+          }
         : {}),
     },
     include: {
@@ -341,17 +677,46 @@ export async function matchVendorsToRfq(
   };
 
   const byVendor = new Map<string, Acc>();
+  const vendorCategoryCache = new Map<
+    string,
+    {
+      id: string;
+      category: string;
+      subcategory: string;
+      keywords: unknown;
+      explicitKeywords: string[];
+      labelTokens: string[];
+      subcategoryTokens: string[];
+    }
+  >();
 
   for (const vendor of vendors) {
+    for (const category of vendor.categories) {
+      if (vendorCategoryCache.has(category.id)) continue;
+      vendorCategoryCache.set(category.id, {
+        id: category.id,
+        category: category.category,
+        subcategory: category.subcategory,
+        keywords: category.keywords,
+        explicitKeywords: normalizeKeywords(category.keywords),
+        labelTokens: tokenize(`${category.category} ${category.subcategory}`),
+        subcategoryTokens: tokenize(category.subcategory || ""),
+      });
+    }
+
     for (const line of lines) {
       let bestForLine: CategoryScore | undefined;
+      const rfqKeywords =
+        line.keywords.length > 0 ? line.keywords : globalKeywords;
 
       for (const category of vendor.categories) {
+        const cached = vendorCategoryCache.get(category.id)!;
         const scored = scoreVendorCategoryForItem({
-          vendorCategory: category,
+          vendorCategory: cached,
           itemCategory: line.category,
           rfqCategory: input.parsedCategory,
-          rfqKeywords: line.keywords.length > 0 ? line.keywords : globalKeywords,
+          rfqKeywords,
+          precomputed: cached,
         });
         if (!scored) continue;
         if (!bestForLine || scored.score > bestForLine.score) {
@@ -428,13 +793,12 @@ export async function matchVendorsToRfq(
 
   const matches: VendorMatch[] = [...byVendor.values()].map((entry) => {
     const linesWithPrice = entry.matchedLines.filter((l) => l.unitPrice != null);
-    const estimatedTotal =
-      linesWithPrice.length > 0 &&
-      linesWithPrice.length === entry.matchedLines.length
-        ? linesWithPrice.reduce((sum, l) => sum + (l.lineTotal || 0), 0)
-        : linesWithPrice.length > 0
-          ? linesWithPrice.reduce((sum, l) => sum + (l.lineTotal || 0), 0)
-          : null;
+    const allPriced =
+      entry.matchedLines.length > 0 &&
+      linesWithPrice.length === entry.matchedLines.length;
+    const estimatedTotal = allPriced
+      ? linesWithPrice.reduce((sum, l) => sum + (l.lineTotal || 0), 0)
+      : null;
 
     const primaryKey =
       entry.matchedLines.length === 1
@@ -451,6 +815,7 @@ export async function matchVendorsToRfq(
       matchedKeywords: entry.bestCategory.matchedKeywords,
       score: entry.totalScore,
       productKey: primaryKey,
+      // Never surface a partial sum as "last quoted".
       lastPrice: estimatedTotal ?? singleLast,
       lastQuotedAt: entry.lastQuotedAt?.toISOString() || null,
       matchedLines: entry.matchedLines.sort(

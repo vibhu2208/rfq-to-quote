@@ -3,6 +3,8 @@ import type { Quote, QuoteLineItem, Product } from "@prisma/client";
 import { getCompanyConfig } from "@/lib/company";
 import { round2 } from "@/lib/accounting/money";
 import { decimalToNumber } from "@/lib/quotes";
+import { effectiveUnitPrice } from "@/lib/quote-discount";
+import { formatWarrantyLabel } from "@/lib/quote-warranty";
 import { renderQuotePdf } from "@/lib/pdf/quote-document";
 import { defaultQuoteTerms, quoteIntro, QUOTE_CLOSING } from "@/lib/quote-format";
 
@@ -70,7 +72,10 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     },
     lineItems: quote.lineItems.map((li) => {
       const qty = decimalToNumber(li.qty);
-      const unitPrice = decimalToNumber(li.unitPrice);
+      const unitPrice = effectiveUnitPrice(
+        decimalToNumber(li.unitPrice),
+        decimalToNumber(li.discountPercent)
+      );
       const taxRate = decimalToNumber(li.taxRate);
       const taxable = round2(qty * unitPrice);
       const taxAmount = withGst ? round2((taxable * taxRate) / 100) : 0;
@@ -86,6 +91,11 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
         amount: round2(taxable + taxAmount),
         hsnCode: li.product?.hsnCode ?? undefined,
         productCode: li.product?.code,
+        warrantyLabel: formatWarrantyLabel({
+          warrantyQty: li.warrantyQty,
+          warrantyUnit: li.warrantyUnit,
+          warrantyService: li.warrantyService,
+        }),
       };
     }),
   });

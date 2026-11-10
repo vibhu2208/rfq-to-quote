@@ -66,27 +66,24 @@ export function quoteAttachmentObjectPath(quoteId: string, attachmentId: string,
   return `quotes/${quoteId}/${attachmentId}/${storageObjectFileName(fileName)}`;
 }
 
-export async function uploadQuoteAttachmentFile(input: {
-  quoteId: string;
-  attachmentId: string;
-  fileName: string;
-  contentType: string;
-  body: Buffer;
-}): Promise<string | null> {
-  const path = quoteAttachmentObjectPath(input.quoteId, input.attachmentId, input.fileName);
+export function leadAttachmentObjectPath(leadId: string, attachmentId: string, fileName: string): string {
+  return `leads/${leadId}/${attachmentId}/${storageObjectFileName(fileName)}`;
+}
+
+async function uploadAttachmentObject(path: string, contentType: string, body: Buffer): Promise<string | null> {
   if (s3ConfigFromEnv()) {
     return uploadToS3({
       key: path,
-      body: input.body,
-      contentType: input.contentType,
+      body,
+      contentType,
     });
   }
   const supabase = getSupabaseAdmin();
   if (!supabase) return null;
   await ensureQuoteAttachmentBucket();
   const { error } = await Promise.race([
-    supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).upload(path, input.body, {
-      contentType: input.contentType || "application/octet-stream",
+    supabase.storage.from(QUOTE_ATTACHMENT_BUCKET).upload(path, body, {
+      contentType: contentType || "application/octet-stream",
       upsert: true,
     }),
     new Promise<{ error: { message: string } }>((resolve) => {
@@ -95,12 +92,34 @@ export async function uploadQuoteAttachmentFile(input: {
   ]);
   if (error) {
     if (isQuoteStorageSetupError(error.message) || /not found|bucket/i.test(error.message)) {
-      console.warn("Quote attachment storage upload skipped:", error.message);
+      console.warn("Attachment storage upload skipped:", error.message);
       return null;
     }
     throw new Error(error.message);
   }
   return path;
+}
+
+export async function uploadQuoteAttachmentFile(input: {
+  quoteId: string;
+  attachmentId: string;
+  fileName: string;
+  contentType: string;
+  body: Buffer;
+}): Promise<string | null> {
+  const path = quoteAttachmentObjectPath(input.quoteId, input.attachmentId, input.fileName);
+  return uploadAttachmentObject(path, input.contentType, input.body);
+}
+
+export async function uploadLeadAttachmentFile(input: {
+  leadId: string;
+  attachmentId: string;
+  fileName: string;
+  contentType: string;
+  body: Buffer;
+}): Promise<string | null> {
+  const path = leadAttachmentObjectPath(input.leadId, input.attachmentId, input.fileName);
+  return uploadAttachmentObject(path, input.contentType, input.body);
 }
 
 export async function downloadQuoteAttachmentFile(storageKey: string): Promise<Buffer | null> {

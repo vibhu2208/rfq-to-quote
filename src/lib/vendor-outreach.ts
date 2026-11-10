@@ -22,8 +22,10 @@ import {
   extractThreadRef,
   type VendorQuotedLineItem,
 } from "@/lib/parse-vendor-price";
-import { normalizeProductKey } from "@/lib/product-key";
+import { isUncategorizedCategory } from "@/lib/categories";
+import { isSpecificProductKey, normalizeProductKey } from "@/lib/product-key";
 import { extractRfqItems } from "@/lib/rfq-items";
+import { pickOutreachCategory, productKeyForLine } from "@/lib/vendor-match";
 
 function makeThreadRef(rfqId: string): string {
   const rfqPart = rfqId.replace(/[^a-z0-9]/gi, "").slice(-6).toUpperCase();
@@ -80,7 +82,6 @@ Total: Rs.____`
 We have a customer RFQ and need your best revised quote (INR).
 
 Category: ${input.category || "General"}
-Product key: ${input.productKey || "—"}
 Customer subject: ${input.subject || "(no subject)"}
 
 Items requested:
@@ -237,6 +238,22 @@ export async function getOutreachMapForRfq(
   const rows = await prisma.vendorOutreach.findMany({
     where: { rfqId },
     orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      vendorId: true,
+      status: true,
+      threadRef: true,
+      quotedPrice: true,
+      quotedLineItems: true,
+      requestedLineNumbers: true,
+      replyIntent: true,
+      negotiationNote: true,
+      previousQuotedPrice: true,
+      sentAt: true,
+      repliedAt: true,
+      negotiatedAt: true,
+      errorMessage: true,
+    },
   });
   const map = new Map<string, OutreachSummary>();
   for (const row of rows) {
@@ -293,6 +310,7 @@ export async function previewVendorRecore(input: {
       where: { id: input.vendorId },
       include: {
         contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
+        categories: true,
       },
     }),
     prisma.vendorOutreach.findUnique({
@@ -387,11 +405,19 @@ export async function previewVendorRecore(input: {
       .map((contact) => contact.name?.trim())
       .filter(Boolean)
       .join(", ") || vendor.name;
+  const outreachCategory = pickOutreachCategory({
+    items,
+    vendorCategories: vendor.categories,
+    rfqCategory: rfq.parsedCategory,
+  });
   const draft = buildOutreachEmail({
     vendorName: vendor.name,
     contactName: greeting,
     threadRef,
-    category: rfq.parsedCategory || "General",
+    category:
+      !isUncategorizedCategory(outreachCategory) && outreachCategory
+        ? outreachCategory
+        : "General",
     productKey,
     subject: rfq.subject,
     rawText: rfq.rawText,
@@ -508,6 +534,15 @@ export async function sendVendorRecore(input: {
     }
   }
 
+  const priorStatus = existing?.status || null;
+  const priorMsgId = existing?.outboundMsgId || "";
+  const hadQuotedPrices =
+    existing?.quotedPrice != null ||
+    (Array.isArray(existing?.quotedLineItems) &&
+      existing.quotedLineItems.length > 0);
+
+  // Stage draft fields without wiping outboundMsgId — keep In-Reply-To working
+  // if this send fails partway.
   const outreach = await prisma.vendorOutreach.upsert({
     where: {
       rfqId_vendorId: { rfqId: input.rfqId, vendorId: vendor.id },
@@ -525,10 +560,12 @@ export async function sendVendorRecore(input: {
     update: {
       productKey,
       threadRef,
-      status: existing?.status === "REPLIED" ? "REPLIED" : "PENDING",
+      status:
+        priorStatus === "REPLIED" || priorStatus === "NEGOTIATING"
+          ? priorStatus
+          : "PENDING",
       outboundSubject: emailSubject || `WhatsApp request [REF:${threadRef}]`,
       outboundBody: body,
-      outboundMsgId: "",
       requestedLineNumbers: storedLineNumbers ?? Prisma.DbNull,
       errorMessage: "",
     },
@@ -536,6 +573,7 @@ export async function sendVendorRecore(input: {
 
   try {
     let messageId = "";
+    let recipientsSent: string[] = [];
     if (channel === "EMAIL") {
       const sent = await sendGmailEmail({
         to: toEmails.join(", "),
@@ -543,30 +581,46 @@ export async function sendVendorRecore(input: {
         text: body,
       });
       messageId = sent.messageId;
+      recipientsSent = toEmails;
     } else {
       const waBody = emailSubject
         ? `*${emailSubject}*\n\n${body}`
         : body;
       const sentIds: string[] = [];
+      const failures: string[] = [];
       for (const phone of toPhones) {
-        const sent = await sendWhatsAppText({ to: phone, body: waBody });
-        sentIds.push(sent.messageId);
+        try {
+          const sent = await sendWhatsAppText({ to: phone, body: waBody });
+          sentIds.push(sent.messageId);
+          recipientsSent.push(phone);
+        } catch (waError) {
+          failures.push(
+            `+${phone}: ${waError instanceof Error ? waError.message : "send failed"}`
+          );
+        }
+      }
+      if (sentIds.length === 0) {
+        throw new Error(
+          failures.length > 0
+            ? `WhatsApp send failed (${failures.join("; ")})`
+            : "WhatsApp send failed"
+        );
       }
       messageId = sentIds[0] || "";
     }
 
+    const partialWaNote =
+      channel === "WHATSAPP" && recipientsSent.length < toPhones.length
+        ? `Partial WhatsApp send: delivered to ${recipientsSent.length}/${toPhones.length}`
+        : "";
+
     const updated = await prisma.vendorOutreach.update({
       where: { id: outreach.id },
       data: {
-        status:
-          existing?.quotedPrice != null ||
-          (Array.isArray(existing?.quotedLineItems) &&
-            existing.quotedLineItems.length > 0)
-            ? "REPLIED"
-            : "SENT",
+        status: hadQuotedPrices ? "REPLIED" : "SENT",
         outboundMsgId: messageId,
         sentAt: new Date(),
-        errorMessage: "",
+        errorMessage: partialWaNote,
       },
     });
 
@@ -577,8 +631,8 @@ export async function sendVendorRecore(input: {
         channel,
         body:
           channel === "EMAIL"
-            ? `Recore emailed to ${vendor.name} <${toEmails.join(", ")}>\n\n${body}`
-            : `Recore WhatsApp to ${vendor.name} <${toPhones.map((n) => `+${n}`).join(", ")}>\n\n${body}`,
+            ? `Recore emailed to ${vendor.name} <${recipientsSent.join(", ")}>\n\n${body}`
+            : `Recore WhatsApp to ${vendor.name} <${recipientsSent.map((n) => `+${n}`).join(", ")}>\n\n${body}`,
         meta: {
           type: "vendor_recore",
           channel,
@@ -587,7 +641,7 @@ export async function sendVendorRecore(input: {
           threadRef,
           messageId,
           itemCount: items.length,
-          recipients: channel === "EMAIL" ? toEmails : toPhones,
+          recipients: recipientsSent,
           contactIds: input.contactIds || [],
         },
       },
@@ -596,9 +650,22 @@ export async function sendVendorRecore(input: {
     return updated;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Send failed";
+    // Never downgrade an already-replied/negotiating thread to FAILED on a
+    // failed re-send; keep the prior outboundMsgId for threading.
+    const keepStatus =
+      priorStatus === "REPLIED" ||
+      priorStatus === "NEGOTIATING" ||
+      priorStatus === "SENT" ||
+      priorStatus === "DECLINED"
+        ? priorStatus
+        : "FAILED";
     return prisma.vendorOutreach.update({
       where: { id: outreach.id },
-      data: { status: "FAILED", errorMessage: message },
+      data: {
+        status: keepStatus || "FAILED",
+        outboundMsgId: priorMsgId || undefined,
+        errorMessage: message,
+      },
     });
   }
 }
@@ -1014,23 +1081,16 @@ export async function handleVendorReplyEmail(
   });
   await setOutreachStatus(outreach.id, nextStatus);
 
+  // Only persist per-line unit prices. Never store an aggregate RFQ total as a
+  // unit-price history row — that poisons later single-SKU matches.
   if (!declined && quotedLineItems.length > 0) {
     for (const line of quotedLineItems) {
       const rfqItem = items.find((item) => item.lineNumber === line.lineNumber);
       const productKey = rfqItem
-        ? normalizeProductKey({
-            parsedCategory: rfqItem.category || outreach.rfq.parsedCategory,
-            parsedSpecs: {
-              description: rfqItem.description,
-              brand: rfqItem.brand,
-              quantity: rfqItem.quantity,
-              unit: rfqItem.unit,
-              category: rfqItem.category,
-            },
-            subject: rfqItem.description,
-          })
-        : outreach.productKey || `line-${line.lineNumber}`;
-      if (!productKey) continue;
+        ? productKeyForLine(rfqItem, outreach.rfq.parsedCategory)
+        : `line-${line.lineNumber}`;
+      if (!productKey || !isSpecificProductKey(productKey)) continue;
+      if (!(line.unitPrice > 0)) continue;
       await prisma.vendorProductHistory.upsert({
         where: {
           vendorId_productKey: {
@@ -1052,27 +1112,6 @@ export async function handleVendorReplyEmail(
         },
       });
     }
-  } else if (!declined && quotedPrice != null && outreach.productKey) {
-    await prisma.vendorProductHistory.upsert({
-      where: {
-        vendorId_productKey: {
-          vendorId: outreach.vendorId,
-          productKey: outreach.productKey,
-        },
-      },
-      create: {
-        vendorId: outreach.vendorId,
-        productKey: outreach.productKey,
-        lastPrice: quotedPrice,
-        lastQuotedAt: now,
-        sourceRfqId: outreach.rfqId,
-      },
-      update: {
-        lastPrice: quotedPrice,
-        lastQuotedAt: now,
-        sourceRfqId: outreach.rfqId,
-      },
-    });
   }
 
   const displayTotal =

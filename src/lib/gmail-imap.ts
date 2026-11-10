@@ -17,7 +17,10 @@ import {
   outlookMessageToParsedMail,
   searchOutlookMessages,
 } from "@/lib/outlook-graph";
-import { emailLooksLikeRequirement } from "@/lib/inbound-requirement";
+import {
+  emailLooksLikeRequirement,
+  looksLikePromotionalEmail,
+} from "@/lib/inbound-requirement";
 import { emailBodyFromParts } from "@/lib/email-text";
 
 export type PolledEmail = {
@@ -127,19 +130,6 @@ async function ingestInboundEmail(
   });
   if (existing) return { kind: "duplicate" };
 
-  // Only product / RFQ requirement mail becomes an inbox RFQ.
-  // Promo, newsletter, and bulk Microsoft marketing mail are skipped.
-  if (
-    !emailLooksLikeRequirement({
-      subject,
-      text,
-      fromEmail,
-      headers: parsed.headers ?? null,
-    })
-  ) {
-    return { kind: "not_requirement" };
-  }
-
   const attachments =
     attachmentNames ||
     (parsed.attachments || []).map((attachment) => ({
@@ -148,6 +138,44 @@ async function ingestInboundEmail(
     }));
 
   const channel = resolveEmailChannel(fromEmail);
+  const signals = {
+    subject,
+    text,
+    fromEmail,
+    headers: parsed.headers ?? null,
+  };
+
+  // Promo / newsletter → store as JUNK for review (not dropped silently).
+  // Unclear mail → SKIPPED for review. Clear requirements → normal lead.
+  const isPromo = looksLikePromotionalEmail(signals);
+  const isRequirement = emailLooksLikeRequirement(signals);
+
+  if (!isRequirement) {
+    const rfq = await createRfqWithMessage({
+      channel,
+      sourceRef: messageId,
+      subject,
+      rawText: text.slice(0, 20000),
+      rawAttachments: attachments,
+      customerName: fromName || fromEmail,
+      customerEmail: fromEmail,
+      autoParse: false,
+      intakeKind: isPromo ? "JUNK" : "SKIPPED",
+      junkReason: isPromo
+        ? "Promotional / newsletter / bulk mail"
+        : "Does not look like a product requirement",
+    });
+    return {
+      kind: "not_requirement",
+      rfq: {
+        id: rfq.id,
+        status: rfq.status,
+        subject,
+        fromEmail,
+      },
+    };
+  }
+
   const rfq = await createRfqWithMessage({
     channel,
     sourceRef: messageId,
@@ -417,12 +445,9 @@ export async function checkQuoteEmailThread(quoteId: string): Promise<{
       const uidSet = new Set<number>();
 
       const gmailQueries: string[] = [
-        // Must quote Q-####-#### — unquoted hyphens mean NOT in Gmail search.
+        // Quote identity only — from:buyer pulls unrelated RFQs/spam into this thread.
         `(${gmailPhrase(quote.quoteNumber)} OR ${gmailPhrase(threadRef)} OR subject:${gmailPhrase(quote.quoteNumber)}) after:${after}`,
       ];
-      for (const email of candidateEmails) {
-        gmailQueries.push(`from:${email} after:${after}`);
-      }
 
       for (const q of gmailQueries) {
         try {
@@ -433,15 +458,7 @@ export async function checkQuoteEmailThread(quoteId: string): Promise<{
         }
       }
 
-      // Always also run IMAP criteria (merge) — do not rely on gmailraw alone.
-      for (const email of candidateEmails) {
-        try {
-          const fromHits = await client.search({ from: email, since }, { uid: true });
-          for (const uid of fromHits || []) uidSet.add(uid);
-        } catch {
-          // ignore
-        }
-      }
+      // Always also run IMAP subject criteria (merge) — do not rely on gmailraw alone.
       for (const subject of [quote.quoteNumber, threadRef]) {
         try {
           const subjectHits = await client.search({ subject, since }, { uid: true });
@@ -859,8 +876,8 @@ async function checkQuoteEmailThreadOutlook(input: {
   threadRef: string;
 }) {
   const mailboxUser = getMailboxUser();
-  const queries = [input.quote.quoteNumber, input.threadRef];
-  for (const email of input.candidateEmails) queries.push(email);
+  // Search by quote identity only — buyer-email search attaches unrelated RFQs/spam.
+  const queries = [input.quote.quoteNumber, input.threadRef].filter(Boolean);
 
   const messages = await searchOutlookMessages(queries);
   const results: Array<{

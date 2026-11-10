@@ -171,6 +171,9 @@ export function applyGstinPreview(
     if (next) fields[key] = next;
   };
   set("GSTIN", preview.gstin);
+  if (preview.gstin && preview.gstin.length === 15) {
+    set("ClientPAN", preview.gstin.slice(2, 12));
+  }
   set("ClientName", preview.legalName);
   set("ClientAccName", preview.tradeName);
   set("StatusName", preview.status);

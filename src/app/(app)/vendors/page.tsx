@@ -255,7 +255,7 @@ export default function VendorsPage() {
           <p className="mt-1 text-sm text-mid-green">
             Clients marked Is Vendor, plus categories and matching keywords.{" "}
             <Link href="/admin/vendors" className="underline underline-offset-2 hover:text-dark-secondary">
-              Manage department mapping in Admin
+              Manage category mapping in Admin
             </Link>
           </p>
         </div>

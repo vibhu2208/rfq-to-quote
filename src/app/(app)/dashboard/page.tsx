@@ -2,14 +2,16 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { Money, StatusBadge } from "@/components/ui";
 import { decimalToNumber } from "@/lib/quotes";
+import { computeLeadKpis } from "@/lib/leads/kpis";
+import { LEAD_STAGE_LABELS } from "@/lib/leads/constants";
 import { format, startOfMonth, subDays } from "date-fns";
 import {
   ArrowUpRight,
   CircleAlert,
   ClipboardList,
   FileText,
-  Inbox,
   Package,
+  Target,
   TrendingUp,
 } from "lucide-react";
 
@@ -86,11 +88,18 @@ export default async function DashboardPage() {
     }),
   ]);
 
-  const newThisWeek = await prisma.quote.count({ where: { createdAt: { gte: weekAgo } } });
+  const [newThisWeek, leadKpis] = await Promise.all([
+    prisma.quote.count({ where: { createdAt: { gte: weekAgo } } }),
+    computeLeadKpis(),
+  ]);
   const pipelineValue = decimalToNumber(pipelineAgg._sum.grandTotal);
   const wonValue = decimalToNumber(wonAgg._sum.grandTotal);
   const winRate =
     quotesThisMonth > 0 ? Math.round((wonThisMonth / quotesThisMonth) * 100) : null;
+  const leadStageMax = Math.max(
+    ...leadKpis.stageDistribution.map((s) => s.count),
+    1
+  );
 
   const statusCount = Object.fromEntries(
     statusGroups.map((g) => [g.status, g._count._all])
@@ -122,8 +131,8 @@ export default async function DashboardPage() {
       label: "Open RFQs",
       value: rfqCount,
       hint: "Waiting in inbox",
-      href: "/inbox",
-      icon: Inbox,
+      href: "/leads",
+      icon: Target,
     },
     {
       label: "Pipeline value",
@@ -151,7 +160,8 @@ export default async function DashboardPage() {
 
   const quickActions = [
     { href: "/quotes/new", label: "New quote", desc: "Build and send a quotation", icon: FileText },
-    { href: "/inbox", label: "Inbox", desc: `${rfqCount} open RFQs to review`, icon: Inbox },
+    { href: "/leads", label: "Leads", desc: `${leadKpis.totalLeads} leads in pipeline`, icon: Target },
+    { href: "/leads", label: "Leads", desc: `${rfqCount} open RFQs in leads`, icon: Target },
     { href: "/products", label: "Catalog", desc: `${productCount} active products`, icon: Package },
     { href: "/request", label: "Public RFQ", desc: "Share the intake form", icon: ClipboardList },
   ];
@@ -170,11 +180,11 @@ export default async function DashboardPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <Link
-            href="/inbox"
+            href="/leads"
             className="inline-flex items-center gap-1.5 rounded-lg border border-dark-primary/10 bg-white/60 px-3 py-2 text-sm font-medium text-dark-primary hover:bg-white"
           >
-            <Inbox className="h-3.5 w-3.5" strokeWidth={1.7} />
-            Inbox
+            <Target className="h-3.5 w-3.5" strokeWidth={1.7} />
+            Leads
           </Link>
           <Link
             href="/quotes/new"
@@ -218,6 +228,121 @@ export default async function DashboardPage() {
             </Link>
           );
         })}
+      </section>
+
+      <section className="rounded-2xl border border-dark-primary/8 bg-white/55 p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold tracking-tight">Leads</h2>
+            <p className="mt-0.5 text-xs text-mid-green">
+              Pipeline health · conversion{" "}
+              {Math.round(leadKpis.conversionRate * 1000) / 10}% · quote-to-win{" "}
+              {Math.round(leadKpis.quotationToWinRatio * 1000) / 10}%
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Link
+              href="/leads/follow-ups"
+              className="text-xs font-medium text-mid-green hover:underline"
+            >
+              Follow-ups
+              {leadKpis.overdueFollowUps > 0
+                ? ` (${leadKpis.overdueFollowUps} overdue)`
+                : ""}
+            </Link>
+            <Link href="/leads" className="text-xs font-medium text-mid-green hover:underline">
+              All leads
+            </Link>
+          </div>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+          {[
+            { label: "Total", value: leadKpis.totalLeads, href: "/leads" },
+            { label: "New", value: leadKpis.newLeads, href: "/leads" },
+            { label: "Hot / Urgent", value: leadKpis.hotUrgent, href: "/leads" },
+            { label: "Won", value: leadKpis.leadsWon, href: "/leads" },
+            {
+              label: "Pending follow-ups",
+              value: leadKpis.pendingFollowUps,
+              href: "/leads/follow-ups",
+            },
+          ].map((card) => (
+            <Link
+              key={card.label}
+              href={card.href}
+              className="rounded-xl bg-dark-primary/[0.03] px-3 py-2.5 hover:bg-dark-primary/[0.06]"
+            >
+              <p className="text-[11px] text-mid-green">{card.label}</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">{card.value}</p>
+            </Link>
+          ))}
+        </div>
+
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-mid-green">
+              Stage distribution
+            </p>
+            <div className="space-y-2">
+              {leadKpis.stageDistribution.map((row) => (
+                <div
+                  key={row.stage}
+                  className="grid grid-cols-[7.5rem_1fr_2rem] items-center gap-2"
+                >
+                  <span className="truncate text-xs text-mid-green">
+                    {LEAD_STAGE_LABELS[row.stage]}
+                  </span>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-dark-primary/8">
+                    <div
+                      className="h-full rounded-full bg-dark-primary/70"
+                      style={{
+                        width: `${Math.max(
+                          (row.count / leadStageMax) * 100,
+                          row.count ? 4 : 0
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="text-right text-xs font-semibold tabular-nums">
+                    {row.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-mid-green">
+              Also in pipeline
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-xl border border-dark-primary/8 px-3 py-2.5">
+                <p className="text-[11px] text-mid-green">Contacted</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                  {leadKpis.contacted}
+                </p>
+              </div>
+              <div className="rounded-xl border border-dark-primary/8 px-3 py-2.5">
+                <p className="text-[11px] text-mid-green">Qualified</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                  {leadKpis.qualified}
+                </p>
+              </div>
+              <div className="rounded-xl border border-dark-primary/8 px-3 py-2.5">
+                <p className="text-[11px] text-mid-green">Quotes sent</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                  {leadKpis.quotationsSent}
+                </p>
+              </div>
+              <div className="rounded-xl border border-dark-primary/8 px-3 py-2.5">
+                <p className="text-[11px] text-mid-green">Lost / DQ</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                  {leadKpis.dealsLost + leadKpis.disqualified}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[1.35fr_1fr]">

@@ -29,6 +29,10 @@ enum RfqChannel {
   WEB_FORM
   MARKETPLACE
   MANUAL
+  REFERRAL
+  IMPORT
+  API
+  OTHER
 }
 
 enum RfqStatus {
@@ -37,6 +41,73 @@ enum RfqStatus {
   PARSED
   QUOTED
   CLOSED
+}
+
+enum LeadStage {
+  NEW_LEAD
+  CONTACTED
+  QUALIFIED
+  QUOTE_SENT
+  NEGOTIATION
+  CLOSED_WON
+  DISQUALIFIED
+  DEAL_LOST
+}
+
+enum LeadPriority {
+  HOT
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum LeadActivityType {
+  LEAD_CREATED
+  EMAIL_RECEIVED
+  EMAIL_SENT
+  WHATSAPP
+  CALL
+  FOLLOW_UP_SCHEDULED
+  FOLLOW_UP_COMPLETED
+  QUOTE_GENERATED
+  QUOTE_SENT
+  QUOTE_VIEWED
+  QUOTE_ACCEPTED
+  QUOTE_REJECTED
+  STAGE_CHANGED
+  ASSIGNMENT_CHANGED
+  NOTE
+  SLA_BREACHED
+  IMPORT
+  OTHER
+}
+
+enum FollowUpType {
+  CALL
+  EMAIL
+  MEETING
+  TASK
+}
+
+enum FollowUpStatus {
+  PENDING
+  DONE
+  CANCELLED
+  OVERDUE
+}
+
+enum LeadAssignmentRuleType {
+  ROUND_ROBIN
+  CATEGORY
+  GEOGRAPHY
+  WORKLOAD
+}
+
+/// How inbound mail/chat was classified at intake.
+enum LeadIntakeKind {
+  REQUIREMENT
+  JUNK
+  SKIPPED
 }
 
 enum MessageDirection {
@@ -81,10 +152,20 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  memberships      OrganisationMembership[]
-  auditEvents      AuditEvent[]             @relation("AuditActor")
-  knowledgeEntries KnowledgeEntry[]
-  copilotChats     CopilotChat[]
+  memberships           OrganisationMembership[]
+  auditEvents           AuditEvent[]             @relation("AuditActor")
+  knowledgeEntries      KnowledgeEntry[]
+  copilotChats          CopilotChat[]
+  assignedLeads         Rfq[]                    @relation("LeadAssignee")
+  leadStageChanges      LeadStageHistory[]       @relation("LeadStageActor")
+  leadActivities        LeadActivity[]           @relation("LeadActivityActor")
+  leadFollowUpsAssigned LeadFollowUp[]           @relation("LeadFollowUpAssignee")
+  leadFollowUpsCreated  LeadFollowUp[]           @relation("LeadFollowUpCreator")
+  leadOwnershipFrom     LeadOwnershipHistory[]   @relation("LeadOwnershipFrom")
+  leadOwnershipTo       LeadOwnershipHistory[]   @relation("LeadOwnershipTo")
+  leadOwnershipActors   LeadOwnershipHistory[]   @relation("LeadOwnershipActor")
+  savedLeadViews        SavedLeadView[]
+  leadAssignmentRules   LeadAssignmentRule[]     @relation("LeadAssignmentRuleCreator")
 }
 
 model Product {
@@ -165,18 +246,184 @@ model Rfq {
   marketplaceFetchedAt DateTime?
   /** User-picked catalog products per requirement line (survives reload). */
   productSelections    Json?
-  createdAt            DateTime   @default(now())
-  updatedAt            DateTime   @updatedAt
+
+  /// CRM lead fields (Rfq row = lead; no duplicate Lead table)
+  leadNumber         String       @unique @default(cuid())
+  leadStage          LeadStage    @default(NEW_LEAD)
+  priority           LeadPriority @default(MEDIUM)
+  assignedToUserId   String?
+  partyId            String?
+  organisationId     String?
+  expectedValue      Decimal?     @db.Decimal(14, 2)
+  expectedClosureAt  DateTime?
+  nextFollowUpAt     DateTime?
+  slaDueAt           DateTime?
+  slaBreachedAt      DateTime?
+  stageDetail        String       @default("")
+  disqualifyReason   String       @default("")
+  lostReason         String       @default("")
+  referralSource     String       @default("")
+  category           String       @default("")
+  /// REQUIREMENT = normal lead; JUNK/SKIPPED = promo or non-RFQ kept for review
+  intakeKind         LeadIntakeKind @default(REQUIREMENT)
+  junkReason         String         @default("")
+  archivedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   messages           RfqMessage[]
   quotes             Quote[]
   vendorPriceHistory VendorProductHistory[]
   vendorOutreaches   VendorOutreach[]
+  assignedTo         User?                  @relation("LeadAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  party              Party?                 @relation(fields: [partyId], references: [id], onDelete: SetNull)
+  organisation       Organisation?          @relation(fields: [organisationId], references: [id], onDelete: SetNull)
+  stageHistory       LeadStageHistory[]
+  activities         LeadActivity[]
+  followUps          LeadFollowUp[]
+  ownershipHistory   LeadOwnershipHistory[]
+  attachments        LeadAttachment[]
 
   @@index([channel])
   @@index([status])
   @@index([createdAt])
   @@index([sourceRef])
+  @@index([leadStage])
+  @@index([priority])
+  @@index([assignedToUserId])
+  @@index([organisationId])
+  @@index([partyId])
+  @@index([nextFollowUpAt])
+  @@index([slaDueAt])
+  @@index([archivedAt])
+  @@index([customerEmail])
+  @@index([customerPhone])
+  @@index([intakeKind])
+}
+
+model LeadStageHistory {
+  id         String     @id @default(cuid())
+  rfqId      String
+  fromStage  LeadStage?
+  toStage    LeadStage
+  reason     String     @default("")
+  actorId    String?
+  createdAt  DateTime   @default(now())
+
+  rfq   Rfq   @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  actor User? @relation("LeadStageActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([rfqId, createdAt])
+  @@index([toStage])
+}
+
+model LeadActivity {
+  id        String           @id @default(cuid())
+  rfqId     String
+  type      LeadActivityType
+  title     String           @default("")
+  body      String           @default("")
+  meta      Json             @default("{}")
+  actorId   String?
+  createdAt DateTime         @default(now())
+
+  rfq   Rfq   @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  actor User? @relation("LeadActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([rfqId, createdAt])
+  @@index([type])
+}
+
+model LeadFollowUp {
+  id           String         @id @default(cuid())
+  rfqId        String
+  type         FollowUpType   @default(CALL)
+  status       FollowUpStatus @default(PENDING)
+  dueAt        DateTime
+  completedAt  DateTime?
+  title        String         @default("")
+  notes        String         @default("")
+  assignedToId String?
+  createdById  String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  rfq        Rfq   @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  assignedTo User? @relation("LeadFollowUpAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  createdBy  User? @relation("LeadFollowUpCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([rfqId, dueAt])
+  @@index([status, dueAt])
+  @@index([assignedToId, dueAt])
+}
+
+model LeadAttachment {
+  id          String   @id @default(cuid())
+  rfqId       String
+  fileName    String   @default("")
+  contentType String   @default("application/octet-stream")
+  size        Int      @default(0)
+  note        String   @default("")
+  storageKey  String   @default("")
+  data        Bytes?
+  createdAt   DateTime @default(now())
+
+  rfq Rfq @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+
+  @@index([rfqId])
+  @@index([createdAt])
+}
+
+model LeadOwnershipHistory {
+  id         String   @id @default(cuid())
+  rfqId      String
+  fromUserId String?
+  toUserId   String?
+  actorId    String?
+  reason     String   @default("")
+  createdAt  DateTime @default(now())
+
+  rfq      Rfq   @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  fromUser User? @relation("LeadOwnershipFrom", fields: [fromUserId], references: [id], onDelete: SetNull)
+  toUser   User? @relation("LeadOwnershipTo", fields: [toUserId], references: [id], onDelete: SetNull)
+  actor    User? @relation("LeadOwnershipActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([rfqId, createdAt])
+}
+
+model SavedLeadView {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  filters   Json     @default("{}")
+  columns   Json     @default("[]")
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([userId, name])
+}
+
+model LeadAssignmentRule {
+  id             String                 @id @default(cuid())
+  organisationId String?
+  name           String
+  type           LeadAssignmentRuleType
+  active         Boolean                @default(true)
+  priority       Int                    @default(100)
+  config         Json                   @default("{}")
+  createdById    String?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  organisation Organisation? @relation(fields: [organisationId], references: [id], onDelete: Cascade)
+  createdBy    User?         @relation("LeadAssignmentRuleCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([organisationId, active, priority])
 }
 
 model RfqMessage {
@@ -374,6 +621,14 @@ model QuoteLineItem {
   /// Vendor / last-quoted cost, shown on the quote editor (not on the PDF)
   costPrice      Decimal? @db.Decimal(12, 2)
   costVendorName String   @default("")
+  /// Per-product client discount % (stacks with Quote.discountPercent)
+  discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  /// Warranty duration count (0 = not set)
+  warrantyQty     Int     @default(0)
+  /// years | months | days
+  warrantyUnit    String  @default("years")
+  /// "" | onsite | offsite | both
+  warrantyService String  @default("")
   taxRate        Decimal  @default(18) @db.Decimal(5, 2)
   lineTotal      Decimal  @default(0) @db.Decimal(14, 2)
   sortOrder      Int      @default(0)
@@ -425,7 +680,7 @@ model VendorContact {
   updatedAt        DateTime @updatedAt
 
   vendor         Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
-  vendorCategory VendorCategory? @relation(fields: [vendorCategoryId], references: [id], onDelete: SetNull)
+  vendorCategory VendorCategory? @relation(fields: [vendorCategoryId], references: [id], onDelete: Cascade)
 
   @@index([vendorId])
   @@index([email])
@@ -794,23 +1049,25 @@ model Organisation {
   createdAt       DateTime                 @default(now())
   updatedAt       DateTime                 @updatedAt
 
-  legalEntities     LegalEntity[]
-  memberships       OrganisationMembership[]
-  roles             Role[]
-  fiscalYears       FiscalYear[]
-  documentSeries    DocumentSeries[]
-  parties           Party[]
-  products          Product[]
-  warehouses        Warehouse[]
-  auditEvents       AuditEvent[]
-  sourceDocuments   SourceDocument[]
-  transactionDrafts TransactionDraft[]
-  proformaInvoices  ProformaInvoice[]
-  invoices          Invoice[]
-  creditDebitNotes  CreditDebitNote[]
-  chartOfAccounts   ChartOfAccount[]
-  journals          JournalEntry[]
-  payments          Payment[]
+  legalEntities       LegalEntity[]
+  memberships         OrganisationMembership[]
+  roles               Role[]
+  fiscalYears         FiscalYear[]
+  documentSeries      DocumentSeries[]
+  parties             Party[]
+  products            Product[]
+  warehouses          Warehouse[]
+  auditEvents         AuditEvent[]
+  sourceDocuments     SourceDocument[]
+  transactionDrafts   TransactionDraft[]
+  proformaInvoices    ProformaInvoice[]
+  invoices            Invoice[]
+  creditDebitNotes    CreditDebitNote[]
+  chartOfAccounts     ChartOfAccount[]
+  journals            JournalEntry[]
+  payments            Payment[]
+  rfqs                Rfq[]
+  leadAssignmentRules LeadAssignmentRule[]
 
   @@index([status])
 }
@@ -1106,6 +1363,7 @@ model Party {
   payments          Payment[]
   transactionDrafts TransactionDraft[]
   journalLines      JournalLine[]
+  rfqs              Rfq[]
 
   @@unique([organisationId, code])
   @@index([organisationId, legalName])

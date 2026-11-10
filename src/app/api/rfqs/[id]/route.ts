@@ -2,8 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
+import { normalizeStoredRfqCategories } from "@/lib/categories";
 
 type Params = { params: Promise<{ id: string }> };
+
+function withNormalizedCategories<T extends {
+  parsedCategory: string | null;
+  parsedSpecs: unknown;
+}>(rfq: T): T {
+  const normalized = normalizeStoredRfqCategories({
+    parsedCategory: rfq.parsedCategory,
+    parsedSpecs: rfq.parsedSpecs,
+  });
+  if (!normalized.changed) return rfq;
+  return {
+    ...rfq,
+    parsedCategory: normalized.parsedCategory,
+    parsedSpecs: normalized.parsedSpecs || rfq.parsedSpecs,
+  };
+}
 
 export async function GET(_req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
@@ -38,7 +55,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
   });
   if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  return NextResponse.json(rfq);
+  // Read-only repair for the response. Persist via re-parse / backfill, not GET.
+  return NextResponse.json(withNormalizedCategories(rfq));
 }
 
 const productSnapshotSchema = z.object({
@@ -82,7 +100,11 @@ export async function PATCH(req: NextRequest, { params }: Params) {
   if (error) return error;
 
   const { id } = await params;
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (body == null || typeof body !== "object") {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
   const parsed = patchSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
@@ -116,8 +138,27 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const rfq = await prisma.rfq.findUnique({
       where: { id },
       include: {
-        messages: { orderBy: { createdAt: "asc" } },
-        quotes: { orderBy: { createdAt: "desc" }, select: { id: true, quoteNumber: true, status: true, grandTotal: true } },
+        messages: {
+          orderBy: { createdAt: "asc" },
+          take: 80,
+          select: {
+            id: true,
+            direction: true,
+            channel: true,
+            body: true,
+            createdAt: true,
+          },
+        },
+        quotes: {
+          orderBy: { createdAt: "desc" },
+          take: 20,
+          select: {
+            id: true,
+            quoteNumber: true,
+            status: true,
+            grandTotal: true,
+          },
+        },
       },
     });
     if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -127,7 +168,7 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     `;
 
     return NextResponse.json({
-      ...rfq,
+      ...withNormalizedCategories(rfq),
       productSelections: rows[0]?.productSelections ?? null,
     });
   } catch {

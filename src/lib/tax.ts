@@ -1,6 +1,7 @@
 import { calculateDocumentTotals } from "@/lib/accounting/tax-engine";
 import { getStateCode, normalizeState } from "@/lib/accounting/states";
 import { formatMoney, round2 } from "@/lib/accounting/money";
+import { effectiveUnitPrice } from "@/lib/quote-discount";
 
 export type ManualOverrides = {
   subtotal?: boolean;
@@ -15,6 +16,7 @@ export type LineInput = {
   qty: number;
   unitPrice: number;
   taxRate: number;
+  discountPercent?: number;
 };
 
 export type QuoteCalcInput = {
@@ -84,7 +86,13 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
   const overrides = input.overrides ?? {};
   const prev = input.previous ?? {};
 
-  const lineTotals = input.lines.map((line) =>
+  const pricedLines = input.lines.map((line) => ({
+    qty: line.qty,
+    unitPrice: effectiveUnitPrice(line.unitPrice, line.discountPercent),
+    taxRate: line.taxRate,
+  }));
+
+  const lineTotals = pricedLines.map((line) =>
     round2(Number(line.qty) * Number(line.unitPrice))
   );
 
@@ -140,11 +148,7 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
     igstAmount = prev.igstAmount ?? (gstSplit === "IGST" ? gstAmount : 0);
   } else if (input.withGst) {
     const calc = calculateDocumentTotals({
-      lines: input.lines.map((line) => ({
-        qty: line.qty,
-        unitPrice: line.unitPrice,
-        taxRate: line.taxRate,
-      })),
+      lines: pricedLines,
       sellerStateCode: sellerCode,
       placeOfSupplyCode: buyerCode,
       withGst: true,

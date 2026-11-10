@@ -39,6 +39,8 @@ import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
 import { structureEmailBodyForDisplay } from "@/lib/email-text";
 import {
   clearRecoreDraft,
+  clearRecoreDraftsForRfq,
+  filterDraftLineNumbers,
   loadRecoreDraft,
   saveRecoreDraft,
   type RecoreChannel,
@@ -1263,16 +1265,19 @@ function VendorRecoreLinePickerModal({
     return new Set(seed ? [seed.id] : []);
   }
 
+  const validItemLines = items.map((item) => item.lineNumber);
+  const restoredLines = filterDraftLineNumbers(savedDraft, validItemLines);
+  const staleDraft =
+    Boolean(savedDraft) &&
+    savedDraft!.lineNumbers.length > 0 &&
+    restoredLines.length === 0 &&
+    validItemLines.length > 0;
   const initialLines =
-    savedDraft && savedDraft.lineNumbers.length > 0
-      ? savedDraft.lineNumbers.filter((lineNumber) =>
-          items.length === 0
-            ? true
-            : items.some((item) => item.lineNumber === lineNumber)
-        )
+    !staleDraft && restoredLines.length > 0
+      ? restoredLines
       : defaultChecked.length > 0
         ? defaultChecked
-        : items.map((item) => item.lineNumber);
+        : validItemLines;
 
   const [channel, setChannel] = useState<RecoreChannel>(defaultChannel);
   const [checked, setChecked] = useState<Set<number>>(
@@ -1287,11 +1292,16 @@ function VendorRecoreLinePickerModal({
         savedDraft?.contactIds
       )
   );
+  const draftStillValid = Boolean(savedDraft) && !staleDraft;
   const hasRestoredEmail = Boolean(
-    savedDraft?.draftTouched && (savedDraft.subject || savedDraft.body)
+    draftStillValid &&
+      savedDraft?.draftTouched &&
+      (savedDraft.subject || savedDraft.body)
   );
-  const [subject, setSubject] = useState(savedDraft?.subject || "");
-  const [body, setBody] = useState(savedDraft?.body || "");
+  const [subject, setSubject] = useState(
+    hasRestoredEmail ? savedDraft?.subject || "" : ""
+  );
+  const [body, setBody] = useState(hasRestoredEmail ? savedDraft?.body || "" : "");
   const [draftBusy, setDraftBusy] = useState(false);
   const [draftTick, setDraftTick] = useState(0);
   const [localError, setLocalError] = useState("");
@@ -1304,7 +1314,7 @@ function VendorRecoreLinePickerModal({
     role: "",
     isPrimary: false,
   });
-  const draftTouchedRef = useRef(Boolean(savedDraft?.draftTouched));
+  const draftTouchedRef = useRef(hasRestoredEmail);
   const contactsLoadedRef = useRef(fallbackContacts.length > 0);
   const lastDraftKeyRef = useRef(hasRestoredEmail ? "restored" : "");
   const skipPreviewOnceRef = useRef(hasRestoredEmail);
@@ -1318,6 +1328,11 @@ function VendorRecoreLinePickerModal({
   selectedContactIdsRef.current = selectedContactIds;
   subjectRef.current = subject;
   bodyRef.current = body;
+
+  useEffect(() => {
+    if (!staleDraft) return;
+    clearRecoreDraft(rfqId, match.vendor.id);
+  }, [staleDraft, rfqId, match.vendor.id]);
 
   const lineKey = useMemo(
     () => [...checked].sort((a, b) => a - b).join(","),
@@ -2381,6 +2396,9 @@ export default function RfqDetailPage() {
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [vendorsLoading, setVendorsLoading] = useState(false);
+  const [vendorError, setVendorError] = useState("");
+  const loadSeqRef = useRef(0);
+  const vendorLoadSeqRef = useRef(0);
   const [addVendorOpen, setAddVendorOpen] = useState(false);
   const [vendorSearch, setVendorSearch] = useState("");
   const [directoryHits, setDirectoryHits] = useState<DirectoryHit[]>([]);
@@ -2572,28 +2590,61 @@ export default function RfqDetailPage() {
 
   const load = useCallback(async (opts?: { soft?: boolean }) => {
     const soft = Boolean(opts?.soft);
+    const seq = ++loadSeqRef.current;
     if (!soft) setLoading(true);
     try {
       const res = await fetch(`/api/rfqs/${id}`);
+      if (seq !== loadSeqRef.current) return;
       if (!res.ok) {
-        setError("RFQ not found");
+        const data = await parseApiJson<{ error?: string }>(
+          res,
+          res.status === 404 ? "RFQ not found" : "Could not refresh RFQ"
+        ).catch(() => ({ error: undefined as string | undefined }));
+        if (seq !== loadSeqRef.current) return;
+        if (res.status === 404) {
+          setRfq(null);
+          setError(
+            typeof data.error === "string" && data.error.trim()
+              ? data.error
+              : "RFQ not found"
+          );
+        } else if (!soft) {
+          setError(
+            typeof data.error === "string" && data.error.trim()
+              ? data.error
+              : "Could not load RFQ"
+          );
+        }
+        // Soft refresh failures keep the current RFQ on screen.
         return;
       }
-      setRfq(await res.json());
+      const data = await parseApiJson<RfqDetail>(res, "Could not load RFQ");
+      if (seq !== loadSeqRef.current) return;
+      setRfq(data);
+      if (!soft) setError("");
+    } catch (err) {
+      if (seq !== loadSeqRef.current) return;
+      if (!soft) {
+        setError(userFacingFetchError(err, "Could not load RFQ"));
+      }
     } finally {
-      if (!soft) setLoading(false);
+      if (seq === loadSeqRef.current && !soft) setLoading(false);
     }
   }, [id]);
 
   const loadVendorMatches = useCallback(async (opts?: { soft?: boolean }) => {
     const soft = Boolean(opts?.soft);
+    const seq = ++vendorLoadSeqRef.current;
     if (!soft) setVendorsLoading(true);
+    setVendorError("");
     try {
       const response = await fetch(`/api/rfqs/${id}/vendors`);
       const data = await parseApiJson<{
         matches?: VendorMatch[];
         productKey?: string;
+        error?: string;
       }>(response, "Could not match vendors");
+      if (seq !== vendorLoadSeqRef.current) return;
       if (response.ok) {
         const incoming = data.matches || [];
         setVendorProductKey(data.productKey || "");
@@ -2606,11 +2657,21 @@ export default function RfqDetailPage() {
           );
           return [...incoming, ...keptManual];
         });
+        setVendorError("");
+      } else {
+        setVendorError(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not match vendors"
+        );
       }
-    } catch {
-      // Catalog search still works if vendor matching is unavailable.
+    } catch (err) {
+      if (seq !== vendorLoadSeqRef.current) return;
+      setVendorError(userFacingFetchError(err, "Could not match vendors"));
     } finally {
-      if (!soft) setVendorsLoading(false);
+      if (seq === vendorLoadSeqRef.current && !soft) {
+        setVendorsLoading(false);
+      }
     }
   }, [id]);
 
@@ -2980,18 +3041,33 @@ export default function RfqDetailPage() {
     async (refresh = false) => {
       setMarketplaceLoading(true);
       setMarketplaceError("");
-      const url = refresh
-        ? `/api/rfqs/${id}/marketplace-prices?refresh=true`
-        : `/api/rfqs/${id}/marketplace-prices`;
-      const res = await fetch(url);
-      const data = await res.json();
-      setMarketplaceLoading(false);
-      setMarketplaceFetched(true);
-      if (!res.ok) {
-        setMarketplaceError(data.error || "Could not fetch marketplace prices");
-        return;
+      try {
+        const url = refresh
+          ? `/api/rfqs/${id}/marketplace-prices?refresh=true`
+          : `/api/rfqs/${id}/marketplace-prices`;
+        const res = await fetch(url);
+        const data = await parseApiJson<{ error?: string } & MarketplaceComparison>(
+          res,
+          "Could not fetch marketplace prices"
+        );
+        setMarketplaceFetched(true);
+        if (!res.ok) {
+          setMarketplaceError(
+            typeof data.error === "string" && data.error.trim()
+              ? data.error
+              : "Could not fetch marketplace prices"
+          );
+          return;
+        }
+        setMarketplace(data);
+      } catch (err) {
+        setMarketplaceFetched(true);
+        setMarketplaceError(
+          userFacingFetchError(err, "Could not fetch marketplace prices")
+        );
+      } finally {
+        setMarketplaceLoading(false);
       }
-      setMarketplace(data);
     },
     [id]
   );
@@ -3000,12 +3076,27 @@ export default function RfqDetailPage() {
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
+    const bootSeq = ++loadSeqRef.current;
+    ++vendorLoadSeqRef.current;
 
     async function boot() {
       setLoading(true);
       setMatchesLoading(true);
       setVendorsLoading(true);
       setError("");
+      setVendorError("");
+      setRfq(null);
+      setMatches([]);
+      setItemMatches([]);
+      setRequirements([]);
+      setKeywords([]);
+      setSelected(new Set());
+      setLineSelection({});
+      setLineVendorSelection({});
+      setExtraMatchesByLine({});
+      setVendorMatches([]);
+      setVendorProductKey("");
+      manualVendorIdsRef.current = new Set();
       setMarketplace(null);
       setMarketplaceFetched(false);
       setMarketplaceError("");
@@ -3018,19 +3109,30 @@ export default function RfqDetailPage() {
           fetch(`/api/rfqs/${id}/matches`, { signal: controller.signal }),
           fetch(`/api/rfqs/${id}/vendors`, { signal: controller.signal }),
         ]);
-        if (cancelled) return;
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
 
         if (!rfqRes.ok) {
-          setError("RFQ not found");
+          const data = await parseApiJson<{ error?: string }>(
+            rfqRes,
+            rfqRes.status === 404 ? "RFQ not found" : "Could not open RFQ"
+          ).catch(() => ({ error: undefined as string | undefined }));
+          if (cancelled || bootSeq !== loadSeqRef.current) return;
           setRfq(null);
+          setError(
+            typeof data.error === "string" && data.error.trim()
+              ? data.error
+              : rfqRes.status === 404
+                ? "RFQ not found"
+                : "Could not open RFQ"
+          );
           setLoading(false);
           setMatchesLoading(false);
           setVendorsLoading(false);
           return;
         }
 
-        const rfqData = (await rfqRes.json()) as RfqDetail;
-        if (cancelled) return;
+        const rfqData = await parseApiJson<RfqDetail>(rfqRes, "Could not open RFQ");
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
         setRfq(rfqData);
         setLoading(false);
 
@@ -3042,7 +3144,7 @@ export default function RfqDetailPage() {
             requirements?: RfqRequirementItem[];
             error?: string;
           }>(matchesRes, "Could not match catalog products");
-          if (cancelled) return;
+          if (cancelled || bootSeq !== loadSeqRef.current) return;
           if (matchesRes.ok) {
             const list: ProductMatch[] = matchData.matches || [];
             const perItem: RequirementMatch[] = matchData.itemMatches || [];
@@ -3062,32 +3164,45 @@ export default function RfqDetailPage() {
             );
           }
         } catch (err) {
-          if (!cancelled) {
+          if (!cancelled && bootSeq === loadSeqRef.current) {
             setError(userFacingFetchError(err, "Could not match catalog products"));
           }
         } finally {
-          if (!cancelled) setMatchesLoading(false);
+          if (!cancelled && bootSeq === loadSeqRef.current) {
+            setMatchesLoading(false);
+          }
         }
 
         try {
           const vendorData = await parseApiJson<{
             matches?: VendorMatch[];
             productKey?: string;
+            error?: string;
           }>(vendorsRes, "Could not match vendors");
-          if (cancelled) return;
+          if (cancelled || bootSeq !== loadSeqRef.current) return;
           if (vendorsRes.ok) {
             setVendorMatches(vendorData.matches || []);
             setVendorProductKey(vendorData.productKey || "");
+            setVendorError("");
+          } else {
+            setVendorError(
+              typeof vendorData.error === "string" && vendorData.error.trim()
+                ? vendorData.error
+                : "Could not match vendors"
+            );
           }
-        } catch {
-          // Catalog search still works if vendor matching is unavailable.
+        } catch (err) {
+          if (!cancelled && bootSeq === loadSeqRef.current) {
+            setVendorError(userFacingFetchError(err, "Could not match vendors"));
+          }
         } finally {
-          if (!cancelled) setVendorsLoading(false);
+          if (!cancelled && bootSeq === loadSeqRef.current) {
+            setVendorsLoading(false);
+          }
         }
       } catch (err) {
-        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) {
-          return;
-        }
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
         setError(userFacingFetchError(err, "Could not open RFQ"));
         setLoading(false);
         setMatchesLoading(false);
@@ -3193,15 +3308,27 @@ export default function RfqDetailPage() {
         setError(typeof data.error === "string" ? data.error : "Parse failed");
         return;
       }
+      const nextSelections =
+        data.productSelections === undefined
+          ? rfq?.productSelections ?? null
+          : data.productSelections;
       setRfq((prev) => ({
         ...prev!,
         ...data,
-        productSelections: prev?.productSelections ?? data.productSelections ?? null,
+        // Prefer server value so cleared selections after line changes stick.
+        productSelections: nextSelections ?? null,
         messages: data.messages ?? prev?.messages ?? [],
         quotes: data.quotes ?? prev?.quotes ?? [],
       }));
+      if (!nextSelections) {
+        setSelected(new Set());
+        setLineSelection({});
+        setLineVendorSelection({});
+        setExtraMatchesByLine({});
+      }
+      clearRecoreDraftsForRfq(id);
       await Promise.all([
-        loadMatches(data.productSelections ?? rfq?.productSelections),
+        loadMatches(nextSelections),
         loadVendorMatches(),
       ]);
       setMarketplaceFetched(false);
@@ -3218,94 +3345,126 @@ export default function RfqDetailPage() {
     setBusy("quote");
     setError("");
 
-    const lines: Array<{
-      productId: string;
-      qty: number;
-      unitPrice?: number;
-      costPrice?: number;
-      costVendorName?: string;
-      aliasName?: string;
-      unit?: string;
-    }> = [];
-    const used = new Set<string>();
+    try {
+      const lines: Array<{
+        productId: string;
+        qty: number;
+        unitPrice?: number;
+        costPrice?: number;
+        costVendorName?: string;
+        aliasName?: string;
+        unit?: string;
+      }> = [];
+      const used = new Set<string>();
 
-    if (itemMatches.length > 0) {
-      for (const item of itemMatches) {
-        const lineNum = item.lineNumber;
-        const selectedPid = lineSelection[lineNum];
-        const allLineMatches = [
-          ...item.matches,
-          ...(extraMatchesByLine[lineNum] || []),
-        ];
-        const picked = selectedPid
-          ? allLineMatches.find((m) => m.product.id === selectedPid)
-          : undefined;
-
-        if (selectedPid) {
-          const vendorIdSelected = lineVendorSelection[lineNum];
-          const vendorMatch = vendorIdSelected
-            ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
+      if (itemMatches.length > 0) {
+        for (const item of itemMatches) {
+          const lineNum = item.lineNumber;
+          const selectedPid = lineSelection[lineNum];
+          const allLineMatches = [
+            ...item.matches,
+            ...(extraMatchesByLine[lineNum] || []),
+          ];
+          const picked = selectedPid
+            ? allLineMatches.find((m) => m.product.id === selectedPid)
             : undefined;
-          const vendorPriceOptions = vendorsWithPriceForLine(vendorMatches, lineNum);
-          const vendorLineCost =
-            (vendorMatch ? vendorUnitCostForLine(vendorMatch, lineNum) : null) ??
-            [...vendorPriceOptions].sort((a, b) => a.unitPrice - b.unitPrice)[0];
-          const last = picked?.product.lastPrice;
-          const offer = picked?.product.offerPrice;
-          const catalogPrice =
-            last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
-          const unitPrice = catalogPrice ?? vendorLineCost?.unitPrice;
+
+          if (selectedPid) {
+            const vendorIdSelected = lineVendorSelection[lineNum];
+            const vendorMatch = vendorIdSelected
+              ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
+              : undefined;
+            const vendorPriceOptions = vendorsWithPriceForLine(vendorMatches, lineNum);
+            const vendorLineCost =
+              (vendorMatch ? vendorUnitCostForLine(vendorMatch, lineNum) : null) ??
+              [...vendorPriceOptions].sort((a, b) => a.unitPrice - b.unitPrice)[0];
+            const last = picked?.product.lastPrice;
+            const offer = picked?.product.offerPrice;
+            const catalogPrice =
+              last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
+            const unitPrice = catalogPrice ?? vendorLineCost?.unitPrice;
+            lines.push({
+              productId: selectedPid,
+              qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
+              aliasName: item.requirement.description,
+              unit: item.requirement.unit,
+              ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
+              ...(vendorLineCost
+                ? {
+                    costPrice: vendorLineCost.unitPrice,
+                    costVendorName: vendorLineCost.vendorName,
+                  }
+                : {}),
+            });
+            used.add(selectedPid);
+          }
+        }
+      } else {
+        for (const pid of selected) {
+          if (used.has(pid)) continue;
           lines.push({
-            productId: selectedPid,
-            qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
-            aliasName: item.requirement.description,
-            unit: item.requirement.unit,
-            ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
-            ...(vendorLineCost
-              ? {
-                  costPrice: vendorLineCost.unitPrice,
-                  costVendorName: vendorLineCost.vendorName,
-                }
-              : {}),
+            productId: pid,
+            qty: 1,
           });
-          used.add(selectedPid);
         }
       }
-    } else {
-      for (const pid of selected) {
-        if (used.has(pid)) continue;
-        lines.push({
-          productId: pid,
-          qty: 1,
-        });
-      }
-    }
 
-    const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(
-        lines.length > 0
-          ? { lines }
-          : { productIds: [...selected] }
-      ),
-    });
-    const data = await res.json();
-    setBusy("");
-    if (!res.ok) {
-      setError(data.error || "Could not create quote");
-      return;
+      const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          lines.length > 0
+            ? { lines }
+            : { productIds: [...selected] }
+        ),
+      });
+      const data = await parseApiJson<{ id?: string; error?: string }>(
+        res,
+        "Could not create quote"
+      );
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not create quote"
+        );
+        return;
+      }
+      if (!data.id) {
+        setError("Could not create quote");
+        return;
+      }
+      router.push(`/quotes/${data.id}`);
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not create quote"));
+    } finally {
+      setBusy("");
     }
-    router.push(`/quotes/${data.id}`);
   }
 
   async function setStatus(status: string) {
-    const res = await fetch(`/api/rfqs/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status }),
-    });
-    if (res.ok) setRfq(await res.json());
+    try {
+      const res = await fetch(`/api/rfqs/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const data = await parseApiJson<RfqDetail & { error?: string }>(
+        res,
+        "Could not update status"
+      );
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not update status"
+        );
+        return;
+      }
+      setRfq(data);
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not update status"));
+    }
   }
 
   function applyProductPrice(productId: string, price: number) {
@@ -3629,22 +3788,38 @@ export default function RfqDetailPage() {
     setThreadVendor(match);
     setThreadLoading(true);
     setThreadData(null);
-    const res = await fetch(
-      `/api/rfqs/${id}/vendors/${match.vendor.id}/thread`
-    );
-    const data = await res.json();
-    setThreadLoading(false);
-    if (!res.ok) {
-      setError(data.error || "Could not load email thread");
+    try {
+      const res = await fetch(
+        `/api/rfqs/${id}/vendors/${match.vendor.id}/thread`
+      );
+      const data = await parseApiJson<{
+        vendorName?: string;
+        threadRef?: string;
+        status?: string;
+        messages?: VendorThreadMessage[];
+        error?: string;
+      }>(res, "Could not load email thread");
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not load email thread"
+        );
+        setThreadVendor(null);
+        return;
+      }
+      setThreadData({
+        vendorName: data.vendorName || match.vendor.name,
+        threadRef: data.threadRef || "",
+        status: data.status || "",
+        messages: Array.isArray(data.messages) ? data.messages : [],
+      });
+    } catch (err) {
+      setError(userFacingFetchError(err, "Could not load email thread"));
       setThreadVendor(null);
-      return;
+    } finally {
+      setThreadLoading(false);
     }
-    setThreadData({
-      vendorName: data.vendorName || match.vendor.name,
-      threadRef: data.threadRef || "",
-      status: data.status || "",
-      messages: Array.isArray(data.messages) ? data.messages : [],
-    });
   }
 
   if (loading) {
@@ -4454,6 +4629,18 @@ export default function RfqDetailPage() {
           <div className="max-h-[34rem] overflow-y-auto">
             {vendorsLoading ? (
               <p className="px-3 py-8 text-center text-sm text-mid-green">Matching vendors…</p>
+            ) : vendorError ? (
+              <div className="space-y-3 px-3 py-8 text-center">
+                <p className="text-sm text-red-700">{vendorError}</p>
+                <button
+                  type="button"
+                  onClick={() => void loadVendorMatches()}
+                  className="inline-flex h-8 items-center gap-1 rounded-full bg-mid-green px-3 text-xs font-medium text-background hover:bg-dark-secondary"
+                >
+                  <RefreshCw className="h-3 w-3" strokeWidth={1.75} />
+                  Retry vendor match
+                </button>
+              </div>
             ) : vendorMatches.length === 0 ? (
               <div className="space-y-3 px-3 py-8 text-center">
                 <p className="text-sm text-mid-green">
@@ -4958,6 +5145,7 @@ export default function RfqDetailPage() {
                     <tr>
                       <th className="w-10 px-3 py-2 font-medium">#</th>
                       <th className="px-3 py-2 font-medium">Product</th>
+                      <th className="px-3 py-2 font-medium">Category</th>
                       <th className="px-3 py-2 font-medium text-right">Qty</th>
                       <th className="px-3 py-2 font-medium">Unit</th>
                     </tr>
@@ -4967,6 +5155,9 @@ export default function RfqDetailPage() {
                       <tr key={req.lineNumber} className={i % 2 === 1 ? "bg-light-green/10" : undefined}>
                         <td className="px-3 py-2">{req.lineNumber}</td>
                         <td className="px-3 py-2">{req.description}</td>
+                        <td className="px-3 py-2 text-mid-green">
+                          {req.category || "—"}
+                        </td>
                         <td className="px-3 py-2 text-right tabular-nums">{req.quantity}</td>
                         <td className="px-3 py-2">{req.unit}</td>
                       </tr>

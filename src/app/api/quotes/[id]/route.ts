@@ -18,6 +18,10 @@ const lineSchema = z.object({
   unitPrice: z.coerce.number().nonnegative(),
   costPrice: z.coerce.number().nonnegative().nullable().optional(),
   costVendorName: z.string().optional().default(""),
+  discountPercent: z.coerce.number().nonnegative().optional().default(0),
+  warrantyQty: z.coerce.number().int().nonnegative().optional().default(0),
+  warrantyUnit: z.enum(["years", "months", "days"]).optional().default("years"),
+  warrantyService: z.enum(["", "onsite", "offsite", "both"]).optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
@@ -95,6 +99,10 @@ function serializeQuote(quote: {
     unitPrice: unknown;
     costPrice?: unknown;
     costVendorName?: string;
+    discountPercent?: unknown;
+    warrantyQty?: number;
+    warrantyUnit?: string;
+    warrantyService?: string;
     taxRate: unknown;
     lineTotal: unknown;
     sortOrder: number;
@@ -120,6 +128,10 @@ function serializeQuote(quote: {
       unitPrice: decimalToNumber(li.unitPrice),
       costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
       costVendorName: li.costVendorName || "",
+      discountPercent: decimalToNumber(li.discountPercent ?? 0),
+      warrantyQty: Number(li.warrantyQty ?? 0) || 0,
+      warrantyUnit: li.warrantyUnit || "years",
+      warrantyService: li.warrantyService || "",
       taxRate: decimalToNumber(li.taxRate),
       lineTotal: decimalToNumber(li.lineTotal),
     })),
@@ -173,6 +185,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       qty: l.qty,
       unitPrice: l.unitPrice,
       taxRate: l.taxRate,
+      discountPercent: l.discountPercent ?? 0,
     })),
     withGst: data.withGst ?? true,
     buyerState: data.buyerState ?? "",
@@ -204,6 +217,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
       unitPrice: l.unitPrice,
       costPrice: l.costPrice && l.costPrice > 0 ? l.costPrice : null,
       costVendorName: l.costVendorName?.trim() || "",
+      discountPercent: l.discountPercent ?? 0,
+      warrantyQty: l.warrantyQty ?? 0,
+      warrantyUnit: l.warrantyUnit ?? "years",
+      warrantyService: l.warrantyService ?? "",
       taxRate: l.taxRate,
       lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
       sortOrder: l.sortOrder ?? i,
@@ -265,6 +282,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
         INSERT INTO "QuoteLineItem" (
           "id", "quoteId", "productId", "description", "aliasName",
           "qty", "unit", "unitPrice", "costPrice", "costVendorName",
+          "discountPercent", "warrantyQty", "warrantyUnit", "warrantyService",
           "taxRate", "lineTotal", "sortOrder"
         )
         SELECT
@@ -278,6 +296,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
           COALESCE((e->>'unitPrice')::numeric, 0),
           NULLIF(e->>'costPrice', '')::numeric,
           COALESCE(e->>'costVendorName', ''),
+          COALESCE((e->>'discountPercent')::numeric, 0),
+          COALESCE((e->>'warrantyQty')::int, 0),
+          COALESCE(e->>'warrantyUnit', 'years'),
+          COALESCE(e->>'warrantyService', ''),
           COALESCE((e->>'taxRate')::numeric, 18),
           COALESCE((e->>'lineTotal')::numeric, 0),
           COALESCE((e->>'sortOrder')::int, 0)
@@ -290,6 +312,27 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
     const quote = rows[0];
     if (!quote) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    if (status) {
+      try {
+        const full = await prisma.quote.findUnique({
+          where: { id },
+          select: { rfqId: true, status: true },
+        });
+        if (full?.rfqId) {
+          const { syncLeadStageFromQuoteStatus } = await import(
+            "@/lib/leads/stage"
+          );
+          await syncLeadStageFromQuoteStatus({
+            rfqId: full.rfqId,
+            quoteStatus: full.status,
+          });
+        }
+      } catch {
+        // CRM sync best-effort
+      }
+    }
+
     return NextResponse.json(quote);
   } catch (e) {
     const message = e instanceof Error ? e.message : "";

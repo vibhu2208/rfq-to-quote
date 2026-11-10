@@ -154,3 +154,37 @@ export function clearRecoreDraft(rfqId: string, vendorId: string): void {
     // ignore
   }
 }
+
+/** Drop every Recore draft for an RFQ (e.g. after re-parse changes lines). */
+export function clearRecoreDraftsForRfq(rfqId: string): void {
+  if (!canUseStorage() || !rfqId) return;
+  try {
+    const prefix = `qf:recore-draft:v${RECORE_DRAFT_VERSION}:${rfqId}:`;
+    const keys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (key && key.startsWith(prefix)) keys.push(key);
+    }
+    for (const key of keys) window.localStorage.removeItem(key);
+    // Legacy sessionStorage drafts.
+    const legacyPrefix = `recore-draft:${rfqId}:`;
+    const legacyKeys: string[] = [];
+    for (let i = 0; i < window.sessionStorage.length; i += 1) {
+      const key = window.sessionStorage.key(i);
+      if (key && key.startsWith(legacyPrefix)) legacyKeys.push(key);
+    }
+    for (const key of legacyKeys) window.sessionStorage.removeItem(key);
+  } catch {
+    // ignore
+  }
+}
+
+/** Keep only line numbers that still exist on the RFQ after a re-parse. */
+export function filterDraftLineNumbers(
+  draft: RecoreDraftState | null,
+  validLineNumbers: number[]
+): number[] {
+  if (!draft) return [];
+  const valid = new Set(validLineNumbers);
+  return draft.lineNumbers.filter((lineNumber) => valid.has(lineNumber));
+}

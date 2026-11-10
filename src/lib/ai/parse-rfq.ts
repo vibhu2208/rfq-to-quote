@@ -1,7 +1,8 @@
 import {
   PRODUCT_CATEGORIES,
   PARSE_CONFIDENCE_THRESHOLD,
-  UNCATEGORIZED_CATEGORY,
+  normalizeParsedItemCategories,
+  resolveProductCategory,
 } from "@/lib/categories";
 import { looksLikePromotionalEmail } from "@/lib/inbound-requirement";
 import { resolveParsedItems } from "@/lib/rfq-items";
@@ -88,7 +89,10 @@ Rules:
 - "items" length must equal the number of distinct products requested.
 - If only one product is requested, "items" should still have exactly one entry.
 - "specs" should mirror the first/primary item for backward compatibility.
-- Prefer the closest category from the list; use "General / Uncategorized" only if nothing fits.
+- Category values MUST be copied EXACTLY from the allowed list (case-sensitive). Examples: CCTV, DESKTOP, LAPTOP, PRINTER, TFT, NETWORKING, UPS, RAM, HDD, SSD, SERVER, Services, Misc.
+- Pick the single best category per item from product type (laptop→LAPTOP, desktop/PC→DESKTOP, camera/CCTV→CCTV, printer→PRINTER, monitor→TFT, etc.).
+- Use "Misc" only if nothing in the list fits. Never invent labels like "CCTV & Surveillance" or "Computers & Laptops".
+- productCategory must be the dominant item category (most common / primary line).
 - Do not invent prices or product codes.
 - Keep each item "description" in the customer's original wording. Do not rename it to a catalog, SKU, or brand-model name.
 - If the message is marketing, promotional, newsletter, SaaS product update, digest, bank alert, or "unsubscribe" mail (not a buyer asking for a quote), set confidence <= 0.2, items: [], and specs.description null.
@@ -103,10 +107,11 @@ Example input:
 
 Example output items (3 entries, NOT one combined line):
 [
-  {"description":"CCTV / IP Cameras","quantity":10,"unit":"pcs","brand":null,"category":"CCTV & Surveillance","specs":{}},
-  {"description":"Desktop PCs","quantity":20,"unit":"pcs","brand":null,"category":"Computers & Laptops","specs":{}},
-  {"description":"Business Laptops","quantity":10,"unit":"pcs","brand":null,"category":"Computers & Laptops","specs":{}}
-]`;
+  {"description":"CCTV / IP Cameras","quantity":10,"unit":"pcs","brand":null,"category":"CCTV","specs":{}},
+  {"description":"Desktop PCs","quantity":20,"unit":"pcs","brand":null,"category":"DESKTOP","specs":{}},
+  {"description":"Business Laptops","quantity":10,"unit":"pcs","brand":null,"category":"LAPTOP","specs":{}}
+]
+For that example, productCategory should be "DESKTOP" (largest qty) or "CCTV"/"LAPTOP" if equally primary — never a made-up label.`;
 
   const user = `Subject: ${subject || "(none)"}
 
@@ -144,11 +149,6 @@ ${rawText}`;
   if (!content) throw new Error("Empty OpenRouter response");
 
   const parsed = extractJson(content) as Partial<ParseRfqResult>;
-  const category =
-    typeof parsed.productCategory === "string" &&
-    (PRODUCT_CATEGORIES as readonly string[]).includes(parsed.productCategory)
-      ? parsed.productCategory
-      : "General / Uncategorized";
 
   let confidence = Math.max(0, Math.min(1, Number(parsed.confidence) || 0));
   // Hard clamp: promo/newsletter text must never land as a high-confidence RFQ.
@@ -160,21 +160,28 @@ ${rawText}`;
   const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
   const items: ParsedRfqItem[] = rawItems
     .filter((item): item is ParsedRfqItem => !!item && typeof item === "object")
-    .map((item) => ({
-      description: typeof item.description === "string" ? item.description : null,
-      brand: typeof item.brand === "string" ? item.brand : null,
-      quantity: typeof item.quantity === "number" ? item.quantity : null,
-      unit: typeof item.unit === "string" ? item.unit : null,
-      category:
-        typeof item.category === "string" &&
-        (PRODUCT_CATEGORIES as readonly string[]).includes(item.category)
-          ? item.category
-          : null,
-      specs:
-        item.specs && typeof item.specs === "object"
-          ? (item.specs as Record<string, string | number | boolean | null>)
-          : undefined,
-    }));
+    .map((item) => {
+      const description =
+        typeof item.description === "string" ? item.description : null;
+      const brand = typeof item.brand === "string" ? item.brand : null;
+      const rawCategory =
+        typeof item.category === "string" ? item.category : null;
+      return {
+        description,
+        brand,
+        quantity: typeof item.quantity === "number" ? item.quantity : null,
+        unit: typeof item.unit === "string" ? item.unit : null,
+        // Infer from this line only — full RFQ text would bleed other products in.
+        category: resolveProductCategory(
+          rawCategory,
+          [description, brand].filter(Boolean).join(" ")
+        ),
+        specs:
+          item.specs && typeof item.specs === "object"
+            ? (item.specs as Record<string, string | number | boolean | null>)
+            : undefined,
+      };
+    });
 
   const aiFallbackItems =
     items.length > 0
@@ -186,23 +193,36 @@ ${rawText}`;
               brand: typeof specs.brand === "string" ? specs.brand : null,
               quantity: typeof specs.quantity === "number" ? specs.quantity : null,
               unit: typeof specs.unit === "string" ? specs.unit : null,
-              category,
+              category: resolveProductCategory(
+                typeof parsed.productCategory === "string"
+                  ? parsed.productCategory
+                  : null,
+                [
+                  typeof specs.description === "string" ? specs.description : "",
+                  typeof specs.brand === "string" ? specs.brand : "",
+                  subject || "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")
+              ),
             },
           ]
         : [];
 
-  const normalizedItems = resolveParsedItems(aiFallbackItems, rawText).map((item) => ({
+  const resolvedItems = resolveParsedItems(aiFallbackItems, rawText).map((item) => ({
     description: item.description,
     brand: item.brand,
     quantity: item.quantity,
     unit: item.unit,
-    category:
-      item.category &&
-      (PRODUCT_CATEGORIES as readonly string[]).includes(item.category)
-        ? item.category
-        : null,
+    category: item.category,
     specs: undefined as ParsedRfqItem["specs"],
   }));
+
+  const { items: normalizedItems, productCategory } =
+    normalizeParsedItemCategories(
+      resolvedItems,
+      typeof parsed.productCategory === "string" ? parsed.productCategory : null
+    );
 
   const primaryItem = normalizedItems[0];
   const mergedSpecs: ParsedRfqSpecs = {
@@ -215,7 +235,7 @@ ${rawText}`;
   };
 
   return {
-    productCategory: category,
+    productCategory,
     specs: mergedSpecs,
     items: normalizedItems,
     language: typeof parsed.language === "string" ? parsed.language : "Unknown",

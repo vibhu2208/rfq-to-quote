@@ -3,8 +3,10 @@ import {
   applyGst,
   calculatorShortcutLabel,
   evaluateExpression,
+  evaluateMoneyFieldExpression,
   formatCalcNumber,
   isCalculatorToggle,
+  looksLikeMoneyExpression,
   removeGst,
 } from "@/lib/quote-calculator";
 
@@ -22,6 +24,14 @@ describe("evaluateExpression", () => {
     expect(evaluateExpression("200*10%")).toEqual({ ok: true, value: 20 });
     expect(evaluateExpression("1,00,000*1.18")).toEqual({ ok: true, value: 118000 });
     expect(evaluateExpression(".5*4")).toEqual({ ok: true, value: 2 });
+  });
+
+  it("treats +% / -% as percent of the left amount (GST-style)", () => {
+    expect(evaluateExpression("400+18%")).toEqual({ ok: true, value: 472 });
+    expect(evaluateExpression("400-18%")).toEqual({ ok: true, value: 328 });
+    expect(evaluateMoneyFieldExpression("4+4=")).toEqual({ ok: true, value: 8 });
+    expect(looksLikeMoneyExpression("400+18%")).toBe(true);
+    expect(looksLikeMoneyExpression("472")).toBe(false);
   });
 
   it("rejects empty, divide-by-zero, and junk input", () => {

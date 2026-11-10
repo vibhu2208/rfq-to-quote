@@ -119,13 +119,19 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     };
   };
 
-  const lineRequests: QuoteFromRfqLine[] =
+  let lineRequests: QuoteFromRfqLine[] =
     explicitLines.length > 0
       ? explicitLines
       : productIds.map((pid) => ({
           productId: pid,
           qty: quantities[pid] ?? defaultQty,
         }));
+
+  // Lead "Create quotation" posts with no lines — auto-match catalog so
+  // sell prices (last → offer → MRP → base) land on the draft quote.
+  if (lineRequests.length === 0) {
+    lineRequests = await autoMatchQuoteLines(input.rfqId);
+  }
 
   if (lineRequests.length > 0) {
     const ids = lineRequests.map((l) => l.productId);
@@ -230,7 +236,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     Math.round(lines.reduce((s, l) => s + (l.lineTotal * l.taxRate) / 100, 0) * 100) / 100;
   const grandTotal = Math.round((subtotal + gstAmount) * 100) / 100;
 
-  return prisma.$transaction(
+  const quote = await prisma.$transaction(
     async (tx) => {
       const created = await tx.quote.create({
         data: {
@@ -281,6 +287,22 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     },
     { maxWait: 10_000, timeout: 20_000 }
   );
+
+  try {
+    const { markLeadQuoted } = await import("@/lib/leads/stage");
+    const { logLeadActivity } = await import("@/lib/leads/activity");
+    await markLeadQuoted(rfq.id);
+    await logLeadActivity({
+      rfqId: rfq.id,
+      type: "QUOTE_GENERATED",
+      title: `Quote ${quote.quoteNumber} created`,
+      meta: { quoteId: quote.id, quoteNumber: quote.quoteNumber },
+    });
+  } catch {
+    // CRM sync is best-effort
+  }
+
+  return quote;
 }
 
 export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLine[]> {

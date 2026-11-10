@@ -5,10 +5,19 @@ import type {
   FilingRequest,
   FilingResult,
   GspConfig,
+  GstinPanHit,
   GstinVerification,
 } from "@/lib/accounting/gsp-types";
 
-export type { GspConfig, GstinVerification, EInvoiceRequest, EInvoiceResult, FilingRequest, FilingResult };
+export type {
+  GspConfig,
+  GstinPanHit,
+  GstinVerification,
+  EInvoiceRequest,
+  EInvoiceResult,
+  FilingRequest,
+  FilingResult,
+};
 
 type TokenCache = { token: string; expiresAt: number };
 let platformTokenCache: TokenCache | null = null;
@@ -174,6 +183,86 @@ export async function sandboxVerifyGstin(
       ...local,
       source: "gsp",
       message: err instanceof Error ? err.message : "Sandbox GSTIN verify failed",
+    };
+  }
+}
+
+export async function sandboxSearchByPan(
+  cfg: GspConfig,
+  input: { pan: string; stateCode?: string | null }
+): Promise<{ hits: GstinPanHit[]; message?: string; raw?: Record<string, unknown> }> {
+  const pan = input.pan.trim().toUpperCase();
+  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) {
+    return { hits: [], message: "Enter a valid 10-character PAN" };
+  }
+  if (!cfg.enabled || !cfg.hasCredentials) {
+    return {
+      hits: [],
+      message: "Enable GSP credentials to search GSTIN by PAN",
+    };
+  }
+
+  try {
+    const baseUrl = resolveSandboxBaseUrl(cfg);
+    const headers = await sandboxHeaders(cfg);
+    const stateCode = input.stateCode?.trim();
+    const qs =
+      stateCode && /^\d{2}$/.test(stateCode)
+        ? `?state_code=${encodeURIComponent(stateCode)}`
+        : "";
+    const res = await fetch(`${baseUrl}/gst/compliance/public/pan/search${qs}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ pan }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok || Number(body.code) >= 400) {
+      const message =
+        String(
+          (body as { message?: string }).message ||
+            (body as { error?: { message?: string } }).error?.message ||
+            ""
+        ) || `PAN search failed (HTTP ${res.status})`;
+      return { hits: [], message, raw: body };
+    }
+
+    const rows = Array.isArray(body.data) ? body.data : [];
+    const hits: GstinPanHit[] = [];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const root = row as Record<string, unknown>;
+      const data =
+        root.data && typeof root.data === "object"
+          ? (root.data as Record<string, unknown>)
+          : root;
+      const gstin = String(data.gstin || root.gstin || "")
+        .trim()
+        .toUpperCase();
+      if (!gstin) continue;
+      hits.push({
+        gstin,
+        legalName: String(data.lgnm || "").trim() || undefined,
+        tradeName: String(data.tradeNam || "").trim() || undefined,
+        status: String(data.sts || "").trim() || undefined,
+        taxpayerType: String(data.dty || "").trim() || undefined,
+        stateCode: gstin.slice(0, 2),
+        raw: root,
+      });
+    }
+
+    if (hits.length === 0) {
+      return {
+        hits: [],
+        message: String((body as { message?: string }).message || "No GSTIN found for this PAN"),
+        raw: body,
+      };
+    }
+
+    return { hits, message: `Found ${hits.length} GSTIN(s)`, raw: body };
+  } catch (err) {
+    return {
+      hits: [],
+      message: err instanceof Error ? err.message : "PAN search failed",
     };
   }
 }

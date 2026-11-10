@@ -14,6 +14,7 @@ import {
   type OnboardContact,
   type OnboardValues,
 } from "@/lib/client-onboard";
+import { ClientGstLookupDialog } from "@/components/client-gst-lookup-dialog";
 
 const inputClass =
   "w-full rounded-lg border border-light-green/40 bg-white/60 px-3 py-2 text-sm outline-none focus:border-mid-green";
@@ -29,6 +30,7 @@ export function ClientOnboardDialog({
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [gstLookupOpen, setGstLookupOpen] = useState(false);
 
   function setField(key: string, value: string) {
     setValues((prev) => ({ ...prev, fields: { ...prev.fields, [key]: value } }));
@@ -235,13 +237,13 @@ export function ClientOnboardDialog({
                             <span className="mb-1 block text-[11px] uppercase tracking-wide text-mid-green">
                               {label}
                             </span>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                               <input
                                 value={values.fields[key] || ""}
                                 onChange={(e) => setField(key, e.target.value.toUpperCase())}
                                 maxLength={15}
                                 placeholder="15-character GSTIN"
-                                className={`${inputClass} font-mono`}
+                                className={`${inputClass} min-w-[12rem] flex-1 font-mono`}
                               />
                               <button
                                 type="button"
@@ -250,6 +252,13 @@ export function ClientOnboardDialog({
                                 className="shrink-0 rounded-lg border border-mid-green/40 px-3 py-2 text-sm hover:bg-mid-green/10 disabled:opacity-50"
                               >
                                 {fetching ? "Fetching…" : "Fetch"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setGstLookupOpen(true)}
+                                className="shrink-0 rounded-lg border border-mid-green/40 px-3 py-2 text-sm hover:bg-mid-green/10"
+                              >
+                                Find / enrich
                               </button>
                             </div>
                           </label>
@@ -317,6 +326,43 @@ export function ClientOnboardDialog({
           </button>
         </div>
       </form>
+
+      {gstLookupOpen ? (
+        <ClientGstLookupDialog
+          mode="preview"
+          seed={{
+            legalName: values.fields.ClientName,
+            tradeName: values.fields.ClientAccName,
+            gstin: values.fields.GSTIN,
+            pan: values.fields.ClientPAN,
+            addressLine1: values.fields.ClientAddress,
+            city: values.fields.CityName,
+            state: values.fields.StateName,
+            postalCode: values.fields.ClientPinCode,
+          }}
+          onClose={() => setGstLookupOpen(false)}
+          onPreviewOnly={(preview) => {
+            setValues((prev) =>
+              applyGstinPreview(prev, {
+                gstin: preview.gstin,
+                legalName: preview.legalName,
+                tradeName: preview.tradeName,
+                status: preview.status,
+                stateName: preview.stateName,
+                stateCode: preview.stateCode,
+                addressLine1: preview.addressLine1,
+                addressLine2: preview.addressLine2,
+                city: preview.city,
+                district: preview.district,
+                state: preview.state,
+                postalCode: preview.postalCode,
+              })
+            );
+            setMessage("Portal details applied to the form — review, then save the client");
+            setGstLookupOpen(false);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

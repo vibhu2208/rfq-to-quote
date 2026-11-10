@@ -11,7 +11,7 @@ type Tok =
 
 export function isCalculatorToggle(
   e: {
-    key: string;
+    key?: string | null;
     ctrlKey: boolean;
     metaKey: boolean;
     altKey: boolean;
@@ -21,7 +21,8 @@ export function isCalculatorToggle(
   opts?: { requireMod?: boolean }
 ): boolean {
   if (e.repeat) return false;
-  if (e.key.toLowerCase() !== "c") return false;
+  const key = typeof e.key === "string" ? e.key.toLowerCase() : "";
+  if (key !== "c") return false;
   if (!e.altKey || e.shiftKey) return false;
   if (opts?.requireMod) return e.ctrlKey || e.metaKey;
   return true;
@@ -67,7 +68,7 @@ export function removeGst(value: number, rate = 18): CalcResult {
 }
 
 export function evaluateExpression(raw: string): CalcResult {
-  const expr = normalizeExpression(raw);
+  const expr = expandAdditivePercents(normalizeExpression(raw));
   if (!expr) return { ok: false, error: "Enter a calculation" };
   if (expr.length > MAX_EXPR) return { ok: false, error: "Too long" };
   try {
@@ -84,6 +85,24 @@ export function evaluateExpression(raw: string): CalcResult {
   }
 }
 
+/** Strip a trailing `=` and evaluate; used by inline sell-price fields. */
+export function evaluateMoneyFieldExpression(raw: string): CalcResult {
+  const cleaned = String(raw ?? "")
+    .replace(/=\s*$/, "")
+    .trim();
+  return evaluateExpression(cleaned);
+}
+
+export function looksLikeMoneyExpression(raw: string): boolean {
+  const cleaned = String(raw ?? "")
+    .replace(/=\s*$/, "")
+    .replace(/,/g, "")
+    .trim();
+  if (!cleaned) return false;
+  if (/^[-+]?\d*\.?\d+$/.test(cleaned)) return false;
+  return /[+\-*/×÷%()]/.test(cleaned);
+}
+
 function normalizeExpression(raw: string): string {
   return raw
     .replace(/,/g, "")
@@ -91,6 +110,23 @@ function normalizeExpression(raw: string): string {
     .replace(/÷/g, "/")
     .replace(/−/g, "-")
     .replace(/\s+/g, "");
+}
+
+/**
+ * Calculator-style percent on + / -: `400+18%` → `400+(400*18/100)`.
+ * Leaves `400*18%` alone so it stays `400*18/100`.
+ */
+function expandAdditivePercents(expr: string): string {
+  let cur = expr;
+  let prev = "";
+  while (cur !== prev) {
+    prev = cur;
+    cur = cur.replace(
+      /(\d+(?:\.\d+)?)([+\-])(\d+(?:\.\d+)?)%/g,
+      (_m, base: string, op: string, pct: string) => `${base}${op}(${base}*${pct}/100)`
+    );
+  }
+  return cur;
 }
 
 function tokenize(expr: string): Tok[] {

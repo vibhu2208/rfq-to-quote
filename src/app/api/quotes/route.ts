@@ -18,6 +18,10 @@ const lineSchema = z.object({
   unitPrice: z.coerce.number().nonnegative(),
   costPrice: z.coerce.number().nonnegative().nullable().optional(),
   costVendorName: z.string().optional().default(""),
+  discountPercent: z.coerce.number().nonnegative().optional().default(0),
+  warrantyQty: z.coerce.number().int().nonnegative().optional().default(0),
+  warrantyUnit: z.enum(["years", "months", "days"]).optional().default("years"),
+  warrantyService: z.enum(["", "onsite", "offsite", "both"]).optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
@@ -95,6 +99,10 @@ function serializeQuote(quote: {
     unitPrice: unknown;
     costPrice?: unknown;
     costVendorName?: string;
+    discountPercent?: unknown;
+    warrantyQty?: number;
+    warrantyUnit?: string;
+    warrantyService?: string;
     taxRate: unknown;
     lineTotal: unknown;
     sortOrder: number;
@@ -120,6 +128,10 @@ function serializeQuote(quote: {
       unitPrice: decimalToNumber(li.unitPrice),
       costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
       costVendorName: li.costVendorName || "",
+      discountPercent: decimalToNumber(li.discountPercent ?? 0),
+      warrantyQty: Number(li.warrantyQty ?? 0) || 0,
+      warrantyUnit: li.warrantyUnit || "years",
+      warrantyService: li.warrantyService || "",
       taxRate: decimalToNumber(li.taxRate),
       lineTotal: decimalToNumber(li.lineTotal),
     })),
@@ -164,6 +176,7 @@ export async function POST(req: NextRequest) {
       qty: l.qty,
       unitPrice: l.unitPrice,
       taxRate: l.taxRate,
+      discountPercent: l.discountPercent ?? 0,
     })),
     withGst: data.withGst,
     buyerState: data.buyerState,
@@ -227,6 +240,10 @@ export async function POST(req: NextRequest) {
           qty: l.qty,
           unit: l.unit,
           unitPrice: l.unitPrice,
+          discountPercent: l.discountPercent ?? 0,
+          warrantyQty: l.warrantyQty ?? 0,
+          warrantyUnit: l.warrantyUnit ?? "years",
+          warrantyService: l.warrantyService ?? "",
           taxRate: l.taxRate,
           lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
           sortOrder: l.sortOrder ?? i,

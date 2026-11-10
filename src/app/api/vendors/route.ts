@@ -46,27 +46,51 @@ export async function GET(request: NextRequest) {
                 { name: { contains: q, mode: "insensitive" } },
                 { email: { contains: q, mode: "insensitive" } },
                 { phone: { contains: q } },
-                {
-                  categories: {
-                    some: {
-                      OR: [
-                        { category: { contains: q, mode: "insensitive" } },
-                        { subcategory: { contains: q, mode: "insensitive" } },
-                      ],
-                    },
-                  },
-                },
-                {
-                  contacts: {
-                    some: {
-                      OR: [
-                        { name: { contains: q, mode: "insensitive" } },
-                        { email: { contains: q, mode: "insensitive" } },
-                        { phone: { contains: q } },
-                      ],
-                    },
-                  },
-                },
+                ...(light
+                  ? []
+                  : [
+                      {
+                        categories: {
+                          some: {
+                            OR: [
+                              {
+                                category: {
+                                  contains: q,
+                                  mode: "insensitive" as const,
+                                },
+                              },
+                              {
+                                subcategory: {
+                                  contains: q,
+                                  mode: "insensitive" as const,
+                                },
+                              },
+                            ],
+                          },
+                        },
+                      },
+                      {
+                        contacts: {
+                          some: {
+                            OR: [
+                              {
+                                name: {
+                                  contains: q,
+                                  mode: "insensitive" as const,
+                                },
+                              },
+                              {
+                                email: {
+                                  contains: q,
+                                  mode: "insensitive" as const,
+                                },
+                              },
+                              { phone: { contains: q } },
+                            ],
+                          },
+                        },
+                      },
+                    ]),
               ],
             }
           : {},
@@ -74,15 +98,8 @@ export async function GET(request: NextRequest) {
     },
     include: light
       ? {
-          categories: {
-            orderBy: [{ category: "asc" }, { subcategory: "asc" }],
-            take: 12,
-          },
-          contacts: {
-            orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
-            take: 8,
-            include: { vendorCategory: true },
-          },
+          // Mapping search only needs names + category counts.
+          categories: { select: { id: true, category: true, subcategory: true } },
         }
       : {
           categories: { orderBy: [{ category: "asc" }, { subcategory: "asc" }] },
@@ -111,8 +128,40 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json(
     vendors.map((vendor) => {
-      const serialized = serializeVendor(vendor);
-      if (light || !("outreaches" in vendor)) {
+      if (light) {
+        const lightVendor = vendor as {
+          id: string;
+          name: string;
+          phone: string | null;
+          email: string | null;
+          active: boolean;
+          categories: Array<{
+            id: string;
+            category: string;
+            subcategory: string;
+          }>;
+        };
+        return {
+          id: lightVendor.id,
+          name: lightVendor.name,
+          phone: String(lightVendor.phone || ""),
+          email: String(lightVendor.email || ""),
+          active: lightVendor.active,
+          categories: lightVendor.categories.map((row) => ({
+            id: row.id,
+            category: row.category,
+            subcategory: row.subcategory,
+            keywords: [],
+          })),
+          contacts: [],
+          declinedOutreaches: [],
+          declinedCount: 0,
+        };
+      }
+      const serialized = serializeVendor(
+        vendor as Parameters<typeof serializeVendor>[0]
+      );
+      if (!("outreaches" in vendor)) {
         return {
           ...serialized,
           declinedOutreaches: [],

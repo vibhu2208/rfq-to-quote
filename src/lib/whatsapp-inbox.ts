@@ -90,13 +90,31 @@ export async function ingestWhatsAppInboundMessage(
     };
   }
 
-  // Inbox only keeps messages that look like product requirements.
+  // Non-requirement chats are stored as SKIPPED so they can be reviewed in Leads.
   if (!messageLooksLikeRequirement(text)) {
+    const rfq = await createRfqWithMessage({
+      channel: "WHATSAPP",
+      sourceRef: message.messageId,
+      subject: `WhatsApp from ${message.name || message.from}`,
+      rawText: text.slice(0, 20000),
+      customerName: message.name || message.from,
+      customerPhone: message.from.startsWith("+")
+        ? message.from
+        : `+${message.from}`,
+      autoParse: false,
+      intakeKind: "SKIPPED",
+      junkReason: "no product requirement detected",
+    });
     return {
       kind: "skipped",
       messageId: message.messageId,
       from: message.from,
       reason: "no product requirement detected",
+      rfq: {
+        id: rfq.id,
+        status: rfq.status,
+        subject: rfq.subject || `WhatsApp from ${message.name || message.from}`,
+      },
     };
   }
 

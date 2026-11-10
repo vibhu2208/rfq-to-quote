@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ClipboardList,
   FileText,
-  Inbox,
   Landmark,
   LayoutDashboard,
   LogOut,
@@ -20,6 +19,7 @@ import {
   Package,
   Receipt,
   Settings2,
+  Target,
   Truck,
   Users,
   Warehouse,
@@ -34,7 +34,7 @@ type NavItem = {
 
 const overview: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/leads", label: "Leads", icon: Target },
 ];
 
 const sales: NavItem[] = [
@@ -65,7 +65,7 @@ const admin: NavItem[] = [
 
 const desktopLinks: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/leads", label: "Leads", icon: Target },
   ...sales,
   ...operations,
   ...finance,
@@ -85,7 +85,10 @@ function isActive(pathname: string, href: string) {
   return (
     pathname === href ||
     pathname.startsWith(`${href}/`) ||
-    (href === "/inbox" && pathname.startsWith("/rfq/"))
+    (href === "/leads" &&
+      (pathname.startsWith("/leads") ||
+        pathname.startsWith("/rfq/") ||
+        pathname === "/inbox"))
   );
 }
 
@@ -133,12 +136,20 @@ function NavLink({
   );
 }
 
-function LedgerDropdown({
+function NavDropdown({
   pathname,
   onNavigate,
+  label,
+  icon: GroupIcon,
+  items,
+  active,
 }: {
   pathname: string;
   onNavigate?: () => void;
+  label: string;
+  icon: typeof LayoutDashboard;
+  items: NavItem[];
+  active: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -146,7 +157,6 @@ function LedgerDropdown({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const closeTimer = useRef<number | null>(null);
-  const active = isLedgerActive(pathname);
 
   useEffect(() => {
     setMounted(true);
@@ -221,11 +231,11 @@ function LedgerDropdown({
             ref={menuRef}
             role="menu"
             style={{ top: menuPos.top, left: menuPos.left }}
-            className="fixed z-[100] min-w-[12rem] overflow-hidden rounded-xl border border-dark-primary/10 bg-white py-1 text-dark-primary shadow-[0_12px_40px_rgba(11,43,38,0.22)]"
+            className="fixed z-[100] max-h-[70vh] min-w-[13rem] overflow-y-auto overflow-x-hidden rounded-xl border border-dark-primary/10 bg-white py-1 text-dark-primary shadow-[0_12px_40px_rgba(11,43,38,0.22)]"
             onMouseEnter={openMenu}
             onMouseLeave={scheduleClose}
           >
-            {ledger.map((item) => {
+            {items.map((item) => {
               const Icon = item.icon;
               const itemActive = isActive(pathname, item.href);
               return (
@@ -277,8 +287,8 @@ function LedgerDropdown({
             : "text-light-green hover:bg-background/10 hover:text-background"
         }`}
       >
-        <NotebookTabs className="h-3.5 w-3.5" strokeWidth={1.6} />
-        Ledger
+        <GroupIcon className="h-3.5 w-3.5" strokeWidth={1.6} />
+        {label}
         <ChevronDown
           className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`}
           strokeWidth={1.8}
@@ -286,6 +296,25 @@ function LedgerDropdown({
       </button>
       {menu}
     </div>
+  );
+}
+
+function LedgerDropdown({
+  pathname,
+  onNavigate,
+}: {
+  pathname: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <NavDropdown
+      pathname={pathname}
+      onNavigate={onNavigate}
+      label="Ledger"
+      icon={NotebookTabs}
+      items={ledger}
+      active={isLedgerActive(pathname)}
+    />
   );
 }
 
@@ -327,7 +356,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
     };
   }, [mobileOpen]);
 
-  // Insert Ledger after Invoices (end of sales cluster) on desktop.
+  // Insert Ledger after Invoices on desktop.
   const ledgerInsertAfter = "/invoices";
 
   return (

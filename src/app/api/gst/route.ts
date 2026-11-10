@@ -12,7 +12,13 @@ import { submitEInvoiceWithApproval, submitGstReturnWithApproval } from "@/lib/a
 import { createDraftFromCsvRows, createDraftFromNaturalLanguage } from "@/lib/accounting/transactions";
 import { getTrialBalance, getArAgeing } from "@/lib/accounting/reports";
 import { isAccountingError } from "@/lib/accounting/errors";
-import { getGstConfigurationSummary, verifyAndStorePartyGstin } from "@/lib/accounting/gstin";
+import {
+  getGstConfigurationSummary,
+  previewPartyGstin,
+  searchGstinByPan,
+  verifyAndStorePartyGstin,
+} from "@/lib/accounting/gstin";
+import { getStateCode } from "@/lib/accounting/states";
 
 export async function GET(req: NextRequest) {
   const { error } = await requireSession();
@@ -71,6 +77,25 @@ const postSchema = z.discriminatedUnion("action", [
     createPartyIfMissing: z.boolean().optional(),
     legalNameHint: z.string().optional(),
   }),
+  z.object({
+    action: z.literal("preview_gstin"),
+    gstin: z.string().min(15).max(15),
+  }),
+  z.object({
+    action: z.literal("search_by_pan"),
+    pan: z.string().min(10).max(10),
+    stateCode: z.string().optional(),
+    state: z.string().optional(),
+    nameHint: z.string().optional(),
+    addressHint: z.string().optional(),
+  }),
+  z.object({
+    action: z.literal("apply_gstin"),
+    gstin: z.string().min(15).max(15),
+    partyId: z.string().min(1),
+    /** Explicit confirmation required before DB write. */
+    confirmed: z.literal(true),
+  }),
 ]);
 
 export async function POST(req: NextRequest) {
@@ -124,6 +149,55 @@ export async function POST(req: NextRequest) {
             userId,
           })
         );
+      case "preview_gstin": {
+        const preview = await previewPartyGstin(data.gstin.toUpperCase());
+        if (!preview.verification.valid) {
+          return NextResponse.json(
+            {
+              error: preview.verification.message || "Invalid GSTIN",
+              verification: preview.verification,
+            },
+            { status: 400 }
+          );
+        }
+        return NextResponse.json(preview);
+      }
+      case "search_by_pan": {
+        const stateCode =
+          data.stateCode || (data.state ? getStateCode(data.state) : null) || null;
+        const result = await searchGstinByPan({
+          pan: data.pan.toUpperCase(),
+          stateCode,
+          nameHint: data.nameHint,
+          addressHint: data.addressHint,
+        });
+        return NextResponse.json(result);
+      }
+      case "apply_gstin": {
+        const party = await prisma.party.findUnique({
+          where: { id: data.partyId },
+          select: { id: true },
+        });
+        if (!party) {
+          return NextResponse.json({ error: "Client not found" }, { status: 404 });
+        }
+        const result = await verifyAndStorePartyGstin({
+          gstin: data.gstin.toUpperCase(),
+          partyId: data.partyId,
+          createPartyIfMissing: false,
+          userId,
+        });
+        if (!result.verification.valid) {
+          return NextResponse.json(
+            {
+              error: result.verification.message || "Could not apply GSTIN",
+              verification: result.verification,
+            },
+            { status: 400 }
+          );
+        }
+        return NextResponse.json(result);
+      }
       default:
         return NextResponse.json({ error: "Unknown action" }, { status: 400 });
     }

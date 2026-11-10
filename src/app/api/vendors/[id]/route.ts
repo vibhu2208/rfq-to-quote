@@ -6,11 +6,12 @@ import { replaceVendorWithRelations } from "@/lib/vendor-persist";
 
 type Params = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, { params }: Params) {
+export async function GET(request: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
 
   const { id } = await params;
+  const light = request.nextUrl.searchParams.get("light") === "1";
   const vendor = await prisma.vendor.findUnique({
     where: { id },
     include: {
@@ -19,7 +20,14 @@ export async function GET(_request: NextRequest, { params }: Params) {
         orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
         include: { vendorCategory: true },
       },
-      productHistory: { orderBy: { lastQuotedAt: "desc" } },
+      ...(light
+        ? {}
+        : {
+            productHistory: {
+              orderBy: { lastQuotedAt: "desc" as const },
+              take: 25,
+            },
+          }),
     },
   });
   if (!vendor) {

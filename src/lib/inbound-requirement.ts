@@ -17,7 +17,11 @@ const PRODUCTISH =
 
 /** Bulk / marketing signals in subject or body. */
 const PROMO_TEXT =
-  /\b(unsubscribe|view\s+in\s+(?:your\s+)?browser|manage\s+(?:email\s+)?preferences|email\s+preferences|one[- ]click\s+unsubscribe|you('re| are)\s+receiving\s+this|this\s+(email|message)\s+was\s+sent\s+to|%[\s-]*off|limited[- ]time\s+offer|exclusive\s+offer|flash\s+sale|newsletter|promotional|promo\s+code|don'?t\s+miss\s+out|act\s+now|shop\s+now|claim\s+your|free\s+trial|upgrade\s+your\s+(plan|subscription)|your\s+subscription\s+(is|has)|microsoft\s+365\s+benefits|new\s+in\s+[a-z0-9]|weekly\s+digest|daily\s+digest)\b/i;
+  /\b(unsubscribe|view\s+in\s+(?:your\s+)?browser|manage\s+(?:email\s+)?preferences|email\s+preferences|one[- ]click\s+unsubscribe|you('re| are)\s+receiving\s+this|this\s+(email|message)\s+was\s+sent\s+to|%[\s-]*off|limited[- ]time\s+offer|exclusive\s+offer|flash\s+sale|newsletter|promotional|promo\s+code|don'?t\s+miss\s+out|act\s+now|shop\s+now|claim\s+your|free\s+trial|upgrade\s+your\s+(plan|subscription)|subscription\s+has\s+expired|your\s+subscription\s+(is|has)|microsoft\s+365\s+benefits|new\s+in\s+[a-z0-9]|weekly\s+digest|daily\s+digest)\b/i;
+
+/** Phishing / account-scare mail that should never become an RFQ. */
+const PHISH_TEXT =
+  /\b(netflix\s+support|netflix\s+subscription|account\s+suspension|avoid\s+account\s+suspension|update\s+your\s+payment(\s+information)?|restore\s+your\s+subscription|verify\s+your\s+(account|identity|mailbox)|confirm\s+your\s+(account|identity|password)|unusual\s+(sign[- ]?in|activity)|click\s+here\s+to\s+(restore|verify|update|confirm|secure)|password\s+expir|mailbox\s+quota|secure\s+your\s+account)\b/i;
 
 const PROMO_FROM_LOCAL =
   /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|donotreply|noreply|newsletter|marketing|promotions?|promo|news|digest|notify|notification|updates?|mailer|bounce|automail)\b/i;
@@ -105,8 +109,10 @@ export function looksLikePromotionalEmail(input: InboundEmailSignals): boolean {
   }
 
   const subject = (input.subject || "").trim();
-  const combined = `${subject}\n${input.text || ""}`.slice(0, 8000);
+  const body = (input.text || "").trim();
+  const combined = `${subject}\n${body}`.slice(0, 8000);
   if (PROMO_TEXT.test(combined)) return true;
+  if (PHISH_TEXT.test(combined)) return true;
 
   return false;
 }
@@ -126,11 +132,16 @@ export function messageLooksLikeRequirement(text: string): boolean {
   const hasHint = REQUIREMENT_HINT.test(cleaned);
   const hasQty = QTY_PATTERN.test(cleaned);
   const hasProduct = PRODUCTISH.test(cleaned);
-  const multiLine = text.split(/\n/).map((line) => line.trim()).filter(Boolean).length >= 2;
+  const multiLine =
+    text.split(/\n/).map((line) => line.trim()).filter(Boolean).length >= 2;
   const longEnough = cleaned.length >= 40;
   const listLike = /(?:^|\n)\s*[-*•\d]+[.)]\s+\S+/m.test(text);
+  // Subject "need …" + long unrelated body is not enough without product/qty.
+  const substance = hasQty || hasProduct || listLike;
 
-  if (hasHint && (hasQty || hasProduct || multiLine || longEnough || listLike)) {
+  if (hasHint && substance) return true;
+  // Multi-line RFQ-ish asks without a catalog keyword still count when detailed.
+  if (hasHint && multiLine && cleaned.length >= 80 && !PHISH_TEXT.test(cleaned)) {
     return true;
   }
   if (hasQty && (hasProduct || multiLine || listLike || longEnough)) {
@@ -145,8 +156,10 @@ export function messageLooksLikeRequirement(text: string): boolean {
   }
   // Explicit ask for price/quote alone with product context already covered;
   // bare "please quote" with little else is still a requirement.
-  if (/\b(please|pls)?\s*(quote|send\s+quote|share\s+(price|rate))\b/i.test(lower)) {
-    return cleaned.length >= 12;
+  if (
+    /\b(please|pls)?\s*(quote|send\s+quote|share\s+(price|rate))\b/i.test(lower)
+  ) {
+    return cleaned.length >= 12 && !PHISH_TEXT.test(cleaned);
   }
   return false;
 }

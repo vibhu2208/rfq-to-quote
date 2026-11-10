@@ -5,7 +5,11 @@ export type RfqInboundChannel =
   | "EMAIL"
   | "WEB_FORM"
   | "MARKETPLACE"
-  | "MANUAL";
+  | "MANUAL"
+  | "REFERRAL"
+  | "IMPORT"
+  | "API"
+  | "OTHER";
 
 export type QuoteSendDefaults = {
   /** Suggested outbound channel based on how the RFQ arrived. */

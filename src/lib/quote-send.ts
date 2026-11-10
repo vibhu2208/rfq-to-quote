@@ -230,6 +230,25 @@ export async function sendQuoteToBuyer(
     }
   });
 
+  if (quote.rfqId) {
+    try {
+      const { syncLeadStageFromQuoteStatus } = await import("@/lib/leads/stage");
+      const { logLeadActivity } = await import("@/lib/leads/activity");
+      await syncLeadStageFromQuoteStatus({
+        rfqId: quote.rfqId,
+        quoteStatus: "SENT",
+      });
+      await logLeadActivity({
+        rfqId: quote.rfqId,
+        type: "QUOTE_SENT",
+        title: `Quote ${quote.quoteNumber} sent`,
+        meta: { quoteId: quote.id, to: toAddress },
+      });
+    } catch {
+      // CRM sync is best-effort
+    }
+  }
+
   return {
     ok: true,
     channel: input.channel,

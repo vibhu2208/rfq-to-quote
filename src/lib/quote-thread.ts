@@ -213,6 +213,7 @@ export async function loadQuoteKnowledge(quoteId: string): Promise<QuoteReplyKno
       qty: decimalToNumber(li.qty),
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),
+      discountPercent: decimalToNumber(li.discountPercent),
       taxRate: decimalToNumber(li.taxRate),
       lineTotal: decimalToNumber(li.lineTotal),
     })),
@@ -318,28 +319,10 @@ export async function handleQuoteReplyEmail(
     const matchedByThreadRef =
       Boolean(quote.threadRef) &&
       (subject.includes(quote.threadRef) || body.includes(quote.threadRef));
-    const matchedByBuyer =
-      Boolean(quote.buyerEmail) &&
-      fromEmail.toLowerCase() === quote.buyerEmail.trim().toLowerCase();
-    // Also accept mail from whoever we actually sent the quote to (may differ from buyerEmail on older rows).
-    const matchedByOutboundTo =
-      Boolean(fromEmail) &&
-      (await prisma.quoteMessage.count({
-        where: {
-          quoteId: quote.id,
-          direction: "OUT",
-          toEmail: { equals: fromEmail, mode: "insensitive" },
-        },
-      })) > 0;
 
-    // For a targeted check: accept refs / QREF / quote number / buyer / outbound recipient.
-    if (
-      !matchedByRefs &&
-      !matchedByNumber &&
-      !matchedByThreadRef &&
-      !matchedByBuyer &&
-      !matchedByOutboundTo
-    ) {
+    // Targeted thread check must still see a quote signal (number / QREF / In-Reply-To).
+    // Matching on buyer email alone pulls unrelated RFQs and spam from the same address.
+    if (!matchedByRefs && !matchedByNumber && !matchedByThreadRef) {
       return { handled: false };
     }
   } else {
@@ -515,6 +498,18 @@ export async function handleQuoteReplyEmail(
     }
   });
 
+  if (quote.rfqId && nextStatus !== quote.status) {
+    try {
+      const { syncLeadStageFromQuoteStatus } = await import("@/lib/leads/stage");
+      await syncLeadStageFromQuoteStatus({
+        rfqId: quote.rfqId,
+        quoteStatus: nextStatus,
+      });
+    } catch {
+      // CRM sync is best-effort
+    }
+  }
+
   return {
     handled: true,
     quoteId: quote.id,
@@ -586,18 +581,41 @@ export async function sendQuoteFollowUpEmail(input: {
         analysis: { kind: "manual_reply", via: "copilot_or_lifecycle" },
       },
     });
+    const nextStatus =
+      quote.status === "SENT" ||
+      quote.status === "VIEWED" ||
+      quote.status === "UNDER_NEGOTIATION" ||
+      quote.status === "REVISED"
+        ? "UNDER_NEGOTIATION"
+        : quote.status;
+
     await tx.quote.update({
       where: { id: quote.id },
       data: {
         needsAssistance: false,
         assistanceReason: "",
-        status:
-          quote.status === "SENT" || quote.status === "VIEWED"
-            ? "UNDER_NEGOTIATION"
-            : quote.status,
+        status: nextStatus,
       },
     });
   });
+
+  if (quote.rfqId) {
+    try {
+      const { syncLeadStageFromQuoteStatus } = await import("@/lib/leads/stage");
+      await syncLeadStageFromQuoteStatus({
+        rfqId: quote.rfqId,
+        quoteStatus:
+          quote.status === "SENT" ||
+          quote.status === "VIEWED" ||
+          quote.status === "UNDER_NEGOTIATION" ||
+          quote.status === "REVISED"
+            ? "UNDER_NEGOTIATION"
+            : quote.status,
+      });
+    } catch {
+      // CRM sync best-effort
+    }
+  }
 
   const inboundAnalysis =
     lastInbound?.analysis && typeof lastInbound.analysis === "object"

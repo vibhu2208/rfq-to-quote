@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPercentToLineDiscounts,
   applyPercentToLinePrices,
+  effectiveUnitPrice,
   headerDiscountAmount,
   lineSubtotal,
   shouldChooseQuoteDiscountMethod,
+  uniformLineDiscountPercent,
 } from "@/lib/quote-discount";
 
 describe("shouldChooseQuoteDiscountMethod", () => {
@@ -15,6 +18,50 @@ describe("shouldChooseQuoteDiscountMethod", () => {
       true
     );
     expect(shouldChooseQuoteDiscountMethod({ quoteStatus: "DRAFT" })).toBe(false);
+  });
+});
+
+describe("effectiveUnitPrice + line discounts", () => {
+  it("applies per-product discount without changing list unit price", () => {
+    expect(effectiveUnitPrice(1000, 10)).toBe(900);
+    const lines = applyPercentToLineDiscounts(
+      [
+        { id: "a", qty: 1, unitPrice: 600 },
+        { id: "b", qty: 1, unitPrice: 400 },
+      ],
+      10
+    );
+    expect(lines[0].unitPrice).toBe(600);
+    expect(lines[0].discountPercent).toBe(10);
+    expect(lineSubtotal(lines)).toBe(900);
+  });
+
+  it("stacks with a whole-quote header discount on the reduced subtotal", () => {
+    const lines = applyPercentToLineDiscounts(
+      [
+        { qty: 1, unitPrice: 600 },
+        { qty: 1, unitPrice: 400 },
+      ],
+      10
+    );
+    const afterLines = lineSubtotal(lines);
+    expect(afterLines).toBe(900);
+    expect(headerDiscountAmount(afterLines, 5)).toBe(45);
+  });
+
+  it("reports a uniform line discount percent", () => {
+    expect(
+      uniformLineDiscountPercent([
+        { discountPercent: 8 },
+        { discountPercent: 8 },
+      ])
+    ).toBe(8);
+    expect(
+      uniformLineDiscountPercent([
+        { discountPercent: 8 },
+        { discountPercent: 5 },
+      ])
+    ).toBeNull();
   });
 });
 

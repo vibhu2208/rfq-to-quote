@@ -22,6 +22,17 @@ export type GstinVerification = {
   message?: string;
 };
 
+/** Lightweight hit from Search GSTIN by PAN (may lack full address until GSTIN verify). */
+export type GstinPanHit = {
+  gstin: string;
+  legalName?: string;
+  tradeName?: string;
+  status?: string;
+  taxpayerType?: string;
+  stateCode?: string;
+  raw?: Record<string, unknown>;
+};
+
 export type EInvoiceRequest = {
   gstin: string;
   invoiceNumber: string;
@@ -58,6 +69,10 @@ export type FilingResult = {
 
 export interface GspProvider {
   verifyGstin(gstin: string): Promise<GstinVerification>;
+  searchByPan(input: {
+    pan: string;
+    stateCode?: string | null;
+  }): Promise<{ hits: GstinPanHit[]; message?: string; raw?: Record<string, unknown> }>;
   generateEInvoice(req: EInvoiceRequest): Promise<EInvoiceResult>;
   submitReturn(req: FilingRequest): Promise<FilingResult>;
   generateEWayBill(req: {

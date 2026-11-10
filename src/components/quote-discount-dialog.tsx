@@ -3,23 +3,24 @@
 import { Percent } from "lucide-react";
 import { formatMoney } from "@/lib/tax";
 import {
-  applyPercentToLinePrices,
+  applyPercentToLineDiscounts,
   headerDiscountAmount,
   lineSubtotal,
-  type QuoteDiscountMethod,
+  type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
 
 type PricedLine = {
   qty: number;
   unitPrice: number;
+  discountPercent?: number;
 };
 
 type Props = {
   percent: number;
   lines: PricedLine[];
-  method: QuoteDiscountMethod;
+  methods: QuoteDiscountMethods;
   onPercentChange: (percent: number) => void;
-  onMethodChange: (method: QuoteDiscountMethod) => void;
+  onMethodsChange: (methods: QuoteDiscountMethods) => void;
   onCancel: () => void;
   onApply: () => void;
 };
@@ -27,15 +28,24 @@ type Props = {
 export function QuoteDiscountDialog({
   percent,
   lines,
-  method,
+  methods,
   onPercentChange,
-  onMethodChange,
+  onMethodsChange,
   onCancel,
   onApply,
 }: Props) {
-  const subtotal = lineSubtotal(lines);
-  const amount = headerDiscountAmount(subtotal, percent);
-  const reducedSubtotal = lineSubtotal(applyPercentToLinePrices(lines, percent));
+  const baseSubtotal = lineSubtotal(
+    lines.map((line) => ({ ...line, discountPercent: 0 }))
+  );
+  const afterLines = lineSubtotal(applyPercentToLineDiscounts(lines, percent));
+  const headerOn =
+    methods.header && percent > 0
+      ? headerDiscountAmount(methods.lines ? afterLines : baseSubtotal, percent)
+      : 0;
+  const finalSubtotal = roundMoney(
+    (methods.lines ? afterLines : baseSubtotal) - headerOn
+  );
+  const canApply = methods.header || methods.lines;
 
   return (
     <div
@@ -58,8 +68,8 @@ export function QuoteDiscountDialog({
               Apply client discount
             </h2>
             <p className="mt-1 text-sm text-mid-green">
-              Choose how {percent || 0}% off the current subtotal of{" "}
-              {formatMoney(subtotal)} should appear on the revised quote.
+              Use whole-quote discount, per-product discount, or both. Current
+              subtotal {formatMoney(baseSubtotal)}.
             </p>
           </div>
         </div>
@@ -78,43 +88,70 @@ export function QuoteDiscountDialog({
         </label>
 
         <div className="mt-4 grid gap-2">
-          <button
-            type="button"
-            onClick={() => onMethodChange("header")}
-            aria-pressed={method === "header"}
-            className={`rounded-xl border px-4 py-3 text-left transition ${
-              method === "header"
+          <label
+            className={`flex cursor-pointer gap-3 rounded-xl border px-4 py-3 text-left transition ${
+              methods.header
                 ? "border-mid-green bg-mid-green/10"
                 : "border-light-green/40 hover:bg-light-green/15"
             }`}
           >
-            <span className="block text-sm font-semibold text-dark-primary">
-              Direct discount on the quote
+            <input
+              type="checkbox"
+              checked={methods.header}
+              onChange={(e) =>
+                onMethodsChange({ ...methods, header: e.target.checked })
+              }
+              className="mt-1 h-4 w-4 accent-[var(--mid-green,#2f6f64)]"
+            />
+            <span>
+              <span className="block text-sm font-semibold text-dark-primary">
+                Whole quote discount
+              </span>
+              <span className="mt-1 block text-xs leading-relaxed text-mid-green">
+                Keep product list prices. Show {percent || 0}% (
+                {formatMoney(
+                  headerDiscountAmount(
+                    methods.lines ? afterLines : baseSubtotal,
+                    percent
+                  )
+                )}
+                ) as a discount line on the quotation.
+              </span>
             </span>
-            <span className="mt-1 block text-xs leading-relaxed text-mid-green">
-              Keep product prices. Mention {percent || 0}% ({formatMoney(amount)}) as
-              a discount line on the quotation.
-            </span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onMethodChange("lines")}
-            aria-pressed={method === "lines"}
-            className={`rounded-xl border px-4 py-3 text-left transition ${
-              method === "lines"
+          </label>
+          <label
+            className={`flex cursor-pointer gap-3 rounded-xl border px-4 py-3 text-left transition ${
+              methods.lines
                 ? "border-mid-green bg-mid-green/10"
                 : "border-light-green/40 hover:bg-light-green/15"
             }`}
           >
-            <span className="block text-sm font-semibold text-dark-primary">
-              Reduce each product price
+            <input
+              type="checkbox"
+              checked={methods.lines}
+              onChange={(e) =>
+                onMethodsChange({ ...methods, lines: e.target.checked })
+              }
+              className="mt-1 h-4 w-4 accent-[var(--mid-green,#2f6f64)]"
+            />
+            <span>
+              <span className="block text-sm font-semibold text-dark-primary">
+                Per-product discount
+              </span>
+              <span className="mt-1 block text-xs leading-relaxed text-mid-green">
+                Set {percent || 0}% on every line (editable per product after).
+                Sell subtotal becomes {formatMoney(afterLines)}.
+              </span>
             </span>
-            <span className="mt-1 block text-xs leading-relaxed text-mid-green">
-              Lower every unit price so the subtotal becomes {formatMoney(reducedSubtotal)}{" "}
-              — {percent || 0}% off, with no discount line on the quote.
-            </span>
-          </button>
+          </label>
         </div>
+
+        {canApply && percent > 0 ? (
+          <p className="mt-3 text-xs text-mid-green">
+            After apply: subtotal before tax ≈ {formatMoney(finalSubtotal)}
+            {methods.header && methods.lines ? " (products + whole quote)" : ""}.
+          </p>
+        ) : null}
 
         <div className="mt-6 flex justify-end gap-2">
           <button
@@ -127,12 +164,17 @@ export function QuoteDiscountDialog({
           <button
             type="button"
             onClick={onApply}
-            className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
+            disabled={!canApply}
+            className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-50"
           >
-            {percent > 0 ? "Apply discount" : "Remove discount"}
+            {percent > 0 ? "Apply discount" : "Clear selected"}
           </button>
         </div>
       </div>
     </div>
   );
+}
+
+function roundMoney(n: number) {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }

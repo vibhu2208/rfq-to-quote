@@ -6,11 +6,13 @@ import type {
   FilingResult,
   GspConfig,
   GspProvider,
+  GstinPanHit,
   GstinVerification,
 } from "@/lib/accounting/gsp-types";
 import {
   resolveSandboxBaseUrl,
   sandboxGenerateEInvoice,
+  sandboxSearchByPan,
   sandboxSubmitReturn,
   sandboxVerifyGstin,
 } from "@/lib/accounting/gsp-sandbox";
@@ -22,6 +24,7 @@ export type {
   FilingResult,
   GspConfig,
   GspProvider,
+  GstinPanHit,
   GstinVerification,
 };
 
@@ -115,6 +118,23 @@ function authHeaders(cfg: GspConfig): Record<string, string> {
 }
 
 class CredentialedGspProvider implements GspProvider {
+  async searchByPan(input: { pan: string; stateCode?: string | null }) {
+    const cfg = getGspConfig();
+    if (cfg.provider === "sandbox") {
+      return sandboxSearchByPan(cfg, input);
+    }
+    if (!cfg.enabled || !cfg.hasCredentials) {
+      return {
+        hits: [],
+        message: "Enable GSP credentials (Sandbox) to search GSTIN by PAN",
+      };
+    }
+    return {
+      hits: [],
+      message: "Set GSP_PROVIDER=sandbox to search GSTIN by PAN",
+    };
+  }
+
   async verifyGstin(gstinRaw: string): Promise<GstinVerification> {
     const local = localVerifyGstin(gstinRaw);
     if (!local.valid) return local;

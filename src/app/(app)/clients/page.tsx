@@ -8,6 +8,7 @@ import {
   ClientContactsEditor,
   type ClientContact,
 } from "@/components/client-contacts-editor";
+import { ClientGstLookupDialog } from "@/components/client-gst-lookup-dialog";
 
 type BillingAddress = {
   id?: string;
@@ -88,6 +89,7 @@ export default function ClientsPage() {
   const [message, setMessage] = useState("");
   const [detail, setDetail] = useState<Client | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [gstLookup, setGstLookup] = useState<Client | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,21 +132,9 @@ export default function ClientsPage() {
     }
   }
 
-  async function reverify(client: Client) {
-    if (!client.gstin) return;
-    setMessage("Re-verifying…");
-    const res = await fetch(`/api/parties/${client.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reverifyGstin: true }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      setMessage(data.error || "Re-verify failed");
-      return;
-    }
-    setMessage(`Updated ${data.legalName} from portal`);
-    load();
+  function openGstLookup(client: Client) {
+    setGstLookup(client);
+    setMessage("");
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -339,19 +329,21 @@ export default function ClientsPage() {
                       {contactName ? `${contactName}${extra}` : "—"}
                     </td>
                     <td className="px-2 py-1.5 align-middle text-right">
-                      {c.gstin ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void reverify(c);
-                          }}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-light-green/25"
-                          title="Refresh from GST portal"
-                        >
-                          <RefreshCw className="h-4 w-4" strokeWidth={1.5} />
-                        </button>
-                      ) : null}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openGstLookup(c);
+                        }}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-light-green/25"
+                        title={
+                          c.gstin
+                            ? "Fetch / refresh GST details (confirm before save)"
+                            : "Find GSTIN from PAN / name / address"
+                        }
+                      >
+                        <RefreshCw className="h-4 w-4" strokeWidth={1.5} />
+                      </button>
                     </td>
                   </tr>
                 );
@@ -403,16 +395,14 @@ export default function ClientsPage() {
           data={hasMasterFields(detail.masterData) ? detail.masterData : clientMasterFallback(detail)}
           onClose={() => setDetail(null)}
           actions={
-            detail.gstin ? (
-              <button
-                type="button"
-                onClick={() => reverify(detail)}
-                className="inline-flex items-center gap-1 rounded-lg border border-mid-green/40 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/10"
-              >
-                <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
-                Re-verify GSTIN
-              </button>
-            ) : null
+            <button
+              type="button"
+              onClick={() => openGstLookup(detail)}
+              className="inline-flex items-center gap-1 rounded-lg border border-mid-green/40 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/10"
+            >
+              <RefreshCw className="h-3.5 w-3.5" strokeWidth={1.5} />
+              {detail.gstin ? "GST lookup" : "Find GSTIN"}
+            </button>
           }
         >
           <ClientContactsEditor
@@ -434,6 +424,34 @@ export default function ClientsPage() {
           onSaved={(name) => {
             setModalOpen(false);
             setMessage(`Saved ${name}`);
+            load();
+          }}
+        />
+      ) : null}
+
+      {gstLookup ? (
+        <ClientGstLookupDialog
+          seed={{
+            partyId: gstLookup.id,
+            legalName: gstLookup.legalName,
+            tradeName: gstLookup.tradeName,
+            gstin: gstLookup.gstin,
+            pan: gstLookup.pan,
+            addressLine1: gstLookup.billingAddress?.addressLine1,
+            city: gstLookup.billingAddress?.city,
+            state: gstLookup.billingAddress?.state,
+            stateCode:
+              gstLookup.billingAddress?.stateCode || gstLookup.placeOfSupplyCode,
+            postalCode: gstLookup.billingAddress?.postalCode,
+          }}
+          onClose={() => setGstLookup(null)}
+          onApplied={(name) => {
+            const refreshed = gstLookup;
+            setGstLookup(null);
+            setMessage(`Updated ${name} from GST portal`);
+            if (refreshed && detail?.id === refreshed.id) {
+              void openDetail(refreshed);
+            }
             load();
           }}
         />

@@ -50,7 +50,7 @@ function normalizeContactRows(
   return rows.map((row, index) => ({
     ...row,
     isPrimary: primaryIndex >= 0 ? index === primaryIndex : index === 0,
-    role: row.role || "Department POC",
+    role: row.role || "Category POC",
   }));
 }
 
@@ -62,80 +62,78 @@ export async function mapVendorToCategory(input: VendorMapInput) {
 
   if (!category) throw new Error("Category is required");
 
-  return prisma.$transaction(async (tx) => {
-    let vendorId = input.vendorId?.trim() || "";
+  // Prefetch outside the write txn so pooler latency doesn't burn the timeout.
+  let vendorId = input.vendorId?.trim() || "";
+  if (vendorId) {
+    const existing = await prisma.vendor.findUnique({
+      where: { id: vendorId },
+      select: { id: true },
+    });
+    if (!existing) throw new Error("Vendor not found");
+  }
 
-    if (!vendorId) {
-      const name = String(input.vendor?.name || "").trim();
-      if (!name) throw new Error("Vendor name or vendorId is required");
-      const created = await tx.vendor.create({
-        data: {
-          name,
-          phone: input.vendor?.phone?.trim() || null,
-          email: input.vendor?.email?.trim() || null,
-          whatsappId: input.vendor?.whatsappId?.trim() || null,
-          preferredChannel: input.vendor?.preferredChannel || "EMAIL",
-          active: true,
+  const { vendorCategoryId } = await prisma.$transaction(
+    async (tx) => {
+      if (!vendorId) {
+        const name = String(input.vendor?.name || "").trim();
+        if (!name) throw new Error("Vendor name or vendorId is required");
+        const created = await tx.vendor.create({
+          data: {
+            name,
+            phone: input.vendor?.phone?.trim() || null,
+            email: input.vendor?.email?.trim() || null,
+            whatsappId: input.vendor?.whatsappId?.trim() || null,
+            preferredChannel: input.vendor?.preferredChannel || "EMAIL",
+            active: true,
+          },
+        });
+        vendorId = created.id;
+      }
+
+      const vendorCategory = await tx.vendorCategory.upsert({
+        where: {
+          vendorId_category_subcategory: {
+            vendorId,
+            category,
+            subcategory,
+          },
         },
-      });
-      vendorId = created.id;
-    } else {
-      const existing = await tx.vendor.findUnique({
-        where: { id: vendorId },
-        select: { id: true },
-      });
-      if (!existing) throw new Error("Vendor not found");
-    }
-
-    const vendorCategory = await tx.vendorCategory.upsert({
-      where: {
-        vendorId_category_subcategory: {
+        create: {
           vendorId,
           category,
           subcategory,
+          keywords,
         },
-      },
-      create: {
-        vendorId,
-        category,
-        subcategory,
-        keywords,
-      },
-      update: keywords.length > 0 ? { keywords } : {},
-    });
-
-    let scopedContacts: Array<{
-      id: string;
-      name: string;
-      email: string;
-      phone: string;
-      role: string;
-      isPrimary: boolean;
-    }> = [];
-
-    if (contactRows.length > 0) {
-      await tx.vendorContact.deleteMany({
-        where: { vendorId, vendorCategoryId: vendorCategory.id },
+        // Always persist keywords so callers can clear them with [].
+        update: { keywords },
       });
 
-      const remainingContacts = await tx.vendorContact.count({
-        where: { vendorId },
-      });
-      await tx.vendorContact.createMany({
-        data: contactRows.map((row, index) => ({
-          vendorId,
-          vendorCategoryId: vendorCategory.id,
-          name: row.name,
-          email: row.email,
-          phone: row.phone,
-          role: row.role,
-          isPrimary: remainingContacts === 0 && index === 0,
-        })),
-      });
-    }
+      if (contactRows.length > 0) {
+        await tx.vendorContact.deleteMany({
+          where: { vendorId, vendorCategoryId: vendorCategory.id },
+        });
 
-    scopedContacts = await tx.vendorContact.findMany({
-      where: { vendorId, vendorCategoryId: vendorCategory.id },
+        await tx.vendorContact.createMany({
+          data: contactRows.map((row) => ({
+            vendorId,
+            vendorCategoryId: vendorCategory.id,
+            name: row.name,
+            email: row.email,
+            phone: row.phone,
+            role: row.role,
+            isPrimary: row.isPrimary,
+          })),
+        });
+      }
+
+      return { vendorCategoryId: vendorCategory.id };
+    },
+    { maxWait: 10_000, timeout: 20_000 }
+  );
+
+  const [scopedContacts, vendor] = await Promise.all([
+    prisma.vendorContact.findMany({
+      where: { vendorId, vendorCategoryId },
       orderBy: [{ isPrimary: "desc" }, { name: "asc" }],
       select: {
         id: true,
@@ -145,9 +143,8 @@ export async function mapVendorToCategory(input: VendorMapInput) {
         role: true,
         isPrimary: true,
       },
-    });
-
-    const vendor = await tx.vendor.findUniqueOrThrow({
+    }),
+    prisma.vendor.findUniqueOrThrow({
       where: { id: vendorId },
       include: {
         categories: {
@@ -158,25 +155,25 @@ export async function mapVendorToCategory(input: VendorMapInput) {
           include: { vendorCategory: true },
         },
       },
-    });
+    }),
+  ]);
 
-    return {
-      vendor: serializeVendor(vendor),
-      vendorCategoryId: vendorCategory.id,
-      category,
-      subcategory,
-      contactCount: scopedContacts.length,
-      mapping: {
-        vendorId,
-        vendorName: vendor.name,
-        vendorCategoryId: vendorCategory.id,
-        active: vendor.active,
-        phone: vendor.phone || "",
-        email: vendor.email || "",
-        contacts: scopedContacts,
-      },
-    };
-  });
+  return {
+    vendor: serializeVendor(vendor),
+    vendorCategoryId,
+    category,
+    subcategory,
+    contactCount: scopedContacts.length,
+    mapping: {
+      vendorId,
+      vendorName: vendor.name,
+      vendorCategoryId,
+      active: vendor.active,
+      phone: vendor.phone || "",
+      email: vendor.email || "",
+      contacts: scopedContacts,
+    },
+  };
 }
 
 export async function unlinkVendorFromCategory(input: {
@@ -204,6 +201,13 @@ export async function unlinkVendorFromCategory(input: {
     return { deleted: false, vendorId: input.vendorId, category, subcategory };
   }
 
-  await prisma.vendorCategory.delete({ where: { id: row.id } });
+  await prisma.$transaction(async (tx) => {
+    // Explicit cleanup so scoped POCs never become company-level orphans
+    // even if the DB FK is still ON DELETE SET NULL.
+    await tx.vendorContact.deleteMany({
+      where: { vendorCategoryId: row.id },
+    });
+    await tx.vendorCategory.delete({ where: { id: row.id } });
+  });
   return { deleted: true, vendorId: input.vendorId, category, subcategory };
 }

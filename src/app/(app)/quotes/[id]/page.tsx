@@ -91,6 +91,18 @@ export default async function EditQuotePage({ params }: Props) {
       unitPrice: decimalToNumber(li.unitPrice),
       costPrice: li.costPrice != null ? decimalToNumber(li.costPrice) : null,
       costVendorName: li.costVendorName || "",
+      discountPercent: decimalToNumber(li.discountPercent),
+      warrantyQty: li.warrantyQty ?? 0,
+      warrantyUnit:
+        li.warrantyUnit === "months" || li.warrantyUnit === "days"
+          ? li.warrantyUnit
+          : "years",
+      warrantyService:
+        li.warrantyService === "onsite" ||
+        li.warrantyService === "offsite" ||
+        li.warrantyService === "both"
+          ? li.warrantyService
+          : "",
       catalogLastPrice: li.product?.lastPrice != null ? decimalToNumber(li.product.lastPrice) : null,
       catalogOfferPrice:
         li.product?.offerPrice != null ? decimalToNumber(li.product.offerPrice) : null,

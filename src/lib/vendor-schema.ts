@@ -1,18 +1,9 @@
 import { z } from "zod";
-import { PRODUCT_CATEGORIES, UNCATEGORIZED_CATEGORY } from "@/lib/categories";
-
-const LEGACY_CATEGORY_MAP: Record<string, string> = {
-  "CCTV & Surveillance": "CCTV",
-  "Computers & Laptops": "DESKTOP",
-  "Monitors & Displays": "TFT",
-  "Storage (HDD / SSD)": "HDD",
-  "Memory (RAM)": "RAM",
-  "Networking & Cables": "NETWORKING",
-  "UPS & Power": "UPS",
-  "Installation & Service": "Services",
-  "General / Uncategorized": UNCATEGORIZED_CATEGORY,
-  "Printers & Scanners": "PRINTER",
-};
+import {
+  canonicalizeProductCategory,
+  PRODUCT_CATEGORIES,
+  UNCATEGORIZED_CATEGORY,
+} from "@/lib/categories";
 
 export const E164_PATTERN = /^\+[1-9]\d{7,14}$/;
 
@@ -90,6 +81,16 @@ export function normalizeKeywords(value: unknown): string[] {
 
 export function normalizeVendorCategory(category: string): string {
   const trimmed = category.trim();
+  if (!trimmed) return trimmed;
+  const canonical = canonicalizeProductCategory(trimmed);
+  if (canonical) return canonical;
+  if (
+    trimmed === UNCATEGORIZED_CATEGORY ||
+    trimmed.toLowerCase() === "general / uncategorized" ||
+    trimmed.toLowerCase() === "misc"
+  ) {
+    return UNCATEGORIZED_CATEGORY;
+  }
   const exact = PRODUCT_CATEGORIES.find(
     (candidate) => candidate.toLowerCase() === trimmed.toLowerCase()
   );

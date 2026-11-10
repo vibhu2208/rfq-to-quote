@@ -1,0 +1,222 @@
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { requireSession } from "@/lib/api";
+import { prisma } from "@/lib/prisma";
+import { assignLead } from "@/lib/leads/assignment";
+import { logLeadActivity } from "@/lib/leads/activity";
+import { listLeadActivities } from "@/lib/leads/activity";
+
+type Params = { params: Promise<{ id: string }> };
+
+const patchSchema = z.object({
+  customerName: z.string().optional(),
+  customerCompany: z.string().optional(),
+  customerEmail: z.string().optional(),
+  customerPhone: z.string().optional(),
+  subject: z.string().optional(),
+  rawText: z.string().optional(),
+  category: z.string().optional(),
+  priority: z.enum(["HOT", "HIGH", "MEDIUM", "LOW"]).optional(),
+  stageDetail: z.string().optional(),
+  expectedValue: z.number().nullable().optional(),
+  expectedClosureAt: z.string().nullable().optional(),
+  referralSource: z.string().optional(),
+  assignedToUserId: z.string().nullable().optional(),
+  partyId: z.string().nullable().optional(),
+  organisationId: z.string().nullable().optional(),
+  archived: z.boolean().optional(),
+  note: z.string().optional(),
+});
+
+export async function GET(_req: NextRequest, { params }: Params) {
+  const { error } = await requireSession();
+  if (error) return error;
+  const { id } = await params;
+
+  const lead = await prisma.rfq.findUnique({
+    where: { id },
+    include: {
+      assignedTo: { select: { id: true, name: true, email: true } },
+      party: {
+        include: {
+          addresses: true,
+          contacts: true,
+        },
+      },
+      messages: { orderBy: { createdAt: "asc" } },
+      quotes: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          proformaInvoices: {
+            select: {
+              id: true,
+              number: true,
+              status: true,
+              total: true,
+              createdAt: true,
+            },
+          },
+          messages: {
+            where: { direction: "IN" },
+            orderBy: { createdAt: "desc" },
+            take: 3,
+            select: {
+              id: true,
+              subject: true,
+              body: true,
+              intent: true,
+              analysis: true,
+              createdAt: true,
+              fromEmail: true,
+            },
+          },
+        },
+      },
+      stageHistory: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          actor: { select: { id: true, name: true, email: true } },
+        },
+      },
+      followUps: {
+        orderBy: { dueAt: "asc" },
+        include: {
+          assignedTo: { select: { id: true, name: true, email: true } },
+        },
+      },
+      ownershipHistory: {
+        orderBy: { createdAt: "desc" },
+        include: {
+          fromUser: { select: { id: true, name: true, email: true } },
+          toUser: { select: { id: true, name: true, email: true } },
+          actor: { select: { id: true, name: true, email: true } },
+        },
+      },
+    },
+  });
+
+  if (!lead) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const activities = await listLeadActivities(id, 200);
+
+  // Related invoices via proformas
+  const proformaIds = lead.quotes.flatMap((q) =>
+    q.proformaInvoices.map((p) => p.id)
+  );
+  const invoices = proformaIds.length
+    ? await prisma.invoice.findMany({
+        where: { proformaInvoiceId: { in: proformaIds } },
+        select: {
+          id: true,
+          number: true,
+          status: true,
+          total: true,
+          createdAt: true,
+          proformaInvoiceId: true,
+        },
+      })
+    : [];
+
+  return NextResponse.json({ ...lead, activities, invoices });
+}
+
+export async function PATCH(req: NextRequest, { params }: Params) {
+  const { session, error } = await requireSession();
+  if (error) return error;
+  const { id } = await params;
+
+  const body = await req.json();
+  const parsed = patchSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const existing = await prisma.rfq.findUnique({ where: { id } });
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const d = parsed.data;
+
+  if (d.assignedToUserId !== undefined) {
+    await assignLead({
+      rfqId: id,
+      toUserId: d.assignedToUserId,
+      actorId: session?.user?.id,
+      reason: "Manual assignment",
+    });
+  }
+
+  const updated = await prisma.rfq.update({
+    where: { id },
+    data: {
+      ...(d.customerName !== undefined ? { customerName: d.customerName } : {}),
+      ...(d.customerCompany !== undefined
+        ? { customerCompany: d.customerCompany }
+        : {}),
+      ...(d.customerEmail !== undefined ? { customerEmail: d.customerEmail } : {}),
+      ...(d.customerPhone !== undefined ? { customerPhone: d.customerPhone } : {}),
+      ...(d.subject !== undefined ? { subject: d.subject } : {}),
+      ...(d.rawText !== undefined ? { rawText: d.rawText } : {}),
+      ...(d.category !== undefined ? { category: d.category } : {}),
+      ...(d.priority !== undefined ? { priority: d.priority } : {}),
+      ...(d.stageDetail !== undefined ? { stageDetail: d.stageDetail } : {}),
+      ...(d.expectedValue !== undefined
+        ? { expectedValue: d.expectedValue }
+        : {}),
+      ...(d.expectedClosureAt !== undefined
+        ? {
+            expectedClosureAt: d.expectedClosureAt
+              ? new Date(d.expectedClosureAt)
+              : null,
+          }
+        : {}),
+      ...(d.referralSource !== undefined
+        ? { referralSource: d.referralSource }
+        : {}),
+      ...(d.partyId !== undefined ? { partyId: d.partyId } : {}),
+      ...(d.organisationId !== undefined
+        ? { organisationId: d.organisationId }
+        : {}),
+      ...(d.archived !== undefined
+        ? { archivedAt: d.archived ? new Date() : null }
+        : {}),
+    },
+    include: {
+      assignedTo: { select: { id: true, name: true, email: true } },
+    },
+  });
+
+  if (d.note?.trim()) {
+    await logLeadActivity({
+      rfqId: id,
+      type: "NOTE",
+      title: "Note added",
+      body: d.note.trim(),
+      actorId: session?.user?.id,
+    });
+  }
+
+  return NextResponse.json(updated);
+}
+
+export async function DELETE(_req: NextRequest, { params }: Params) {
+  const { session, error } = await requireSession();
+  if (error) return error;
+  const { id } = await params;
+
+  const existing = await prisma.rfq.findUnique({ where: { id } });
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const updated = await prisma.rfq.update({
+    where: { id },
+    data: { archivedAt: new Date() },
+  });
+
+  await logLeadActivity({
+    rfqId: id,
+    type: "OTHER",
+    title: "Lead archived",
+    actorId: session?.user?.id,
+  });
+
+  return NextResponse.json(updated);
+}

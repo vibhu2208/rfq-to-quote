@@ -358,6 +358,7 @@ export type QuotePdfData = {
     amount: number;
     hsnCode?: string;
     productCode?: string;
+    warrantyLabel?: string;
   }>;
 };
 
@@ -476,6 +477,10 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
             const details = line.aliasName?.trim()
               ? quoteLineDetails(line.aliasName, line.description)
               : "";
+            const warranty = line.warrantyLabel?.trim() || "";
+            const detailBlock = [details, warranty ? `Warranty: ${warranty}` : ""]
+              .filter(Boolean)
+              .join("\n");
             return (
               <View key={i} style={styles.tableRow} wrap={false}>
                 <Text style={[styles.td, styles.colSn, styles.center]}>{i + 1}</Text>
@@ -483,7 +488,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                   <Text style={{ fontFamily: "Helvetica-Bold", fontSize: 8 }}>
                     {displayName || "—"}
                   </Text>
-                  {details ? <Text style={styles.lineDetails}>{details}</Text> : null}
+                  {detailBlock ? <Text style={styles.lineDetails}>{detailBlock}</Text> : null}
                 </View>
                 {showHsn ? (
                   <Text style={[styles.td, styles.colHsn, styles.center]}>
