@@ -1,4 +1,3 @@
-import { format } from "date-fns";
 import type { Quote, QuoteLineItem, Product } from "@prisma/client";
 import { getCompanyConfig } from "@/lib/company";
 import { round2 } from "@/lib/accounting/money";
@@ -6,7 +5,12 @@ import { decimalToNumber } from "@/lib/quotes";
 import { effectiveUnitPrice } from "@/lib/quote-discount";
 import { formatWarrantyLabel } from "@/lib/quote-warranty";
 import { renderQuotePdf } from "@/lib/pdf/quote-document";
-import { defaultQuoteTerms, quoteIntro, QUOTE_CLOSING } from "@/lib/quote-format";
+import {
+  defaultQuoteTerms,
+  formatQuoteInstant,
+  quoteIntro,
+  QUOTE_CLOSING,
+} from "@/lib/quote-format";
 
 type QuoteForPdf = Quote & {
   lineItems: Array<
@@ -26,7 +30,7 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
 
   const buffer = await renderQuotePdf({
     quoteNumber: quote.quoteNumber,
-    createdAt: format(quote.issuedAt ?? quote.createdAt, "dd/MM/yyyy"),
+    createdAt: formatQuoteInstant(quote.issuedAt ?? quote.createdAt, "dd/MM/yyyy"),
     introText: quote.introText?.trim() || quoteIntro(company.name),
     termsText: quote.termsText?.trim() || defaultQuoteTerms(company.paymentTerms),
     closingText: quote.closingText?.trim() || QUOTE_CLOSING,

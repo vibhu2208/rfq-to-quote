@@ -305,7 +305,40 @@ const CATEGORY_TEXT_CUES: Array<{ category: ProductCategory; patterns: RegExp[] 
       /\bjabra\b/i,
     ],
   },
-  { category: "CABLE", patterns: [/^\s*cables?\b/i, /\ball\s+cables?\b/i, /\bhdmi\b/i, /\bcat\s*[56]\b/i] },
+  // IFP before TFT; monitors before CABLE so HDMI/DP ports on a display don't steal the line.
+  {
+    category: "INTERACTIVE PANELS",
+    patterns: [
+      /\bifp(?:d)?\b/i,
+      /interactive(?:\s+\w+){0,3}\s+panels?\b/i,
+      /interactive(?:\s+\w+){0,2}\s+displays?\b/i,
+      /\bfront\s+panels?\b/i,
+      /smart\s*boards?\b/i,
+      /\btouch\s*displays?\b/i,
+    ],
+  },
+  {
+    category: "TFT",
+    patterns: [
+      /\bmonitors?\b/i,
+      /\btft\b/i,
+      /\b(?:fhd|uhd|qhd|ips)\b.*\b(?:monitor|display)\b/i,
+      /\b\d{2}(?:\.\d+)?\s*[- ]?\s*inch(?:es)?\b.*\b(?:monitor|display)\b/i,
+    ],
+  },
+  { category: "LED Display Samsung", patterns: [/\bled\s*displays?\b/i, /\bsamsung\s*led\b/i] },
+  {
+    category: "CABLE",
+    patterns: [
+      /^\s*cables?\b/i,
+      /\ball\s+cables?\b/i,
+      // Port names alone are specs on monitors/APs — require a cable noun.
+      /\bhdmi\s*(?:cables?|cords?|leads?|adapters?)\b/i,
+      /\b(?:display\s*port|dp)\s*(?:cables?|cords?|leads?|adapters?)\b/i,
+      /\bcat\s*[56](?:e|a)?\b/i,
+      /\bpatch\s*cables?\b/i,
+    ],
+  },
   {
     category: "Software",
     patterns: [/^\s*.{0,20}\bsoftware\b/i, /\bcms\s*software\b/i, /\blicen[cs]e\b/i],
@@ -319,17 +352,6 @@ const CATEGORY_TEXT_CUES: Array<{ category: ProductCategory; patterns: RegExp[] 
   },
   { category: "SSD", patterns: [/^\s*ssds?\b/i, /\bnvme\b/i] },
   { category: "HDD", patterns: [/^\s*hdds?\b/i, /\bhard\s*disks?\b/i, /\bhard\s*drives?\b/i] },
-  {
-    category: "INTERACTIVE PANELS",
-    patterns: [
-      /\bifp(?:d)?\b/i,
-      /interactive(?:\s+\w+){0,3}\s+panels?\b/i,
-      /interactive(?:\s+\w+){0,2}\s+displays?\b/i,
-      /\bfront\s+panels?\b/i,
-      /smart\s*boards?\b/i,
-      /\btouch\s*displays?\b/i,
-    ],
-  },
   { category: "LENOVO SERVER", patterns: [/\blenovo\s*servers?\b/i] },
   { category: "LAPTOP", patterns: [/\blaptops?\b/i, /\bnotebooks?\b/i, /\bmacbook\b/i] },
   { category: "DESKTOP", patterns: [/\bdesktops?\b/i, /\bworkstations?\b/i, /\bdesktop\s*pcs?\b/i] },
@@ -354,8 +376,6 @@ const CATEGORY_TEXT_CUES: Array<{ category: ProductCategory; patterns: RegExp[] 
   },
   { category: "PRINTER", patterns: [/\bprinters?\b/i, /\bmfp\b/i, /\blaserjet\b/i] },
   { category: "SCANNER", patterns: [/\bscanners?\b/i] },
-  { category: "TFT", patterns: [/\bmonitors?\b/i, /\btft\b/i] },
-  { category: "LED Display Samsung", patterns: [/\bled\s*displays?\b/i, /\bsamsung\s*led\b/i] },
   { category: "UPS", patterns: [/\bups\b/i, /\binverters?\b/i] },
   { category: "AMARON BATTERIES", patterns: [/\bamaron\b/i] },
   { category: "BATTERY", patterns: [/\bbatter(?:y|ies)\b/i] },

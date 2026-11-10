@@ -12,7 +12,31 @@ import {
 } from "@/lib/leads/filters";
 import { createRfqWithMessage } from "@/lib/rfq";
 
-const leadInclude = {
+/** Slim list projection — table cells only, no parse/marketplace blobs. */
+const leadListSelect = {
+  id: true,
+  leadNumber: true,
+  channel: true,
+  subject: true,
+  rawText: true,
+  customerName: true,
+  customerCompany: true,
+  customerEmail: true,
+  customerPhone: true,
+  category: true,
+  parsedCategory: true,
+  leadStage: true,
+  priority: true,
+  intakeKind: true,
+  junkReason: true,
+  stageDetail: true,
+  expectedValue: true,
+  expectedClosureAt: true,
+  nextFollowUpAt: true,
+  slaDueAt: true,
+  slaBreachedAt: true,
+  createdAt: true,
+  updatedAt: true,
   assignedTo: { select: { id: true, name: true, email: true } },
   quotes: {
     select: {
@@ -25,15 +49,40 @@ const leadInclude = {
       sentAt: true,
     },
     orderBy: { createdAt: "desc" as const },
-    take: 40,
+    take: 5,
   },
   activities: {
-    select: { id: true, type: true, title: true, body: true, createdAt: true },
+    select: {
+      id: true,
+      type: true,
+      title: true,
+      body: true,
+      createdAt: true,
+    },
     orderBy: { createdAt: "desc" as const },
-    take: 20,
+    take: 5,
   },
   _count: { select: { quotes: true, messages: true, followUps: true } },
 };
+
+function truncate(text: string, max: number) {
+  if (!text || text.length <= max) return text || "";
+  return `${text.slice(0, max).trimEnd()}…`;
+}
+
+function slimListItem<T extends {
+  rawText: string;
+  activities: { body: string }[];
+}>(row: T) {
+  return {
+    ...row,
+    rawText: truncate(row.rawText, 160),
+    activities: row.activities.map((a) => ({
+      ...a,
+      body: truncate(a.body || "", 160),
+    })),
+  };
+}
 
 export async function GET(req: NextRequest) {
   const { session, error } = await requireSession();
@@ -68,7 +117,7 @@ export async function GET(req: NextRequest) {
       orderBy: { createdAt: "desc" },
       take,
       skip,
-      include: leadInclude,
+      select: leadListSelect,
     }),
     prisma.rfq.count({ where }),
     prisma.rfq.groupBy({
@@ -106,7 +155,7 @@ export async function GET(req: NextRequest) {
   }
 
   return NextResponse.json({
-    items,
+    items: items.map(slimListItem),
     total,
     stageCounts,
     intakeKindCounts,
@@ -193,7 +242,7 @@ export async function POST(req: NextRequest) {
         : null,
       assignedToUserId: d.assignedToUserId || null,
     },
-    include: leadInclude,
+    select: leadListSelect,
   });
 
   if (!d.assignedToUserId) {
@@ -204,5 +253,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json(updated, { status: 201 });
+  return NextResponse.json(slimListItem(updated), { status: 201 });
 }

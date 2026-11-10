@@ -11,9 +11,12 @@ import {
 type Props = {
   value: number;
   onCommit: (value: number) => void;
+  /** Called when the typed value exceeds `max` (after clamping). */
+  onRangeError?: (message: string) => void;
   className?: string;
   title?: string;
   min?: number;
+  max?: number;
   "aria-label"?: string;
 };
 
@@ -25,9 +28,11 @@ function displayValue(value: number): string {
 export function CalcMoneyInput({
   value,
   onCommit,
+  onRangeError,
   className,
   title,
   min = 0,
+  max,
   "aria-label": ariaLabel,
 }: Props) {
   const [focused, setFocused] = useState(false);
@@ -38,7 +43,16 @@ export function CalcMoneyInput({
   }, [value, focused]);
 
   function commitNumber(next: number) {
-    const clamped = round2(Math.max(min, next));
+    let clamped = round2(Math.max(min, next));
+    if (typeof max === "number" && Number.isFinite(max) && clamped > max) {
+      clamped = round2(max);
+      onRangeError?.(
+        `Max value is ${max.toLocaleString("en-IN", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`
+      );
+    }
     onCommit(clamped);
     setText(displayValue(clamped));
   }

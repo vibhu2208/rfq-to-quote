@@ -1,5 +1,21 @@
+/** QuoteLineItem.unitPrice / costPrice column: Decimal(12, 2). */
+export const MAX_QUOTE_UNIT_PRICE = 9_999_999_999.99;
+
+/** Quote header money columns (subtotal, tax, grand total): Decimal(14, 2). */
+export const MAX_QUOTE_MONEY = 9_999_999_999_999.99;
+
 export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/** Clamp a non-negative money amount into the quote unit-price column range. */
+export function clampQuoteUnitPrice(n: number, fallback = 0): number {
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return round2(Math.min(MAX_QUOTE_UNIT_PRICE, n));
+}
+
+export function isQuoteUnitPriceInRange(n: number): boolean {
+  return Number.isFinite(n) && n >= 0 && n <= MAX_QUOTE_UNIT_PRICE;
 }
 
 export function round4(n: number): number {

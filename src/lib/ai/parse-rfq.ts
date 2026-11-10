@@ -89,8 +89,12 @@ Rules:
 - "items" length must equal the number of distinct products requested.
 - If only one product is requested, "items" should still have exactly one entry.
 - "specs" should mirror the first/primary item for backward compatibility.
-- Category values MUST be copied EXACTLY from the allowed list (case-sensitive). Examples: CCTV, DESKTOP, LAPTOP, PRINTER, TFT, NETWORKING, UPS, RAM, HDD, SSD, SERVER, Services, Misc.
-- Pick the single best category per item from product type (laptop→LAPTOP, desktop/PC→DESKTOP, camera/CCTV→CCTV, printer→PRINTER, monitor→TFT, etc.).
+- Category values MUST be copied EXACTLY from the allowed list (case-sensitive). Examples: CCTV, DESKTOP, LAPTOP, PRINTER, TFT, NETWORKING, UPS, RAM, HDD, SSD, SERVER, CABLE, Services, Misc.
+- Pick the single best category per item from product type (laptop→LAPTOP, desktop/PC→DESKTOP, camera/CCTV→CCTV, printer→PRINTER, monitor/display→TFT, Cat6/patch/HDMI cable→CABLE, etc.).
+- Port names on a monitor (HDMI, DisplayPort) do NOT make it CABLE — use TFT.
+- "unit" is how the quantity is counted (usually "pcs"), NEVER the product's length/size. Put length/size in "specs" (e.g. specs.length = "2 m", specs.size = "24-inch").
+- Patterns like "Cat6 patch cable 2 m x40" mean quantity=40, unit="pcs", specs.length="2 m" — not 40 meters.
+- Only use unit "meters"/"m" when the buyer is buying continuous length (e.g. "50 meters of Cat6 cable").
 - Use "Misc" only if nothing in the list fits. Never invent labels like "CCTV & Surveillance" or "Computers & Laptops".
 - productCategory must be the dominant item category (most common / primary line).
 - Do not invent prices or product codes.
@@ -103,13 +107,17 @@ Example input:
 "quotation for the following products:
 • CCTV / IP Cameras – 10 Units
 • Desktop PCs – 20 Units
-• Business Laptops – 10 Units"
+• Business Laptops – 10 Units
+• Cat6 patch cable 2 m x40
+• 24-inch FHD IPS monitor HDMI+DisplayPort x15"
 
-Example output items (3 entries, NOT one combined line):
+Example output items (5 entries, NOT one combined line):
 [
   {"description":"CCTV / IP Cameras","quantity":10,"unit":"pcs","brand":null,"category":"CCTV","specs":{}},
   {"description":"Desktop PCs","quantity":20,"unit":"pcs","brand":null,"category":"DESKTOP","specs":{}},
-  {"description":"Business Laptops","quantity":10,"unit":"pcs","brand":null,"category":"LAPTOP","specs":{}}
+  {"description":"Business Laptops","quantity":10,"unit":"pcs","brand":null,"category":"LAPTOP","specs":{}},
+  {"description":"Cat6 patch cable 2 m","quantity":40,"unit":"pcs","brand":null,"category":"CABLE","specs":{"length":"2 m"}},
+  {"description":"24-inch FHD IPS monitor HDMI+DisplayPort","quantity":15,"unit":"pcs","brand":null,"category":"TFT","specs":{"size":"24-inch"}}
 ]
 For that example, productCategory should be "DESKTOP" (largest qty) or "CCTV"/"LAPTOP" if equally primary — never a made-up label.`;
 

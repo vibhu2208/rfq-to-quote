@@ -28,11 +28,86 @@ const patchSchema = z.object({
   note: z.string().optional(),
 });
 
-export async function GET(_req: NextRequest, { params }: Params) {
-  const { error } = await requireSession();
-  if (error) return error;
-  const { id } = await params;
+/** Drawer-only payload: skips party nests, ownership, invoices, unbounded messages. */
+async function getDrawerLead(id: string) {
+  const lead = await prisma.rfq.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      leadNumber: true,
+      channel: true,
+      subject: true,
+      rawText: true,
+      customerName: true,
+      customerCompany: true,
+      customerEmail: true,
+      customerPhone: true,
+      category: true,
+      parsedCategory: true,
+      parsedSpecs: true,
+      parseConfidence: true,
+      parseError: true,
+      leadStage: true,
+      priority: true,
+      intakeKind: true,
+      junkReason: true,
+      expectedValue: true,
+      expectedClosureAt: true,
+      nextFollowUpAt: true,
+      disqualifyReason: true,
+      createdAt: true,
+      assignedTo: { select: { id: true, name: true, email: true } },
+      quotes: {
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: {
+          id: true,
+          quoteNumber: true,
+          status: true,
+          grandTotal: true,
+          version: true,
+          needsAssistance: true,
+          assistanceReason: true,
+          lastBuyerReplyAt: true,
+          lastReplyIntent: true,
+          lastAnalysisSummary: true,
+          messages: {
+            where: { direction: "IN" },
+            orderBy: { createdAt: "desc" },
+            take: 2,
+            select: {
+              id: true,
+              subject: true,
+              body: true,
+              intent: true,
+              analysis: true,
+              createdAt: true,
+              fromEmail: true,
+            },
+          },
+        },
+      },
+      followUps: {
+        where: { status: "PENDING" },
+        orderBy: { dueAt: "asc" },
+        take: 8,
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          dueAt: true,
+          title: true,
+          notes: true,
+        },
+      },
+    },
+  });
+  if (!lead) return null;
+  const activities = await listLeadActivities(id, 40);
+  return { ...lead, activities, invoices: [] as unknown[] };
+}
 
+async function getFullLead(id: string) {
   const lead = await prisma.rfq.findUnique({
     where: { id },
     include: {
@@ -95,11 +170,10 @@ export async function GET(_req: NextRequest, { params }: Params) {
     },
   });
 
-  if (!lead) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!lead) return null;
 
   const activities = await listLeadActivities(id, 200);
 
-  // Related invoices via proformas
   const proformaIds = lead.quotes.flatMap((q) =>
     q.proformaInvoices.map((p) => p.id)
   );
@@ -117,7 +191,20 @@ export async function GET(_req: NextRequest, { params }: Params) {
       })
     : [];
 
-  return NextResponse.json({ ...lead, activities, invoices });
+  return { ...lead, activities, invoices };
+}
+
+export async function GET(req: NextRequest, { params }: Params) {
+  const { error } = await requireSession();
+  if (error) return error;
+  const { id } = await params;
+  const view = req.nextUrl.searchParams.get("view");
+
+  const payload =
+    view === "drawer" ? await getDrawerLead(id) : await getFullLead(id);
+
+  if (!payload) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(payload);
 }
 
 export async function PATCH(req: NextRequest, { params }: Params) {

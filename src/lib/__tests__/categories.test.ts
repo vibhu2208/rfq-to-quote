@@ -59,6 +59,24 @@ describe("inferProductCategoryFromText", () => {
     ).toBe("Services");
   });
 
+  it("keeps monitors as TFT even when HDMI/DisplayPort ports are listed", () => {
+    expect(
+      inferProductCategoryFromText(
+        "24-inch FHD IPS monitor HDMI+DisplayPort x15"
+      )
+    ).toBe("TFT");
+    expect(
+      resolveProductCategory(
+        "TFT",
+        "24-inch FHD IPS monitor HDMI+DisplayPort x15"
+      )
+    ).toBe("TFT");
+    expect(inferProductCategoryFromText("HDMI cable 2m")).toBe("CABLE");
+    expect(
+      inferProductCategoryFromText("Cat6 patch cable 2 m x40")
+    ).toBe("CABLE");
+  });
+
   it("prefers specific categories over broad parents", () => {
     expect(inferProductCategoryFromText("HP toner for LaserJet printer")).toBe(
       "TONER"

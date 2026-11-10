@@ -78,6 +78,57 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+/**
+ * Read labeled signature / footer identity from an inbound email body.
+ * Prefer explicit `Contact:` / `Company:` lines over the From display name
+ * (mailbox names are often the company trade name, not the person).
+ */
+export function extractCustomerIdentityFromEmail(
+  body: string,
+  fromName = "",
+  fromEmail = ""
+): { customerName: string; customerCompany: string } {
+  const text = String(body || "");
+
+  const labeledValue = (labels: string[]): string => {
+    const pattern = new RegExp(
+      `(?:^|[\\n\\r]|\\s)(?:${labels.join("|")})\\s*[:=]\\s*([^\\n\\r]+)`,
+      "i"
+    );
+    const match = text.match(pattern);
+    if (!match?.[1]) return "";
+    return match[1]
+      .trim()
+      // Stop before a following labeled field jammed on the same line
+      .replace(
+        /\s+(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name))?|Email|E-?mail|Phone|Mobile|Tel|Website|Web)\s*[:=].*$/i,
+        ""
+      )
+      .replace(/[|,;]+$/g, "")
+      .trim();
+  };
+
+  const company = labeledValue([
+    "Company\\s*Name",
+    "Company",
+    "Organisation",
+    "Organization",
+    "Org",
+  ]);
+
+  // Prefer Contact* labels; bare "Name:" is too ambiguous in RFQ bodies.
+  const contact = labeledValue([
+    "Contact\\s*Person",
+    "Contact\\s*Name",
+    "Contact",
+  ]);
+
+  return {
+    customerName: contact || fromName.trim() || fromEmail.trim(),
+    customerCompany: company,
+  };
+}
+
 /** Prefer plain text; fall back to structured HTML→text (keeps line breaks). */
 export function emailBodyFromParts(
   text?: string | false | null,
@@ -116,6 +167,12 @@ export function structureEmailBodyForDisplay(value: string): string {
   // Quote-table leftovers jammed on one line: Qty : 1 Rate : 0.00
   text = text.replace(/\s*Qty\s*:\s*/gi, "\n  Qty: ");
   text = text.replace(/\s*Rate\s*:\s*/gi, "  Rate: ");
+
+  // Signature identity labels often arrive flattened in HTML→text
+  text = text.replace(
+    /\s+(?=(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name)?))\s*[:=])/gi,
+    "\n"
+  );
 
   if (!hadNewlines) {
     text = text.replace(

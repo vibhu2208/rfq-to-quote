@@ -7,16 +7,28 @@ import { getCompanyConfig } from "@/lib/company";
 import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { parseQuoteDate } from "@/lib/quote-format";
 import { decimalToNumber } from "@/lib/quotes";
+import {
+  MAX_QUOTE_MONEY,
+  MAX_QUOTE_UNIT_PRICE,
+} from "@/lib/accounting/money";
+
+const moneyAmount = z.coerce.number().nonnegative().max(MAX_QUOTE_MONEY);
+const unitPriceAmount = z.coerce
+  .number()
+  .nonnegative()
+  .max(MAX_QUOTE_UNIT_PRICE, {
+    message: `Sell/cost price must be at most ${MAX_QUOTE_UNIT_PRICE}`,
+  });
 
 const lineSchema = z.object({
   id: z.string().optional(),
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
   aliasName: z.string().optional().default(""),
-  qty: z.coerce.number().nonnegative(),
+  qty: z.coerce.number().nonnegative().max(1_000_000_000),
   unit: z.string().default("nos"),
-  unitPrice: z.coerce.number().nonnegative(),
-  costPrice: z.coerce.number().nonnegative().nullable().optional(),
+  unitPrice: unitPriceAmount,
+  costPrice: unitPriceAmount.nullable().optional(),
   costVendorName: z.string().optional().default(""),
   discountPercent: z.coerce.number().nonnegative().optional().default(0),
   warrantyQty: z.coerce.number().int().nonnegative().optional().default(0),
@@ -38,10 +50,10 @@ const quoteSchema = z.object({
   showHsn: z.boolean().optional(),
   showUnit: z.boolean().optional(),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional(),
-  deliveryCharge: z.coerce.number().nonnegative().optional(),
+  deliveryCharge: moneyAmount.optional(),
   discountPercent: z.coerce.number().nonnegative().optional(),
-  discountAmount: z.coerce.number().nonnegative().optional(),
-  otherTaxAmount: z.coerce.number().nonnegative().optional(),
+  discountAmount: moneyAmount.optional(),
+  otherTaxAmount: moneyAmount.optional(),
   otherTaxLabel: z.string().optional(),
   notes: z.string().optional(),
   quoteNumber: z.string().optional(),
@@ -52,9 +64,9 @@ const quoteSchema = z.object({
   quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED"]).optional(),
   manualOverrides: z.record(z.string(), z.boolean()).optional(),
-  subtotal: z.coerce.number().optional(),
-  gstAmount: z.coerce.number().optional(),
-  grandTotal: z.coerce.number().optional(),
+  subtotal: moneyAmount.optional(),
+  gstAmount: moneyAmount.optional(),
+  grandTotal: moneyAmount.optional(),
   lineItems: z.array(lineSchema).optional(),
 });
 
@@ -339,6 +351,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
     if (message.includes("Quote_quoteNumber_key") || message.includes("quoteNumber")) {
       return NextResponse.json(
         { error: "That ref no is already used by another quote" },
+        { status: 400 }
+      );
+    }
+    if (
+      /numeric|decimal|overflow|out of range|value too long/i.test(message)
+    ) {
+      return NextResponse.json(
+        { error: "One or more amounts are too large to save" },
         { status: 400 }
       );
     }

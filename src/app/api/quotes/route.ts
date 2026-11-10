@@ -7,16 +7,28 @@ import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
 import { decimalToNumber, nextQuoteNumber } from "@/lib/quotes";
 import { parseQuoteDate } from "@/lib/quote-format";
 import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
+import {
+  MAX_QUOTE_MONEY,
+  MAX_QUOTE_UNIT_PRICE,
+} from "@/lib/accounting/money";
+
+const moneyAmount = z.coerce.number().nonnegative().max(MAX_QUOTE_MONEY);
+const unitPriceAmount = z.coerce
+  .number()
+  .nonnegative()
+  .max(MAX_QUOTE_UNIT_PRICE, {
+    message: `Sell/cost price must be at most ${MAX_QUOTE_UNIT_PRICE}`,
+  });
 
 const lineSchema = z.object({
   id: z.string().optional(),
   productId: z.string().nullable().optional(),
   description: z.string().default(""),
   aliasName: z.string().optional().default(""),
-  qty: z.coerce.number().nonnegative(),
+  qty: z.coerce.number().nonnegative().max(1_000_000_000),
   unit: z.string().default("nos"),
-  unitPrice: z.coerce.number().nonnegative(),
-  costPrice: z.coerce.number().nonnegative().nullable().optional(),
+  unitPrice: unitPriceAmount,
+  costPrice: unitPriceAmount.nullable().optional(),
   costVendorName: z.string().optional().default(""),
   discountPercent: z.coerce.number().nonnegative().optional().default(0),
   warrantyQty: z.coerce.number().int().nonnegative().optional().default(0),
@@ -38,10 +50,10 @@ const quoteSchema = z.object({
   showHsn: z.boolean().optional().default(true),
   showUnit: z.boolean().optional().default(true),
   gstMode: z.enum(["AUTO", "CGST_SGST", "IGST"]).optional().default("AUTO"),
-  deliveryCharge: z.coerce.number().nonnegative().optional().default(0),
+  deliveryCharge: moneyAmount.optional().default(0),
   discountPercent: z.coerce.number().nonnegative().optional().default(0),
-  discountAmount: z.coerce.number().nonnegative().optional().default(0),
-  otherTaxAmount: z.coerce.number().nonnegative().optional().default(0),
+  discountAmount: moneyAmount.optional().default(0),
+  otherTaxAmount: moneyAmount.optional().default(0),
   otherTaxLabel: z.string().optional().default(""),
   notes: z.string().optional().default(""),
   introText: z.string().optional().default(""),
@@ -52,9 +64,9 @@ const quoteSchema = z.object({
   status: z.enum(["DRAFT", "SENT"]).optional().default("DRAFT"),
   manualOverrides: z.record(z.string(), z.boolean()).optional().default({}),
   // Manual total overrides (when flagged)
-  subtotal: z.coerce.number().optional(),
-  gstAmount: z.coerce.number().optional(),
-  grandTotal: z.coerce.number().optional(),
+  subtotal: moneyAmount.optional(),
+  gstAmount: moneyAmount.optional(),
+  grandTotal: moneyAmount.optional(),
   lineItems: z.array(lineSchema).default([]),
 });
 

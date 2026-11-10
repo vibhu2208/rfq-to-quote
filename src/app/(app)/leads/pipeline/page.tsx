@@ -151,6 +151,10 @@ export default function PipelinePage() {
       : "";
     if (needsReason && !reason.trim()) return;
 
+    const prevStage = rows.find((r) => r.id === id)?.leadStage;
+    setRows((prev) =>
+      prev.map((r) => (r.id === id ? { ...r, leadStage: toStage } : r))
+    );
     setBusy(true);
     try {
       const res = await fetch(`/api/leads/${id}/stage`, {
@@ -161,9 +165,15 @@ export default function PipelinePage() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         window.alert(data.error || "Stage update failed");
+        if (prevStage) {
+          setRows((prev) =>
+            prev.map((r) =>
+              r.id === id ? { ...r, leadStage: prevStage } : r
+            )
+          );
+        }
         return;
       }
-      await load();
     } finally {
       setBusy(false);
       setDraggingId(null);

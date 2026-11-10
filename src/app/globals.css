@@ -67,3 +67,16 @@ button {
 .login-fade-up-delay {
   animation-delay: 0.12s;
 }
+
+@keyframes nav-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.nav-progress-bar {
+  animation: nav-progress 1.05s ease-in-out infinite;
+}

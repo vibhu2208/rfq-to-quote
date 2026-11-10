@@ -25,6 +25,7 @@ export type RerankLineInput = {
     name: string;
     brand: string;
     category: string;
+    description?: string;
   }>;
 };
 
@@ -53,6 +54,7 @@ export async function rerankCatalogMatches(
       name: c.name,
       brand: c.brand,
       cat: c.category,
+      desc: (c.description || "").slice(0, 160),
     })),
   }));
 
@@ -60,6 +62,7 @@ export async function rerankCatalogMatches(
 Return ONLY JSON: {"results":[{"line":1,"ids":["catalog-id",...]}]}
 Rules:
 - Pick the product the buyer is BUYING, not listed features/accessories (e.g. mic, ops, wifi, ssd inside an IFP spec).
+- Required interfaces/ports in the RFQ (HDMI, DisplayPort/DP, VGA, USB-C) must appear in the candidate name/description. Do not substitute VGA for DisplayPort/DP.
 - Use only ids from that line's cands.
 - Best matches first, max ${CATALOG_SUGGESTION_LIMIT} ids per line.
 - If nothing fits, ids: [].`;
@@ -136,6 +139,7 @@ export function buildRerankPayload(itemMatches: RequirementMatch[]): RerankLineI
         name: m.product.name,
         brand: m.product.brand || "",
         category: m.product.category || "",
+        description: m.product.description || "",
       })),
     };
   });

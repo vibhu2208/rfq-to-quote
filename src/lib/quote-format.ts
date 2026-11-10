@@ -69,12 +69,51 @@ export function quoteSignatoryName(signatory?: string): string {
   return name;
 }
 
-export function todayQuoteDateIso(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+/** Business calendar for quotations (India Standard Time). */
+export const QUOTE_TIME_ZONE = "Asia/Kolkata";
+
+type QuoteDatePattern = "yyyy-MM-dd" | "dd/MM/yyyy" | "dd MMM yyyy";
+
+/**
+ * Format a timestamp in IST so Preview/PDF/list dates don't shift on UTC servers.
+ * Example: 2026-11-10T22:05:00Z (3:35 AM IST on 11 Nov) → 11/11/2026.
+ */
+export function formatQuoteInstant(
+  date: Date | string | number | null | undefined,
+  pattern: QuoteDatePattern = "dd/MM/yyyy",
+  timeZone = QUOTE_TIME_ZONE
+): string {
+  if (date == null || date === "") return "";
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    year: "numeric",
+    month: pattern === "dd MMM yyyy" ? "short" : "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value || "";
+
+  const y = get("year");
+  const m = get("month");
+  const day = get("day");
+  if (!y || !m || !day) return "";
+
+  if (pattern === "yyyy-MM-dd") {
+    return `${y}-${m}-${day.padStart(2, "0")}`;
+  }
+  if (pattern === "dd MMM yyyy") {
+    return `${day} ${m} ${y}`;
+  }
+  return `${day}/${m}/${y}`;
+}
+
+/** Today's quotation calendar date in IST as yyyy-MM-dd. */
+export function todayQuoteDateIso(now: Date = new Date()): string {
+  return formatQuoteInstant(now, "yyyy-MM-dd");
 }
 
 /** Display quotation date as dd/MM/yyyy from a yyyy-MM-dd value. */
@@ -85,10 +124,14 @@ export function formatQuoteDateDisplay(iso?: string | null): string {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Persist a calendar quote date as noon IST (06:30 UTC).
+ * Avoids host-local `T12:00:00` parsing that flips the day on UTC servers.
+ */
 export function parseQuoteDate(iso?: string | null): Date | null {
   const datePart = iso?.trim().slice(0, 10);
   if (!datePart || !/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return null;
-  const d = new Date(`${datePart}T12:00:00`);
+  const d = new Date(`${datePart}T12:00:00+05:30`);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 

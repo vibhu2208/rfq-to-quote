@@ -44,6 +44,9 @@ export type QuotePreviewCompany = {
   bankIfsc?: string;
   bankAccount?: string;
   bankAccountType?: string;
+  /** GST location of supplier — used by Auto IGST/CGST. */
+  sellerState?: string;
+  sellerStateCode?: string;
 };
 
 export type QuotePreviewLine = {

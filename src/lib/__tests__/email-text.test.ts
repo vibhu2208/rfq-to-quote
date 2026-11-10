@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   emailBodyFromParts,
+  extractCustomerIdentityFromEmail,
   htmlToPlainText,
   normalizeOutboundEmailText,
   plainTextToEmailHtml,
@@ -58,6 +59,52 @@ describe("emailBodyFromParts", () => {
     expect(emailBodyFromParts("", "<p>Hello</p><p>World</p>")).toMatch(
       /Hello\n+World/
     );
+  });
+});
+
+describe("extractCustomerIdentityFromEmail", () => {
+  it("prefers signature Contact/Company over From mailbox display name", () => {
+    const body = `
+Hi team,
+
+Please quote for network switches, Wi-Fi access points and 24 monitors for our new office.
+
+Thanks,
+Company: Chote Bade Cafe
+Contact: Vaibhav Singh
+`;
+    expect(
+      extractCustomerIdentityFromEmail(body, "Chotebade cafe", "buyer@example.com")
+    ).toEqual({
+      customerName: "Vaibhav Singh",
+      customerCompany: "Chote Bade Cafe",
+    });
+  });
+
+  it("falls back to From name when signature has no Contact", () => {
+    expect(
+      extractCustomerIdentityFromEmail(
+        "Please quote 10 laptops.\nCompany: Acme Pvt Ltd",
+        "Priya Sharma",
+        "priya@acme.test"
+      )
+    ).toEqual({
+      customerName: "Priya Sharma",
+      customerCompany: "Acme Pvt Ltd",
+    });
+  });
+
+  it("handles Contact/Company jammed on one line", () => {
+    expect(
+      extractCustomerIdentityFromEmail(
+        "Regards Company: Chote Bade Cafe Contact: Vaibhav Singh",
+        "Chotebade cafe",
+        "buyer@example.com"
+      )
+    ).toEqual({
+      customerName: "Vaibhav Singh",
+      customerCompany: "Chote Bade Cafe",
+    });
   });
 });
 

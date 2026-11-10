@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { extractCustomerIdentityFromEmail } from "@/lib/email-text";
 import { createRfqWithMessage, resolveEmailChannel } from "@/lib/rfq";
 
 /**
@@ -108,13 +109,19 @@ export async function POST(req: NextRequest) {
     }
 
     const channel = resolveEmailChannel(email.fromEmail);
+    const { customerName, customerCompany } = extractCustomerIdentityFromEmail(
+      email.text,
+      email.fromName,
+      email.fromEmail
+    );
     const rfq = await createRfqWithMessage({
       channel,
       sourceRef: email.messageId,
       subject: email.subject,
       rawText: email.text.trim(),
       rawAttachments: email.attachments,
-      customerName: email.fromName,
+      customerName,
+      customerCompany,
       customerEmail: email.fromEmail,
     });
 

@@ -1,8 +1,36 @@
-import { getStateCode, getStateName } from "@/lib/accounting/states";
+import {
+  GST_STATE_CODES,
+  getStateCode,
+  getStateName,
+} from "@/lib/accounting/states";
 import { DEFAULT_QUOTE_SERVICES, DEFAULT_QUOTE_TAGLINE } from "@/lib/quote-format";
 
+function sellerStateCodeFromGstin(gstin: string): string | null {
+  const raw = gstin.trim().toUpperCase();
+  if (raw.length < 2) return null;
+  const code = raw.slice(0, 2);
+  return GST_STATE_CODES[code] ? code : null;
+}
+
+function sellerStateCodeFromAddress(address: string): string | null {
+  const hay = address.toLowerCase();
+  if (!hay.trim()) return null;
+  // Longer names first so "Himachal Pradesh" wins over "Pradesh" fragments.
+  const names = Object.values(GST_STATE_CODES).sort((a, b) => b.length - a.length);
+  for (const name of names) {
+    if (hay.includes(name.toLowerCase())) {
+      return getStateCode(name);
+    }
+  }
+  return null;
+}
+
 export function getCompanyConfig() {
-  const sellerState = process.env.SELLER_STATE || "Maharashtra";
+  const sellerStateCode = getSellerStateCode();
+  const sellerState =
+    getStateName(sellerStateCode) ||
+    process.env.SELLER_STATE?.trim() ||
+    "Maharashtra";
 
   return {
     name: process.env.COMPANY_NAME || "Your Company",
@@ -22,14 +50,26 @@ export function getCompanyConfig() {
     bankAccount: process.env.COMPANY_BANK_ACCOUNT || "",
     bankAccountType: process.env.COMPANY_BANK_ACCOUNT_TYPE || "",
     sellerState,
-    sellerStateCode: getSellerStateCode(),
+    sellerStateCode,
   };
 }
 
-/** Resolve seller GST state code from env (DB context can be wired in later). */
+/**
+ * Resolve seller GST state code for Auto IGST/CGST.
+ * Prefer COMPANY_GSTIN (location of supplier), then SELLER_STATE, then address.
+ * Never let a missing SELLER_STATE default to Maharashtra when GSTIN says otherwise.
+ */
 export function getSellerStateCode(): string {
-  const fromEnv = getStateCode(process.env.SELLER_STATE || "Maharashtra");
-  return fromEnv ?? "27";
+  const fromGstin = sellerStateCodeFromGstin(process.env.COMPANY_GSTIN || "");
+  if (fromGstin) return fromGstin;
+
+  const fromEnv = getStateCode((process.env.SELLER_STATE || "").trim());
+  if (fromEnv) return fromEnv;
+
+  const fromAddress = sellerStateCodeFromAddress(process.env.COMPANY_ADDRESS || "");
+  if (fromAddress) return fromAddress;
+
+  return "27";
 }
 
 /** Optional async enrichment from DEFAULT org context — keeps env fallback. */

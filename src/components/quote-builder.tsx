@@ -30,6 +30,11 @@ import {
   formatMoney,
   type ManualOverrides,
 } from "@/lib/tax";
+import {
+  clampQuoteUnitPrice,
+  isQuoteUnitPriceInRange,
+  MAX_QUOTE_UNIT_PRICE,
+} from "@/lib/accounting/money";
 import { INDIAN_STATES } from "@/lib/states";
 import {
   resolveQuoteSendDefaults,
@@ -367,6 +372,25 @@ function finiteAmount(n: number, fallback = 0) {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+function quoteMoneyErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object") {
+    const flat = error as {
+      formErrors?: string[];
+      fieldErrors?: Record<string, string[] | undefined>;
+    };
+    const fieldHit = Object.values(flat.fieldErrors || {})
+      .flat()
+      .find((msg) => typeof msg === "string" && msg.trim());
+    if (fieldHit) return fieldHit;
+    const formHit = (flat.formErrors || []).find(
+      (msg) => typeof msg === "string" && msg.trim()
+    );
+    if (formHit) return formHit;
+  }
+  return "Save failed";
+}
+
 function quoteSavePayload(
   form: QuoteFormState,
   calc: ReturnType<typeof calculateQuoteTotals>,
@@ -407,8 +431,11 @@ function quoteSavePayload(
       aliasName: l.aliasName,
       qty: finiteAmount(l.qty),
       unit: normalizeQuoteUnit(l.unit),
-      unitPrice: finiteAmount(l.unitPrice),
-      costPrice: l.costPrice != null && l.costPrice > 0 ? l.costPrice : null,
+      unitPrice: clampQuoteUnitPrice(finiteAmount(l.unitPrice)),
+      costPrice:
+        l.costPrice != null && l.costPrice > 0
+          ? clampQuoteUnitPrice(l.costPrice)
+          : null,
       costVendorName: l.costVendorName || "",
       discountPercent: clampDiscountPercent(l.discountPercent ?? 0),
       warrantyQty: clampWarrantyQty(l.warrantyQty ?? 0),
@@ -965,9 +992,27 @@ export function QuoteBuilder({
       try {
         for (;;) {
           const snapshot = formRef.current;
+          const oversized = snapshot.lineItems.find(
+            (line) =>
+              !isQuoteUnitPriceInRange(line.unitPrice) ||
+              (line.costPrice != null &&
+                line.costPrice > 0 &&
+                !isQuoteUnitPriceInRange(line.costPrice))
+          );
+          if (oversized) {
+            setMsg(
+              `Sell/cost price too large (max ${MAX_QUOTE_UNIT_PRICE.toLocaleString("en-IN", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })})`
+            );
+            return false;
+          }
+
           const payload = quoteSavePayload(snapshot, calcRef.current, status);
           const json = JSON.stringify(payload);
           if (snapshot.id && json === lastSavedJsonRef.current && !status) {
+            setMsg("");
             return true;
           }
 
@@ -980,12 +1025,13 @@ export function QuoteBuilder({
 
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            setMsg(typeof err.error === "string" ? err.error : "Save failed");
+            setMsg(quoteMoneyErrorMessage(err.error));
             return false;
           }
 
           const saved = await res.json();
           lastSavedJsonRef.current = json;
+          setMsg("");
           const nextStatus: QuoteFormState["status"] =
             saved.status === "SENT" ? "SENT" : snapshot.status;
           const next: QuoteFormState = {
@@ -1067,7 +1113,11 @@ export function QuoteBuilder({
         if (i !== idx) return l;
         const next = { ...l, ...patch };
         if (patch.unitPrice != null) {
+          next.unitPrice = clampQuoteUnitPrice(patch.unitPrice);
           linePriceBasisRef.current[next.key] = next.unitPrice;
+        }
+        if (patch.costPrice != null && patch.costPrice > 0) {
+          next.costPrice = clampQuoteUnitPrice(patch.costPrice);
         }
         return next;
       });
@@ -1711,7 +1761,7 @@ export function QuoteBuilder({
 
   const saveLabel = saving
     ? "Saving…"
-    : msg === "Save failed" || msg.startsWith("Could not save")
+    : msg
       ? "Save failed"
       : form.id
         ? "Saved"
@@ -2623,7 +2673,9 @@ export function QuoteBuilder({
                         <td className="px-1.5 py-1.5 align-top">
                           <CalcMoneyInput
                             value={line.unitPrice}
+                            max={MAX_QUOTE_UNIT_PRICE}
                             onCommit={(unitPrice) => updateLine(idx, { unitPrice })}
+                            onRangeError={setMsg}
                             className={moneyInput}
                             title="Sell price on the quotation"
                             aria-label="Sell price"

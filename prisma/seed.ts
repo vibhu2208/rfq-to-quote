@@ -97,6 +97,16 @@ const ELECTRONICS_PRODUCTS = [
     taxCategory: "GST18",
   },
   {
+    code: "MON-24-DP",
+    name: "24 inch FHD IPS Monitor HDMI DisplayPort",
+    description: "24 inch IPS FHD monitor, HDMI + DisplayPort, 75Hz",
+    unit: "pcs",
+    basePrice: 7800,
+    offerPrice: 9990,
+    taxRate: 18,
+    taxCategory: "GST18",
+  },
+  {
     code: "MON-32-4K",
     name: "32 inch 4K Monitor",
     description: "32 inch 4K UHD monitor, HDMI/DP, for CCTV / editing",

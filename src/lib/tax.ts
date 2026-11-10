@@ -1,6 +1,11 @@
 import { calculateDocumentTotals } from "@/lib/accounting/tax-engine";
-import { getStateCode, normalizeState } from "@/lib/accounting/states";
+import {
+  getStateCode,
+  getStateName,
+  normalizeState,
+} from "@/lib/accounting/states";
 import { formatMoney, round2 } from "@/lib/accounting/money";
+import { getSellerStateCode } from "@/lib/company";
 import { effectiveUnitPrice } from "@/lib/quote-discount";
 
 export type ManualOverrides = {
@@ -68,12 +73,15 @@ export function resolveGstSplit(
   if (gstMode === "CGST_SGST") return "CGST_SGST";
   if (gstMode === "IGST") return "IGST";
   const buyerCode = getStateCode(buyerState);
-  const sellerCode = getStateCode(sellerState);
-  if (buyerCode && sellerCode) {
+  // Fall back to GSTIN-derived seller code so Auto never treats a UP seller as MH.
+  const sellerCode = getStateCode(sellerState) || getSellerStateCode();
+  if (buyerCode) {
     return buyerCode === sellerCode ? "CGST_SGST" : "IGST";
   }
   const buyer = normalizeState(buyerState);
-  const seller = normalizeState(sellerState);
+  const seller =
+    normalizeState(sellerState) ||
+    normalizeState(getStateName(sellerCode) || "");
   if (!buyer || !seller) return "CGST_SGST";
   return buyer === seller ? "CGST_SGST" : "IGST";
 }
@@ -126,9 +134,9 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
       ? prev.otherTaxAmount
       : round2(input.otherTaxAmount ?? 0);
 
-  const sellerCode = getStateCode(input.sellerState) ?? "27";
-  const buyerCode = getStateCode(input.buyerState) ?? sellerCode;
-  const gstSplit = resolveGstSplit(
+  const sellerCode = getStateCode(input.sellerState) || getSellerStateCode();
+  const buyerCode = getStateCode(input.buyerState) || sellerCode;
+  let gstSplit = resolveGstSplit(
     input.withGst,
     input.buyerState,
     input.sellerState,
@@ -163,6 +171,8 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
     cgstAmount = calc.cgstAmount;
     sgstAmount = calc.sgstAmount;
     igstAmount = calc.igstAmount;
+    // Keep label + amounts on the same determination.
+    gstSplit = calc.gstSplit;
   }
 
   let grandTotal: number;

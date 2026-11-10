@@ -98,6 +98,15 @@ describe("product-search", () => {
   });
 });
 
+describe("tokenize video port compounds", () => {
+  it("splits HDMI+DisplayPort into separate port tokens", () => {
+    const tokens = tokenize("24-inch FHD IPS monitor HDMI+DisplayPort");
+    expect(tokens).toContain("hdmi");
+    expect(tokens).toContain("displayport");
+    expect(tokens).not.toContain("hdmi+displayport");
+  });
+});
+
 describe("matchProductsToRfq name matching", () => {
   it("surfaces catalog products whose name appears in the RFQ text", () => {
     const products = [
@@ -200,6 +209,78 @@ describe("matchProductsToRfq name matching", () => {
     });
 
     expect(matches[0]?.product.code).toBe("MON-32-4K");
+  });
+
+  it("prefers HDMI+DisplayPort catalog over HDMI+VGA for a DisplayPort RFQ", () => {
+    const products = [
+      fakeProduct({
+        id: "vga",
+        code: "MON-24-FHD",
+        name: "24 inch Full HD Monitor",
+        category: "TFT",
+        description: "24 inch IPS FHD monitor, HDMI + VGA, 75Hz",
+      }),
+      fakeProduct({
+        id: "dp",
+        code: "MON-24-DP",
+        name: "24 inch FHD IPS Monitor",
+        category: "TFT",
+        description: "24 inch IPS FHD monitor, HDMI + DisplayPort, 75Hz",
+      }),
+      fakeProduct({
+        id: "dp-slash",
+        code: "MON-32-4K",
+        name: "32 inch 4K Monitor",
+        category: "TFT",
+        description: "32 inch 4K UHD monitor, HDMI/DP, for CCTV / editing",
+      }),
+    ];
+
+    const itemMatches = matchProductsToRfqItems(products, {
+      parsedSpecs: {
+        items: [
+          {
+            description: "24-inch FHD IPS monitor HDMI+DisplayPort",
+            quantity: 15,
+            unit: "pcs",
+            category: "TFT",
+          },
+        ],
+      },
+    });
+
+    expect(itemMatches).toHaveLength(1);
+    expect(itemMatches[0].matches[0]?.product.code).toBe("MON-24-DP");
+    expect(
+      itemMatches[0].matches.every((m) => m.product.code !== "MON-24-FHD")
+    ).toBe(true);
+  });
+
+  it("still matches HDMI+VGA when the RFQ does not require DisplayPort", () => {
+    const products = [
+      fakeProduct({
+        id: "vga",
+        code: "MON-24-FHD",
+        name: "24 inch Full HD Monitor",
+        category: "TFT",
+        description: "24 inch IPS FHD monitor, HDMI + VGA, 75Hz",
+      }),
+    ];
+
+    const itemMatches = matchProductsToRfqItems(products, {
+      parsedSpecs: {
+        items: [
+          {
+            description: "24 inch FHD IPS monitor",
+            quantity: 15,
+            unit: "pcs",
+            category: "TFT",
+          },
+        ],
+      },
+    });
+
+    expect(itemMatches[0]?.matches[0]?.product.code).toBe("MON-24-FHD");
   });
 
   it("matches each requirement line independently for multi-product RFQs", () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  correctItemQuantityUnit,
   extractRequirementsFromText,
   extractRfqItems,
   looksLikeMergedSummary,
@@ -53,7 +54,52 @@ describe("extractRequirementsFromText", () => {
   });
 });
 
+describe("correctItemQuantityUnit", () => {
+  it("treats Cat6 patch cable length as a spec, not the quantity unit", () => {
+    expect(
+      correctItemQuantityUnit("Cat6 patch cable 2 m", 40, "meters")
+    ).toEqual({ quantity: 40, unit: "pcs" });
+    expect(
+      correctItemQuantityUnit("Cat6 patch cable 2 m x40", 40, "m")
+    ).toEqual({ quantity: 40, unit: "pcs" });
+  });
+
+  it("keeps meters when buying continuous cable length", () => {
+    expect(
+      correctItemQuantityUnit("50 meters of Cat6 cable", 50, "meters")
+    ).toEqual({ quantity: 50, unit: "meters" });
+  });
+});
+
 describe("resolveParsedItems", () => {
+  it("corrects AI meters unit on patch cables when keeping AI items", () => {
+    const items = resolveParsedItems(
+      [
+        {
+          description: "Cat6 patch cable 2 m",
+          quantity: 40,
+          unit: "meters",
+          category: "CABLE",
+        },
+        {
+          description: "24-inch FHD IPS monitor HDMI+DisplayPort",
+          quantity: 15,
+          unit: "pcs",
+          category: "TFT",
+        },
+      ],
+      "Please quote Cat6 patch cable 2 m x40 and 24-inch FHD IPS monitor HDMI+DisplayPort x15"
+    );
+
+    expect(items).toHaveLength(2);
+    expect(items[0]).toMatchObject({
+      description: "Cat6 patch cable 2 m",
+      quantity: 40,
+      unit: "pcs",
+    });
+    expect(items[1].quantity).toBe(15);
+  });
+
   it("prefers text parser when AI merged many products into one summary", () => {
     const merged = resolveParsedItems(
       [

@@ -188,10 +188,35 @@ function flattenValues(value: unknown, out: string[] = []): string[] {
 export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
-    .replace(/[^a-z0-9.+]+/gi, " ")
+    // Normalize common interface spellings before compound splits.
+    .replace(/display[\s_-]*port/g, "displayport")
+    .replace(/usb[\s_-]*c\b/g, "usbc")
+    // "HDMI+DisplayPort" / "HDMI/DP" must become separate tokens.
+    .replace(/([a-z0-9])[+/&]+([a-z0-9])/g, "$1 $2")
+    .replace(/[^a-z0-9.]+/gi, " ")
     .split(/\s+/)
     .map((t) => t.trim())
     .filter((t) => t.length >= 2 && !STOP_WORDS.has(t));
+}
+
+/** Canonical video/data ports used as hard match constraints. */
+export function canonicalizePortToken(token: string): string | null {
+  const t = token.toLowerCase().trim();
+  if (t === "dp" || t === "displayport") return "displayport";
+  if (t === "hdmi") return "hdmi";
+  if (t === "vga") return "vga";
+  if (t === "dvi") return "dvi";
+  if (t === "usbc" || t === "typec") return "usbc";
+  return null;
+}
+
+export function extractVideoPorts(tokens: Iterable<string>): Set<string> {
+  const ports = new Set<string>();
+  for (const token of tokens) {
+    const port = canonicalizePortToken(token);
+    if (port) ports.add(port);
+  }
+  return ports;
 }
 
 /**
@@ -200,6 +225,9 @@ export function tokenize(text: string): string[] {
  */
 export function tokensLooselyMatch(a: string, b: string): boolean {
   if (a === b) return true;
+  const portA = canonicalizePortToken(a);
+  const portB = canonicalizePortToken(b);
+  if (portA && portB && portA === portB) return true;
   if (a.length < 4 || b.length < 4) return false;
   const [longer, shorter] = a.length >= b.length ? [a, b] : [b, a];
   if (!longer.startsWith(shorter)) return false;
@@ -434,6 +462,17 @@ function scoreIndexedProduct(
     indexed.product.category.toLowerCase() === parsedCategory.toLowerCase()
   ) {
     score += 10;
+  }
+
+  // Hard constraint: required ports on the RFQ must appear on the product.
+  // VGA must never satisfy a DisplayPort requirement (and vice versa).
+  const requiredPorts = extractVideoPorts(keywords);
+  if (requiredPorts.size > 0) {
+    const productPorts = extractVideoPorts(indexed.tokens);
+    for (const port of requiredPorts) {
+      if (!productPorts.has(port)) return null;
+    }
+    score += requiredPorts.size * 8;
   }
 
   if (isFeatureNoiseCandidate(indexed, keywords.length, matchedTokens, ctx, extraBrands)) {

@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { formatDistanceToNowStrict } from "date-fns";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpDown,
   Bell,
@@ -13,32 +14,42 @@ import {
   ChevronRight,
   Columns3,
   Download,
-  Eye,
-  FileText,
   Filter,
   Inbox,
-  Mail,
   MailWarning,
-  MessageCircle,
   Phone,
   Plus,
   RefreshCw,
   Search,
   SkipForward,
+  SquareKanban,
+  Table2,
   Trash2,
   Upload,
-  UserRound,
   X,
-  Zap,
 } from "lucide-react";
 import { CaptureRequirementDrawer } from "@/components/leads/capture-requirement-drawer";
-import { LeadDetailDrawer } from "@/components/leads/lead-detail-drawer";
+import {
+  LeadDetailDrawer,
+  type LeadDrawerRowPatch,
+} from "@/components/leads/lead-detail-drawer";
 import { LeadProcessBar } from "@/components/leads/lead-process-bar";
-import type { LeadRow, LeadUser } from "@/components/leads/types";
+import { LeadsPagination } from "@/components/leads/leads-pagination";
+import { LeadsTableRow } from "@/components/leads/leads-table-row";
+import {
+  COLUMN_CELL_CLASS,
+  COLUMN_LABELS,
+  fixedPopoverCoords,
+  money,
+  recentActivityItems,
+  relativeTime,
+} from "@/components/leads/leads-workbench-helpers";
+import type { LeadRow } from "@/components/leads/types";
 import {
   DateTimePicker,
   toLocalDateTimeValue,
 } from "@/components/ui/date-time-picker";
+import { useLeadsList } from "@/hooks/use-leads-list";
 import {
   DEFAULT_LEAD_COLUMNS,
   LEAD_CHANNEL_LABELS,
@@ -52,20 +63,14 @@ import {
   type LeadColumnId,
 } from "@/lib/leads/constants";
 import type { LeadIntakeFilter } from "@/lib/leads/filters";
-
-const COLUMN_LABELS: Record<LeadColumnId, string> = {
-  leadId: "Lead / Source",
-  leadContact: "Contact",
-  requirement: "Requirement",
-  stage: "Stage",
-  priority: "Priority",
-  quoteDetails: "Quotes",
-  assignedTo: "Owner",
-  expected: "Expected",
-  nextFollowUp: "Follow-up",
-  sla: "SLA",
-  actions: "Actions",
-};
+import {
+  LEADS_PAGE_SIZE,
+  fetchLeadSavedViews,
+  fetchLeadUsers,
+  leadsKeys,
+  type LeadsListFilters,
+  type LeadsListResponse,
+} from "@/lib/leads/query";
 
 type HeaderFilterCol =
   | "leadId"
@@ -118,98 +123,16 @@ function defaultRemindDue() {
 const LEAD_DOC_ACCEPT =
   ".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif,.txt,.zip";
 
-/** Per-column table classes: fixed layout + hide secondary cols on smaller screens. */
-const COLUMN_CELL_CLASS: Record<LeadColumnId, string> = {
-  leadId: "min-w-0 w-[26%] overflow-hidden sm:w-[16%] lg:w-[13%]",
-  leadContact: "min-w-0 w-[30%] overflow-hidden sm:w-[20%] lg:w-[16%]",
-  requirement: "min-w-0 w-[22%] overflow-hidden sm:w-[14%] lg:w-[12%]",
-  stage: "min-w-0 w-[14%] overflow-hidden sm:w-[12%] lg:w-[10%]",
-  priority: "hidden min-w-0 overflow-hidden sm:table-cell sm:w-[9%] lg:w-[7%]",
-  quoteDetails: "hidden min-w-0 overflow-visible sm:table-cell sm:w-[15%] lg:w-[12%]",
-  assignedTo: "hidden min-w-0 overflow-hidden lg:table-cell lg:w-[9%]",
-  expected: "hidden min-w-0 overflow-hidden lg:table-cell lg:w-[8%]",
-  nextFollowUp: "hidden min-w-0 overflow-hidden md:table-cell md:w-[9%] lg:w-[8%]",
-  sla: "hidden min-w-0 overflow-hidden xl:table-cell xl:w-[5%]",
-  actions: "min-w-0 w-[14%] overflow-hidden sm:w-[12%] lg:w-[10%]",
-};
-
-function isQuoteActivity(type: string, title: string) {
-  return (
-    type.startsWith("QUOTE_") ||
-    /\bquote\b/i.test(title) ||
-    /\bquotation\b/i.test(title)
-  );
-}
-
-function recentActivityItems(row: LeadRow) {
-  const activities = row.activities || [];
-  const quoteActivities = activities.filter((a) =>
-    isQuoteActivity(a.type, a.title || "")
-  );
-  const items =
-    quoteActivities.length > 0 ? quoteActivities : activities;
-  return items.slice(0, 20);
-}
-
-function fixedPopoverCoords(
-  el: HTMLElement,
-  width: number,
-  estimatedHeight: number
-) {
-  const rect = el.getBoundingClientRect();
-  const left = Math.min(rect.left, window.innerWidth - width - 12);
-  const spaceBelow = window.innerHeight - rect.bottom;
-  const top =
-    spaceBelow < estimatedHeight && rect.top > estimatedHeight
-      ? Math.max(12, rect.top - estimatedHeight - 6)
-      : rect.bottom + 6;
-  return { top, left: Math.max(12, left) };
-}
-
 type Props = {
   title: string;
-  subtitle?: string;
   presetQuery?: Record<string, string>;
 };
 
-function relativeTime(value: string | null | undefined) {
-  if (!value) return "—";
-  try {
-    return formatDistanceToNowStrict(new Date(value), { addSuffix: true });
-  } catch {
-    return "—";
-  }
-}
-
-function money(value: string | number | null | undefined) {
-  if (value == null || value === "") return "—";
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    maximumFractionDigits: 0,
-  }).format(n);
-}
-
-function slaLabel(row: LeadRow) {
-  if (!row.slaDueAt) return "—";
-  const due = new Date(row.slaDueAt).getTime();
-  const now = Date.now();
-  if (row.slaBreachedAt || due < now) return "Overdue";
-  return "Pending";
-}
-
-export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
-  const [rows, setRows] = useState<LeadRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [stageCounts, setStageCounts] = useState<Record<string, number>>({});
-  const [intakeKindCounts, setIntakeKindCounts] = useState({
-    REQUIREMENT: 0,
-    JUNK: 0,
-    SKIPPED: 0,
-  });
-  const [loading, setLoading] = useState(true);
+export function LeadsWorkbench({ title, presetQuery }: Props) {
+  const pathname = usePathname();
+  const queryClient = useQueryClient();
+  const [page, setPage] = useState(0);
+  const tableViewActive = !pathname.startsWith("/leads/pipeline");
   const [intakeKind, setIntakeKind] = useState<LeadIntakeFilter>(() => {
     // Pipeline views stay on real requirements; All includes junk/skipped.
     if (
@@ -223,6 +146,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
     return "all";
   });
   const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
   const [stage, setStage] = useState("");
   const [priority, setPriority] = useState("");
   const [channel, setChannel] = useState("");
@@ -240,7 +164,6 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
   const [showImportExport, setShowImportExport] = useState(false);
   const [showCustomRange, setShowCustomRange] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [users, setUsers] = useState<LeadUser[]>([]);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [drawerLeadId, setDrawerLeadId] = useState<string | null>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -295,6 +218,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
   const activityLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
+  const listFiltersRef = useRef<LeadsListFilters | null>(null);
   // Defaults only on first paint — localStorage is applied after mount to avoid hydration mismatch.
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [columns, setColumns] = useState<LeadColumnId[]>([
@@ -303,64 +227,143 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
   const [prefsReady, setPrefsReady] = useState(false);
   const [showColumns, setShowColumns] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [savedViews, setSavedViews] = useState<
-    { id: string; name: string; filters: Record<string, unknown> }[]
-  >([]);
   const [saveViewName, setSaveViewName] = useState("");
   const [pollMsg, setPollMsg] = useState("");
   const [polling, setPolling] = useState(false);
-  const [waIntakeOpen, setWaIntakeOpen] = useState(false);
-  const [waBusy, setWaBusy] = useState(false);
-  const [waError, setWaError] = useState("");
-  const [waForm, setWaForm] = useState({ text: "", from: "", name: "" });
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const params = new URLSearchParams(presetQuery || {});
-      // Pull the full set — All must include every Email + WhatsApp lead
-      params.set("take", "500");
-      if (intakeKind && intakeKind !== "all") params.set("intakeKind", intakeKind);
-      else params.set("intakeKind", "all");
-      if (q) params.set("q", q);
-      if (stage) params.set("stage", stage);
-      if (priority) params.set("priority", priority);
-      if (channel) params.set("channel", channel);
-      if (assignee) params.set("assignedToUserId", assignee);
-      if (category.trim()) params.set("category", category.trim());
-      if (datePreset && datePreset !== "all") params.set("datePreset", datePreset);
-      if (datePreset === "custom") {
-        if (dateFrom) params.set("dateFrom", dateFrom);
-        if (dateTo) params.set("dateTo", dateTo);
-      }
-      if (slaStatus) params.set("slaStatus", slaStatus);
-      const res = await fetch(`/api/leads?${params}`);
-      const data = await res.json();
-      setRows(Array.isArray(data.items) ? data.items : []);
-      setTotal(typeof data.total === "number" ? data.total : 0);
-      setStageCounts(data.stageCounts || {});
-      setIntakeKindCounts({
-        REQUIREMENT: data.intakeKindCounts?.REQUIREMENT ?? 0,
-        JUNK: data.intakeKindCounts?.JUNK ?? 0,
-        SKIPPED: data.intakeKindCounts?.SKIPPED ?? 0,
-      });
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 220);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  useEffect(() => {
+    setPage(0);
   }, [
+    debouncedQ,
+    stage,
+    priority,
+    channel,
     assignee,
     category,
-    channel,
-    dateFrom,
     datePreset,
+    dateFrom,
     dateTo,
+    slaStatus,
     intakeKind,
     presetQuery,
-    priority,
-    q,
-    slaStatus,
-    stage,
   ]);
+
+  const listFilters = useMemo<LeadsListFilters>(
+    () => ({
+      take: LEADS_PAGE_SIZE,
+      skip: page * LEADS_PAGE_SIZE,
+      intakeKind,
+      q: debouncedQ,
+      stage,
+      priority,
+      channel,
+      assignedToUserId: assignee,
+      category,
+      datePreset,
+      dateFrom,
+      dateTo,
+      slaStatus,
+      presetQuery,
+    }),
+    [
+      page,
+      intakeKind,
+      debouncedQ,
+      stage,
+      priority,
+      channel,
+      assignee,
+      category,
+      datePreset,
+      dateFrom,
+      dateTo,
+      slaStatus,
+      presetQuery,
+    ]
+  );
+  listFiltersRef.current = listFilters;
+
+  const {
+    data: listData,
+    isLoading,
+    isFetching,
+    refetch,
+  } = useLeadsList(listFilters);
+
+  const rows = listData?.items ?? [];
+  const total = listData?.total ?? 0;
+  const stageCounts = listData?.stageCounts ?? {};
+  const intakeKindCounts = listData?.intakeKindCounts ?? {
+    REQUIREMENT: 0,
+    JUNK: 0,
+    SKIPPED: 0,
+  };
+  const loading = isLoading && rows.length === 0;
+
+  const { data: users = [] } = useQuery({
+    queryKey: leadsKeys.users(),
+    queryFn: fetchLeadUsers,
+    staleTime: 5 * 60_000,
+  });
+
+  const { data: savedViews = [], refetch: refetchSavedViews } = useQuery({
+    queryKey: leadsKeys.savedViews(),
+    queryFn: fetchLeadSavedViews,
+    staleTime: 60_000,
+  });
+
+  const updateListCache = useCallback(
+    (updater: (prev: LeadsListResponse) => LeadsListResponse) => {
+      const key = listFiltersRef.current;
+      if (!key) return;
+      queryClient.setQueryData<LeadsListResponse>(leadsKeys.list(key), (old) => {
+        if (!old) return old;
+        return updater(old);
+      });
+    },
+    [queryClient]
+  );
+
+  const patchRow = useCallback(
+    (id: string, patch: Partial<LeadRow>) => {
+      updateListCache((old) => ({
+        ...old,
+        items: old.items.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      }));
+    },
+    [updateListCache]
+  );
+
+  const prependActivity = useCallback(
+    (
+      id: string,
+      activity: LeadRow["activities"][number],
+      extras?: Partial<LeadRow>
+    ) => {
+      updateListCache((old) => ({
+        ...old,
+        items: old.items.map((r) => {
+          if (r.id !== id) return r;
+          return {
+            ...r,
+            ...extras,
+            activities: [activity, ...(r.activities || [])].slice(0, 5),
+          };
+        }),
+      }));
+    },
+    [updateListCache]
+  );
+
+  const load = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: leadsKeys.lists() });
+    await refetch();
+  }, [queryClient, refetch]);
 
   async function pollInbox() {
     setPolling(true);
@@ -406,60 +409,6 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       setPolling(false);
     }
   }
-
-  async function submitWhatsAppIntake() {
-    setWaError("");
-    const text = waForm.text.trim();
-    if (!text) {
-      setWaError("Paste the WhatsApp requirement message.");
-      return;
-    }
-    setWaBusy(true);
-    try {
-      const res = await fetch("/api/rfqs/whatsapp-intake", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          from: waForm.from.trim(),
-          name: waForm.name.trim(),
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setWaError(
-          typeof data.error === "string"
-            ? data.error
-            : "Could not import WhatsApp message"
-        );
-        return;
-      }
-      setWaForm({ text: "", from: "", name: "" });
-      setWaIntakeOpen(false);
-      setPollMsg(
-        `WhatsApp requirement imported as lead${data.id ? ` · ${data.id}` : ""}`
-      );
-      await load();
-    } finally {
-      setWaBusy(false);
-    }
-  }
-
-  useEffect(() => {
-    const t = setTimeout(() => void load(), 220);
-    return () => clearTimeout(t);
-  }, [load]);
-
-  useEffect(() => {
-    void fetch("/api/leads/users")
-      .then((r) => r.json())
-      .then((d) => setUsers(Array.isArray(d.items) ? d.items : []))
-      .catch(() => setUsers([]));
-    void fetch("/api/leads/saved-views")
-      .then((r) => r.json())
-      .then((d) => setSavedViews(Array.isArray(d.items) ? d.items : []))
-      .catch(() => setSavedViews([]));
-  }, []);
 
   useEffect(() => {
     try {
@@ -537,9 +486,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       : "";
     if (needsReason && !reason.trim()) return;
 
-    setRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, leadStage: toStage } : r))
-    );
+    patchRow(id, { leadStage: toStage });
 
     const res = await fetch(`/api/leads/${id}/stage`, {
       method: "POST",
@@ -554,7 +501,6 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       await load();
       return;
     }
-    await load();
   }
 
   async function changeRowPriority(
@@ -563,9 +509,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
     current: string
   ) {
     if (!nextPriority || nextPriority === current) return;
-    setRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, priority: nextPriority } : r))
-    );
+    patchRow(id, { priority: nextPriority });
     const res = await fetch(`/api/leads/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -579,7 +523,6 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       await load();
       return;
     }
-    await load();
   }
 
   async function promoteRow(id: string) {
@@ -598,7 +541,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
         return;
       }
       setPollMsg("Promoted junk/skipped item to a requirement lead");
-      await load();
+      patchRow(id, { intakeKind: "REQUIREMENT" });
     } finally {
       setPromotingId(null);
     }
@@ -688,15 +631,41 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
               ? data.error
               : "Call logged, but follow-up failed"
           );
-          await load();
+          prependActivity(callLogForm.leadId, {
+            id: `local-call-${Date.now()}`,
+            type: "CALL",
+            title: `Call · ${callLogForm.outcome}`,
+            body: bodyParts.join("\n"),
+            createdAt: new Date().toISOString(),
+          });
           return;
         }
+        prependActivity(
+          callLogForm.leadId,
+          {
+            id: `local-call-${Date.now()}`,
+            type: "CALL",
+            title: `Call · ${callLogForm.outcome}`,
+            body: bodyParts.join("\n"),
+            createdAt: new Date().toISOString(),
+          },
+          { nextFollowUpAt: due.toISOString() }
+        );
+        setCallLogForm(null);
+        setPollMsg(`Call logged · ${callLogForm.outcome}`);
+        return;
       }
     }
 
+    prependActivity(callLogForm.leadId, {
+      id: `local-call-${Date.now()}`,
+      type: "CALL",
+      title: `Call · ${callLogForm.outcome}`,
+      body: bodyParts.join("\n"),
+      createdAt: new Date().toISOString(),
+    });
     setCallLogForm(null);
     setPollMsg(`Call logged · ${callLogForm.outcome}`);
-    await load();
   }
 
   async function submitRemind() {
@@ -724,9 +693,16 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       );
       return;
     }
+    const current = rows.find((r) => r.id === remindForm.leadId);
+    patchRow(remindForm.leadId, {
+      nextFollowUpAt: due.toISOString(),
+      _count: {
+        ...(current?._count || { quotes: 0, messages: 0, followUps: 0 }),
+        followUps: (current?._count?.followUps || 0) + 1,
+      },
+    });
     setRemindForm(null);
     setPollMsg(`Reminder set for ${remindForm.leadNumber}`);
-    await load();
   }
 
   function setRemindPreset(kind: "1h" | "tomorrow" | "3d" | "week") {
@@ -785,11 +761,42 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       return;
     }
     const data = (await res.json().catch(() => ({}))) as { fileName?: string };
+    const fileName = data.fileName || uploadForm.file.name;
+    prependActivity(uploadForm.leadId, {
+      id: `local-doc-${Date.now()}`,
+      type: "NOTE",
+      title: `Document uploaded · ${fileName}`,
+      body: uploadForm.note.trim() || undefined,
+      createdAt: new Date().toISOString(),
+    });
     setUploadForm(null);
-    setPollMsg(
-      `Document uploaded · ${data.fileName || uploadForm.file.name}`
-    );
-    await load();
+    setPollMsg(`Document uploaded · ${fileName}`);
+  }
+
+  function applyDrawerPatch(patch?: LeadDrawerRowPatch) {
+    if (!drawerLeadId || !patch) return;
+    const rowPatch: Partial<LeadRow> = {};
+    if (patch.leadStage !== undefined) rowPatch.leadStage = patch.leadStage;
+    if (patch.priority !== undefined) rowPatch.priority = patch.priority;
+    if (patch.intakeKind !== undefined) rowPatch.intakeKind = patch.intakeKind;
+    if (patch.assignedTo !== undefined) rowPatch.assignedTo = patch.assignedTo;
+    if (patch.nextFollowUpAt !== undefined)
+      rowPatch.nextFollowUpAt = patch.nextFollowUpAt;
+    if (patch.customerName !== undefined)
+      rowPatch.customerName = patch.customerName;
+    if (patch.customerCompany !== undefined)
+      rowPatch.customerCompany = patch.customerCompany;
+    if (patch.customerEmail !== undefined)
+      rowPatch.customerEmail = patch.customerEmail;
+    if (patch.customerPhone !== undefined)
+      rowPatch.customerPhone = patch.customerPhone;
+    if (patch.subject !== undefined) rowPatch.subject = patch.subject;
+    if (patch.rawText !== undefined)
+      rowPatch.rawText = patch.rawText.slice(0, 160);
+    if (patch.category !== undefined) rowPatch.category = patch.category;
+    if (patch.expectedValue !== undefined)
+      rowPatch.expectedValue = patch.expectedValue;
+    if (Object.keys(rowPatch).length) patchRow(drawerLeadId, rowPatch);
   }
 
   function scheduleActivityClose(rowId: string) {
@@ -894,8 +901,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
       }),
     });
     setSaveViewName("");
-    const d = await fetch("/api/leads/saved-views").then((r) => r.json());
-    setSavedViews(Array.isArray(d.items) ? d.items : []);
+    await refetchSavedViews();
   }
 
   function applySavedView(view: {
@@ -1072,123 +1078,11 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
   ];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight text-dark-primary">
-            {title}
-          </h1>
-          {subtitle ? (
-            <p className="text-sm text-mid-green">{subtitle}</p>
-          ) : (
-            <p className="text-sm text-mid-green">
-              {loading
-                ? "Loading…"
-                : `${total} ${
-                    intakeKind === "JUNK" || intakeKind === "SKIPPED"
-                      ? "item"
-                      : "lead"
-                  }${total === 1 ? "" : "s"}`}
-            </p>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              setWaIntakeOpen((open) => !open);
-              setWaError("");
-            }}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green/15 px-3 text-sm font-medium text-dark-primary transition hover:bg-mid-green/25"
-          >
-            <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Add WhatsApp
-          </button>
-          <Link
-            href="/leads/pipeline"
-            className="inline-flex h-9 items-center rounded-full bg-dark-secondary/[0.05] px-3 text-sm font-medium text-dark-primary hover:bg-dark-secondary/12"
-          >
-            Pipeline
-          </Link>
-        </div>
-      </div>
-
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
       {pollMsg ? (
         <p className="rounded-xl bg-mid-green/10 px-3 py-2 text-xs text-mid-green">
           {pollMsg}
         </p>
-      ) : null}
-
-      {waIntakeOpen ? (
-        <div className="rounded-2xl border border-light-green/30 bg-white/70 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-dark-primary">
-                Import WhatsApp requirement
-              </h2>
-              <p className="mt-0.5 text-xs text-mid-green">
-                Same as Inbox: paste a missed WhatsApp enquiry and it becomes a
-                lead.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setWaIntakeOpen(false)}
-              className="text-xs font-medium text-mid-green hover:underline"
-            >
-              Close
-            </button>
-          </div>
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <input
-              value={waForm.name}
-              onChange={(e) =>
-                setWaForm((c) => ({ ...c, name: e.target.value }))
-              }
-              placeholder="Customer name (optional)"
-              className="h-9 rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none focus:border-mid-green"
-            />
-            <input
-              value={waForm.from}
-              onChange={(e) =>
-                setWaForm((c) => ({ ...c, from: e.target.value }))
-              }
-              placeholder="WhatsApp number +91… (optional)"
-              className="h-9 rounded-xl border border-light-green/35 bg-white px-3 text-sm outline-none focus:border-mid-green"
-            />
-          </div>
-          <textarea
-            value={waForm.text}
-            onChange={(e) =>
-              setWaForm((c) => ({ ...c, text: e.target.value }))
-            }
-            placeholder="e.g. i need Samsung M2876ND Printer"
-            rows={4}
-            className="mt-2 w-full resize-y rounded-xl border border-light-green/35 bg-white px-3 py-2 text-sm outline-none focus:border-mid-green"
-          />
-          {waError ? (
-            <p className="mt-2 text-xs text-red-700">{waError}</p>
-          ) : null}
-          <div className="mt-3 flex justify-end gap-2">
-            <button
-              type="button"
-              disabled={waBusy}
-              onClick={() => setWaIntakeOpen(false)}
-              className="rounded-full px-3 py-1.5 text-sm font-medium text-mid-green hover:bg-light-green/20 disabled:opacity-60"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={waBusy}
-              onClick={() => void submitWhatsAppIntake()}
-              className="inline-flex items-center gap-1.5 rounded-full bg-mid-green px-3.5 py-1.5 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
-            >
-              <MessageCircle className="h-3.5 w-3.5" strokeWidth={1.75} />
-              {waBusy ? "Importing…" : "Add as lead"}
-            </button>
-          </div>
-        </div>
       ) : null}
 
       <div className="flex min-h-0 flex-1 gap-3">
@@ -1297,18 +1191,50 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
             ))}
           </div>
 
-      <LeadProcessBar
-        activeStage={stage}
-        stageCounts={stageCounts}
-        onSelect={(next) => {
-          setStage(next);
-          // All = every lead including Email + WhatsApp — clear source filter
-          if (!next) setChannel("");
-        }}
-        totalAll={allStageTotal || total}
-      />
-
       <div className="flex flex-wrap items-center gap-2">
+        <div className="mr-1 flex min-w-0 items-baseline gap-2.5">
+          <h1 className="truncate text-2xl font-semibold tracking-tight text-dark-primary sm:text-[1.75rem]">
+            {title}
+          </h1>
+          <span className="hidden shrink-0 text-sm tabular-nums text-mid-green sm:inline">
+            {loading
+              ? "…"
+              : `${total} ${
+                  intakeKind === "JUNK" || intakeKind === "SKIPPED"
+                    ? "item"
+                    : "lead"
+                }${total === 1 ? "" : "s"}`}
+          </span>
+        </div>
+
+        <div
+          className="inline-flex items-center rounded-xl border border-dark-primary/10 bg-white p-0.5"
+          role="group"
+          aria-label="View mode"
+        >
+          <Link
+            href="/leads"
+            title="Table view"
+            aria-label="Table view"
+            aria-current={tableViewActive ? "page" : undefined}
+            className={`inline-flex h-8 w-8 items-center justify-center rounded-[0.625rem] transition ${
+              tableViewActive
+                ? "bg-dark-primary text-background"
+                : "text-mid-green hover:bg-dark-secondary/8 hover:text-dark-primary"
+            }`}
+          >
+            <Table2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </Link>
+          <Link
+            href="/leads/pipeline"
+            title="Pipeline view"
+            aria-label="Pipeline view"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-[0.625rem] text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
+          >
+            <SquareKanban className="h-3.5 w-3.5" strokeWidth={1.75} />
+          </Link>
+        </div>
+
         <div
           className="relative inline-flex flex-wrap items-center rounded-full border border-dark-primary/10 bg-white p-0.5 text-xs sm:text-[13px]"
           data-custom-range=""
@@ -1486,6 +1412,17 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
         </button>
       </div>
 
+      <LeadProcessBar
+        activeStage={stage}
+        stageCounts={stageCounts}
+        onSelect={(next) => {
+          setStage(next);
+          // All = every lead including Email + WhatsApp — clear source filter
+          if (!next) setChannel("");
+        }}
+        totalAll={allStageTotal || total}
+      />
+
       <div className="flex flex-wrap items-center gap-2">
         {savedViews.length ? (
           <select
@@ -1617,7 +1554,10 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
         </div>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border border-dark-primary/8 bg-white">
+      <div
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border border-dark-primary/8 bg-white"
+        aria-busy={loading && rows.length === 0}
+      >
         <table className="w-full table-fixed text-left text-sm">
           <thead className="sticky top-0 z-20 border-b border-dark-primary/10 bg-white text-xs font-semibold text-dark-primary/80 shadow-[0_1px_0_rgba(11,43,38,0.06)] sm:text-[13px]">
             <tr>
@@ -1698,14 +1638,35 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
           </thead>
           <tbody>
             {loading && rows.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={visibleColumns.length + 1}
-                  className="px-3 py-8 text-center text-mid-green"
+              Array.from({ length: 8 }).map((_, rowIdx) => (
+                <tr
+                  key={`lead-skel-${rowIdx}`}
+                  className="border-t border-dark-primary/5"
+                  aria-hidden={rowIdx > 0}
                 >
-                  Loading leads…
-                </td>
-              </tr>
+                  <td className="px-1 py-3 sm:px-2">
+                    <div className="mx-auto h-3.5 w-3.5 animate-pulse rounded bg-dark-secondary/15" />
+                  </td>
+                  {visibleColumns.map((col, colIdx) => (
+                    <td
+                      key={col}
+                      className={`px-1.5 py-3 sm:px-2 ${COLUMN_CELL_CLASS[col] || ""}`}
+                    >
+                      <div
+                        className={`h-3.5 animate-pulse rounded-md bg-dark-secondary/15 ${
+                          colIdx === 0
+                            ? "w-16"
+                            : colIdx === 1
+                              ? "w-[85%]"
+                              : colIdx % 3 === 0
+                                ? "w-14"
+                                : "w-20"
+                        }`}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))
             ) : rows.length === 0 ? (
               <tr>
                 <td
@@ -1717,523 +1678,77 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
               </tr>
             ) : (
               rows.map((row) => (
-                <tr
+                <LeadsTableRow
                   key={row.id}
-                  onClick={(e) => {
-                    const target = e.target as HTMLElement;
-                    if (
-                      target.closest(
-                        "a,button,input,select,textarea,label"
-                      )
-                    ) {
+                  row={row}
+                  visibleColumns={visibleColumns}
+                  selected={selected.has(row.id)}
+                  drawerActive={drawerLeadId === row.id}
+                  contactExpanded={expandedContacts.has(row.id)}
+                  quotesPopoverOpen={quotesPopover?.rowId === row.id}
+                  promoting={promotingId === row.id}
+                  onOpen={() => setDrawerLeadId(row.id)}
+                  onToggleSelect={() => toggleOne(row.id)}
+                  onToggleContact={() => {
+                    setExpandedContacts((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(row.id)) next.delete(row.id);
+                      else next.add(row.id);
+                      return next;
+                    });
+                  }}
+                  onStageChange={(toStage) =>
+                    void changeRowStage(row.id, toStage, row.leadStage)
+                  }
+                  onPriorityChange={(priority) =>
+                    void changeRowPriority(row.id, priority, row.priority)
+                  }
+                  onPromote={() => void promoteRow(row.id)}
+                  onRemind={() => openRemind(row)}
+                  onLogCall={() => openLogCall(row)}
+                  onUpload={() => openUploadDoc(row)}
+                  onActivityEnter={(el) => {
+                    cancelActivityClose();
+                    const { top, left } = fixedPopoverCoords(el, 288, 260);
+                    setActivityPopover({
+                      rowId: row.id,
+                      top,
+                      left,
+                      items: recentActivityItems(row),
+                    });
+                  }}
+                  onActivityLeave={() => scheduleActivityClose(row.id)}
+                  onQuotesToggle={(el) => {
+                    const quoteTotal = row._count?.quotes || row.quotes.length;
+                    if (quoteTotal <= 1) {
+                      setDrawerLeadId(row.id);
                       return;
                     }
-                    setDrawerLeadId(row.id);
+                    if (quotesPopover?.rowId === row.id) {
+                      setQuotesPopover(null);
+                      return;
+                    }
+                    const { top, left } = fixedPopoverCoords(el, 280, 280);
+                    setQuotesPopover({
+                      rowId: row.id,
+                      top,
+                      left,
+                      quotes: row.quotes,
+                      total: quoteTotal,
+                    });
                   }}
-                  className={`group/lead cursor-pointer border-t border-dark-primary/5 hover:bg-dark-secondary/[0.03] ${
-                    drawerLeadId === row.id ? "bg-mid-green/8" : ""
-                  } ${
-                    row.intakeKind === "JUNK"
-                      ? "bg-amber-50/40"
-                      : row.intakeKind === "SKIPPED"
-                        ? "bg-slate-50/60"
-                        : ""
-                  }`}
-                >
-                  <td className="w-7 shrink-0 px-1 py-2 sm:w-8 sm:px-2">
-                    <input
-                      type="checkbox"
-                      checked={selected.has(row.id)}
-                      onChange={() => toggleOne(row.id)}
-                      aria-label={`Select ${row.leadNumber}`}
-                    />
-                  </td>
-                  {visibleColumns.map((col) => (
-                    <td
-                      key={col}
-                      className={`px-1.5 py-2.5 align-top sm:px-2 ${COLUMN_CELL_CLASS[col]}`}
-                    >
-                      {col === "leadId" ? (
-                        <div
-                          className="min-w-0 space-y-0.5"
-                          onMouseEnter={(e) => {
-                            cancelActivityClose();
-                            const { top, left } = fixedPopoverCoords(
-                              e.currentTarget,
-                              288,
-                              260
-                            );
-                            setActivityPopover({
-                              rowId: row.id,
-                              top,
-                              left,
-                              items: recentActivityItems(row),
-                            });
-                          }}
-                          onMouseLeave={() => scheduleActivityClose(row.id)}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => setDrawerLeadId(row.id)}
-                            className="block w-full overflow-hidden text-ellipsis whitespace-nowrap text-left text-[11px] font-semibold tabular-nums tracking-tight text-dark-primary hover:underline sm:text-xs"
-                            title={row.leadNumber}
-                          >
-                            {row.leadNumber}
-                          </button>
-                          <p className="truncate text-[10px] leading-tight text-mid-green">
-                            {LEAD_CHANNEL_LABELS[
-                              row.channel as keyof typeof LEAD_CHANNEL_LABELS
-                            ] || row.channel}
-                          </p>
-                          {row.intakeKind && row.intakeKind !== "REQUIREMENT" ? (
-                            <span
-                              className={`inline-block max-w-full truncate rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-                                row.intakeKind === "JUNK"
-                                  ? "bg-amber-100 text-amber-800"
-                                  : "bg-slate-200 text-slate-700"
-                              }`}
-                              title={row.junkReason || undefined}
-                            >
-                              {LEAD_INTAKE_LABELS[row.intakeKind]}
-                            </span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {col === "leadContact" ? (
-                        (() => {
-                          const expanded = expandedContacts.has(row.id);
-                          const name =
-                            row.customerCompany || row.customerName || "—";
-                          const contactLine =
-                            row.customerCompany && row.customerName
-                              ? row.customerName
-                              : "";
-                          return (
-                            <div
-                              role="button"
-                              tabIndex={0}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setExpandedContacts((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(row.id)) next.delete(row.id);
-                                  else next.add(row.id);
-                                  return next;
-                                });
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  setExpandedContacts((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(row.id)) next.delete(row.id);
-                                    else next.add(row.id);
-                                    return next;
-                                  });
-                                }
-                              }}
-                              className={`w-full max-w-full cursor-pointer rounded-lg px-0.5 py-0.5 text-left transition hover:bg-dark-secondary/[0.05] ${
-                                expanded ? "" : "overflow-hidden"
-                              }`}
-                              title={
-                                expanded
-                                  ? "Click to collapse"
-                                  : "Click to expand contact"
-                              }
-                            >
-                              <p
-                                className={`text-sm font-medium text-dark-primary ${
-                                  expanded
-                                    ? "whitespace-normal break-words"
-                                    : "truncate"
-                                }`}
-                              >
-                                {name}
-                              </p>
-                              {contactLine ? (
-                                <p
-                                  className={`text-xs text-mid-green ${
-                                    expanded
-                                      ? "whitespace-normal break-words"
-                                      : "truncate"
-                                  }`}
-                                >
-                                  {contactLine}
-                                </p>
-                              ) : null}
-                              {row.customerPhone ? (
-                                <p
-                                  className={`mt-0.5 flex items-center gap-1 text-xs text-mid-green ${
-                                    expanded ? "" : "min-w-0"
-                                  }`}
-                                >
-                                  <Phone className="h-3 w-3 shrink-0" />
-                                  <span
-                                    className={
-                                      expanded
-                                        ? "whitespace-normal break-all"
-                                        : "truncate"
-                                    }
-                                  >
-                                    {row.customerPhone}
-                                  </span>
-                                </p>
-                              ) : null}
-                              {row.customerEmail ? (
-                                <p
-                                  className={`mt-0.5 flex items-center gap-1 text-xs text-mid-green ${
-                                    expanded ? "" : "min-w-0"
-                                  }`}
-                                >
-                                  <Mail className="h-3 w-3 shrink-0" />
-                                  <span
-                                    className={
-                                      expanded
-                                        ? "whitespace-normal break-all"
-                                        : "truncate"
-                                    }
-                                  >
-                                    {row.customerEmail}
-                                  </span>
-                                </p>
-                              ) : null}
-                              {expanded ? (
-                                <div className="mt-1 flex flex-wrap gap-2">
-                                  {row.customerPhone ? (
-                                    <a
-                                      href={`tel:${row.customerPhone}`}
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-[10px] font-medium text-mid-green hover:underline"
-                                    >
-                                      Call
-                                    </a>
-                                  ) : null}
-                                  {row.customerEmail ? (
-                                    <a
-                                      href={`mailto:${row.customerEmail}`}
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="text-[10px] font-medium text-mid-green hover:underline"
-                                    >
-                                      Email
-                                    </a>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDrawerLeadId(row.id);
-                                    }}
-                                    className="text-[10px] font-medium text-mid-green hover:underline"
-                                  >
-                                    Open lead
-                                  </button>
-                                </div>
-                              ) : null}
-                            </div>
-                          );
-                        })()
-                      ) : null}
-                      {col === "requirement" ? (
-                        <div
-                          className="min-w-0 max-w-full space-y-0.5 overflow-hidden"
-                          title={
-                            [
-                              row.category || row.parsedCategory,
-                              row.junkReason,
-                              row.subject || row.rawText,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ") || undefined
-                          }
-                        >
-                          <p className="truncate text-[10px] font-medium text-dark-primary sm:text-[11px]">
-                            {row.category || row.parsedCategory || "—"}
-                          </p>
-                          <p className="line-clamp-1 break-all text-[10px] leading-snug text-mid-green sm:line-clamp-2 sm:text-[11px]">
-                            {row.junkReason
-                              ? `${row.junkReason} · `
-                              : ""}
-                            {row.subject || row.rawText.slice(0, 60) || "—"}
-                          </p>
-                        </div>
-                      ) : null}
-                      {col === "stage" ? (
-                        <div
-                          className="min-w-0"
-                          onMouseEnter={(e) => {
-                            cancelActivityClose();
-                            const { top, left } = fixedPopoverCoords(
-                              e.currentTarget,
-                              288,
-                              260
-                            );
-                            setActivityPopover({
-                              rowId: row.id,
-                              top,
-                              left,
-                              items: recentActivityItems(row),
-                            });
-                          }}
-                          onMouseLeave={() => scheduleActivityClose(row.id)}
-                        >
-                          <select
-                            value={row.leadStage}
-                            aria-label={`Stage for ${row.leadNumber}`}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={(e) =>
-                              void changeRowStage(
-                                row.id,
-                                e.target.value,
-                                row.leadStage
-                              )
-                            }
-                            className="box-border w-full min-w-0 max-w-full rounded-lg border-0 bg-dark-secondary/8 px-1.5 py-1 text-[10px] font-medium text-dark-primary outline-none focus:ring-1 focus:ring-mid-green/40"
-                          >
-                            {LEAD_STAGES.map((s) => (
-                              <option key={s} value={s}>
-                                {LEAD_STAGE_LABELS[s]}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      ) : null}
-                      {col === "priority" ? (
-                        <select
-                          value={row.priority}
-                          aria-label={`Priority for ${row.leadNumber}`}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) =>
-                            void changeRowPriority(
-                              row.id,
-                              e.target.value,
-                              row.priority
-                            )
-                          }
-                          className={`box-border w-full min-w-0 max-w-full rounded-lg border-0 px-1.5 py-1 text-[10px] font-medium outline-none focus:ring-1 focus:ring-mid-green/40 ${
-                            row.priority === "HOT"
-                              ? "bg-red-100 text-red-700"
-                              : row.priority === "HIGH"
-                                ? "bg-amber-100 text-amber-800"
-                                : "bg-dark-secondary/8 text-dark-primary"
-                          }`}
-                        >
-                          {LEAD_PRIORITIES.map((p) => (
-                            <option key={p} value={p}>
-                              {LEAD_PRIORITY_LABELS[p]}
-                            </option>
-                          ))}
-                        </select>
-                      ) : null}
-                      {col === "quoteDetails" ? (
-                        row.quotes.length ? (
-                          (() => {
-                            const latest = row.quotes[0];
-                            const quoteTotal =
-                              row._count?.quotes || row.quotes.length;
-                            const open = quotesPopover?.rowId === row.id;
-
-                            return (
-                              <div className="relative w-full max-w-full">
-                                <button
-                                  type="button"
-                                  data-quotes-trigger={row.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (quoteTotal <= 1) {
-                                      setDrawerLeadId(row.id);
-                                      return;
-                                    }
-                                    if (open) {
-                                      setQuotesPopover(null);
-                                      return;
-                                    }
-                                    const { top, left } = fixedPopoverCoords(
-                                      e.currentTarget,
-                                      280,
-                                      280
-                                    );
-                                    setQuotesPopover({
-                                      rowId: row.id,
-                                      top,
-                                      left,
-                                      quotes: row.quotes,
-                                      total: quoteTotal,
-                                    });
-                                  }}
-                                  className="w-full max-w-full overflow-hidden rounded-lg bg-dark-secondary/[0.04] px-1.5 py-1.5 text-left transition hover:bg-dark-secondary/10 sm:px-2"
-                                  title={
-                                    quoteTotal > 1
-                                      ? "Click for all quotes"
-                                      : "Open quote"
-                                  }
-                                >
-                                  <span className="flex items-center justify-between gap-2">
-                                    <Link
-                                      href={`/quotes/${latest.id}`}
-                                      onClick={(e) => e.stopPropagation()}
-                                      className="truncate text-xs font-medium text-dark-primary hover:underline"
-                                    >
-                                      {latest.quoteNumber}
-                                    </Link>
-                                    {quoteTotal > 1 ? (
-                                      <span className="shrink-0 rounded-full bg-mid-green/15 px-1.5 py-0.5 text-[10px] font-medium text-mid-green">
-                                        {quoteTotal}
-                                      </span>
-                                    ) : null}
-                                  </span>
-                                  <span className="mt-0.5 block truncate text-[10px] text-mid-green">
-                                    {latest.status.replaceAll("_", " ")}
-                                    {latest.sentAt || latest.status !== "DRAFT"
-                                      ? ` · ${money(latest.grandTotal)}`
-                                      : " · draft"}
-                                    {latest.version > 1
-                                      ? ` · v${latest.version}`
-                                      : ""}
-                                    {quoteTotal > 1
-                                      ? open
-                                        ? " · hide"
-                                        : " · all"
-                                      : ""}
-                                  </span>
-                                </button>
-                              </div>
-                            );
-                          })()
-                        ) : (
-                          "—"
-                        )
-                      ) : null}
-                      {col === "assignedTo" ? (
-                        <span className="inline-flex max-w-full items-center gap-1 overflow-hidden">
-                          <UserRound className="h-3 w-3 shrink-0 text-mid-green" />
-                          <span className="truncate text-[11px]">
-                            {row.assignedTo?.name ||
-                              row.assignedTo?.email ||
-                              "Unassigned"}
-                          </span>
-                        </span>
-                      ) : null}
-                      {col === "expected" ? (
-                        <div className="min-w-0 space-y-0.5 text-[11px]">
-                          <p className="truncate font-medium text-dark-primary">
-                            {money(row.expectedValue)}
-                          </p>
-                          <p className="truncate text-mid-green">
-                            {row.expectedClosureAt
-                              ? new Date(
-                                  row.expectedClosureAt
-                                ).toLocaleDateString()
-                              : "—"}
-                          </p>
-                        </div>
-                      ) : null}
-                      {col === "nextFollowUp" ? (
-                        <span className="block truncate text-[11px] text-mid-green">
-                          {relativeTime(row.nextFollowUpAt)}
-                        </span>
-                      ) : null}
-                      {col === "sla" ? (
-                        <span
-                          className={`block truncate text-[11px] ${
-                            slaLabel(row) === "Overdue"
-                              ? "text-red-600"
-                              : "text-mid-green"
-                          }`}
-                        >
-                          {slaLabel(row)}
-                        </span>
-                      ) : null}
-                      {col === "actions" ? (
-                        <div className="flex max-w-full flex-wrap items-center gap-0.5">
-                          <button
-                            type="button"
-                            onClick={() => setDrawerLeadId(row.id)}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                            aria-label="View lead"
-                            title="View"
-                          >
-                            <Eye className="h-3.5 w-3.5" strokeWidth={1.75} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openRemind(row);
-                            }}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                            aria-label="Set reminder"
-                            title="Remind"
-                          >
-                            <Bell className="h-3.5 w-3.5" strokeWidth={1.75} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openLogCall(row);
-                            }}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                            aria-label="Log call"
-                            title="Log call"
-                          >
-                            <Phone
-                              className="h-3.5 w-3.5"
-                              strokeWidth={1.75}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openUploadDoc(row);
-                            }}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                            aria-label="Upload document"
-                            title="Upload document"
-                          >
-                            <Upload
-                              className="h-3.5 w-3.5"
-                              strokeWidth={1.75}
-                            />
-                          </button>
-                          {row.intakeKind === "JUNK" ||
-                          row.intakeKind === "SKIPPED" ? (
-                            <button
-                              type="button"
-                              disabled={promotingId === row.id}
-                              onClick={() => void promoteRow(row.id)}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-amber-700 hover:bg-amber-50 disabled:opacity-60"
-                              aria-label="Promote to requirement"
-                              title="Promote"
-                            >
-                              <Zap
-                                className="h-3.5 w-3.5"
-                                strokeWidth={1.75}
-                              />
-                            </button>
-                          ) : (
-                            <Link
-                              href={`/rfq/${row.id}`}
-                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                              aria-label="Open RFQ"
-                              title="RFQ"
-                            >
-                              <FileText
-                                className="h-3.5 w-3.5"
-                                strokeWidth={1.75}
-                              />
-                            </Link>
-                          )}
-                        </div>
-                      ) : null}
-                    </td>
-                  ))}
-                </tr>
+                />
               ))
             )}
           </tbody>
         </table>
+        <LeadsPagination
+          page={page}
+          total={total}
+          pageSize={LEADS_PAGE_SIZE}
+          loading={isFetching}
+          onPageChange={setPage}
+        />
       </div>
         </div>
       </div>
@@ -2251,7 +1766,8 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
         leadId={drawerLeadId}
         open={Boolean(drawerLeadId)}
         onClose={() => setDrawerLeadId(null)}
-        onChanged={() => void load()}
+        users={users}
+        onChanged={applyDrawerPatch}
       />
 
       {remindForm
@@ -2267,7 +1783,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="remind-title"
-                className="relative z-10 w-full max-w-md rounded-2xl border border-dark-primary/10 bg-white p-5 shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
+                className="relative z-10 w-full max-w-2xl rounded-2xl border border-dark-primary/10 bg-white p-6 shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -2291,7 +1807,7 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
                   </button>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-1.5">
+                <div className="mt-4 flex flex-wrap gap-2">
                   {(
                     [
                       ["1h", "In 1 hour"],
@@ -2304,15 +1820,15 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
                       key={key}
                       type="button"
                       onClick={() => setRemindPreset(key)}
-                      className="rounded-full bg-dark-secondary/[0.06] px-2.5 py-1 text-[11px] font-medium text-dark-primary hover:bg-mid-green/15"
+                      className="rounded-full bg-dark-secondary/[0.06] px-3 py-1.5 text-xs font-medium text-dark-primary hover:bg-mid-green/15"
                     >
                       {label}
                     </button>
                   ))}
                 </div>
 
-                <div className="mt-4 space-y-3">
-                  <div className="space-y-1">
+                <div className="mt-5 space-y-4">
+                  <div className="space-y-1.5">
                     <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
                       When
                     </span>
@@ -2326,41 +1842,43 @@ export function LeadsWorkbench({ title, subtitle, presetQuery }: Props) {
                       }
                     />
                   </div>
-                  <label className="block space-y-1">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                      Type
-                    </span>
-                    <select
-                      value={remindForm.type}
-                      onChange={(e) =>
-                        setRemindForm((prev) =>
-                          prev ? { ...prev, type: e.target.value } : prev
-                        )
-                      }
-                      className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
-                    >
-                      {REMIND_TYPES.map((t) => (
-                        <option key={t.value} value={t.value}>
-                          {t.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="block space-y-1">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                      Note
-                    </span>
-                    <input
-                      value={remindForm.title}
-                      onChange={(e) =>
-                        setRemindForm((prev) =>
-                          prev ? { ...prev, title: e.target.value } : prev
-                        )
-                      }
-                      placeholder="What should you remember?"
-                      className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
-                    />
-                  </label>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="block space-y-1.5">
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                        Type
+                      </span>
+                      <select
+                        value={remindForm.type}
+                        onChange={(e) =>
+                          setRemindForm((prev) =>
+                            prev ? { ...prev, type: e.target.value } : prev
+                          )
+                        }
+                        className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
+                      >
+                        {REMIND_TYPES.map((t) => (
+                          <option key={t.value} value={t.value}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                        Note
+                      </span>
+                      <input
+                        value={remindForm.title}
+                        onChange={(e) =>
+                          setRemindForm((prev) =>
+                            prev ? { ...prev, title: e.target.value } : prev
+                          )
+                        }
+                        placeholder="What should you remember?"
+                        className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <div className="mt-5 flex justify-end gap-2">

@@ -148,7 +148,76 @@ function normalizeUnit(raw: string | undefined): string {
   if (u === "set" || u === "sets") return "set";
   if (u === "box" || u === "boxes") return "box";
   if (u === "pair" || u === "pairs") return "pair";
+  if (u === "m" || u === "meter" || u === "meters" || u === "metre" || u === "metres") {
+    return "meters";
+  }
   return u;
+}
+
+const LENGTH_UNIT_SET = new Set([
+  "m",
+  "meter",
+  "meters",
+  "metre",
+  "metres",
+  "ft",
+  "feet",
+  "inch",
+  "inches",
+  "in",
+  "cm",
+  "mm",
+]);
+
+/**
+ * `unit` must be how quantity is counted (usually pcs), not product length/size.
+ * "Cat6 patch cable 2 m x40" → qty 40, unit pcs (length stays in the description).
+ * "50 meters of Cat6" → qty 50, unit meters (sold by the metre).
+ */
+export function correctItemQuantityUnit(
+  description: string | null | undefined,
+  quantity: number | null | undefined,
+  unit: string | null | undefined
+): { quantity: number | null; unit: string | null } {
+  const desc = String(description || "").trim();
+  const qty =
+    typeof quantity === "number" && Number.isFinite(quantity) && quantity > 0
+      ? quantity
+      : null;
+  const normalized = unit ? normalizeUnit(unit) : null;
+  const rawUnit = String(unit || "")
+    .toLowerCase()
+    .replace(/\./g, "")
+    .trim();
+
+  if (!normalized || !LENGTH_UNIT_SET.has(rawUnit) && normalized !== "meters") {
+    return { quantity: qty, unit: normalized };
+  }
+
+  const lengthMatch = desc.match(
+    /\b(\d+(?:\.\d+)?)\s*(m|meters?|metres?|ft|feet|inch(?:es)?|in|cm|mm)\b/i
+  );
+  const lengthNum = lengthMatch ? Number(lengthMatch[1]) : NaN;
+  const xCountMatch = desc.match(/\bx\s*(\d+(?:\.\d+)?)\b/i);
+  const xCount = xCountMatch ? Number(xCountMatch[1]) : NaN;
+  const countedPatch =
+    /\b(patch\s*cables?|patch\s*cords?)\b/i.test(desc) ||
+    /\bpre[- ]?terminated\b/i.test(desc);
+
+  // Explicit "… 2 m x40" → count of pieces.
+  if (Number.isFinite(xCount)) {
+    return { quantity: qty ?? xCount, unit: "pcs" };
+  }
+  // Qty differs from an embedded length (2 m) → that length is a spec, not the unit.
+  if (qty !== null && Number.isFinite(lengthNum) && qty !== lengthNum) {
+    return { quantity: qty, unit: "pcs" };
+  }
+  // Finished patch leads are sold as pieces even when AI says "meters".
+  if (countedPatch) {
+    return { quantity: qty, unit: "pcs" };
+  }
+
+  return { quantity: qty, unit: normalized };
 }
 
 function parseQty(raw: string): number {
@@ -236,31 +305,43 @@ type LooseItem = {
   category?: string | null;
 };
 
+function withCorrectedUnit(item: LooseItem): LooseItem {
+  const description = asString(item.description) || asString(item.brand) || null;
+  const corrected = correctItemQuantityUnit(
+    description,
+    typeof item.quantity === "number" && item.quantity > 0 ? item.quantity : null,
+    asString(item.unit) || null
+  );
+  return {
+    description,
+    brand: asString(item.brand) || null,
+    quantity: corrected.quantity,
+    unit: corrected.unit,
+    category: asString(item.category) || null,
+  };
+}
+
 /** Prefer structured text lines over a collapsed AI summary. */
 export function resolveParsedItems(
   aiItems: LooseItem[],
   rawText: string
 ): LooseItem[] {
-  const textItems = extractRequirementsFromText(rawText);
-
-  const normalizedAi = aiItems
-    .filter((item) => asString(item.description) || asString(item.brand))
-    .map((item) => ({
-      description: asString(item.description) || asString(item.brand) || null,
-      brand: asString(item.brand) || null,
-      quantity: typeof item.quantity === "number" && item.quantity > 0 ? item.quantity : null,
-      unit: asString(item.unit) || null,
-      category: asString(item.category) || null,
-    }));
-
-  if (textItems.length >= 2) {
-    return textItems.map((item) => ({
+  const textItems = extractRequirementsFromText(rawText).map((item) =>
+    withCorrectedUnit({
       description: item.description,
       brand: item.brand ?? null,
       quantity: item.quantity,
       unit: item.unit,
       category: item.category ?? null,
-    }));
+    })
+  );
+
+  const normalizedAi = aiItems
+    .filter((item) => asString(item.description) || asString(item.brand))
+    .map((item) => withCorrectedUnit(item));
+
+  if (textItems.length >= 2) {
+    return textItems;
   }
 
   if (normalizedAi.length >= 2) return normalizedAi;
@@ -268,34 +349,16 @@ export function resolveParsedItems(
   if (normalizedAi.length === 1) {
     const desc = normalizedAi[0].description || "";
     if (textItems.length === 1 && looksLikeMergedSummary(desc)) {
-      return textItems.map((item) => ({
-        description: item.description,
-        brand: item.brand ?? null,
-        quantity: item.quantity,
-        unit: item.unit,
-        category: item.category ?? null,
-      }));
+      return textItems;
     }
     if (looksLikeMergedSummary(desc) && textItems.length >= 1) {
-      return textItems.map((item) => ({
-        description: item.description,
-        brand: item.brand ?? null,
-        quantity: item.quantity,
-        unit: item.unit,
-        category: item.category ?? null,
-      }));
+      return textItems;
     }
   }
 
   if (normalizedAi.length === 1) return normalizedAi;
   if (textItems.length === 1) {
-    return textItems.map((item) => ({
-      description: item.description,
-      brand: item.brand ?? null,
-      quantity: item.quantity,
-      unit: item.unit,
-      category: item.category ?? null,
-    }));
+    return textItems;
   }
 
   return normalizedAi;

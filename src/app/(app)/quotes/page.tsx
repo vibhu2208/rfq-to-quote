@@ -11,7 +11,7 @@ import {
   quoteListWhere,
   QUOTE_LIST_PAGE_SIZE,
 } from "@/lib/quote-list";
-import { format } from "date-fns";
+import { formatQuoteInstant } from "@/lib/quote-format";
 
 type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
@@ -154,7 +154,7 @@ export default async function QuotesPage({ searchParams }: Props) {
                       ) : null}
                     </td>
                     <td className="px-3 py-2 align-middle whitespace-nowrap text-mid-green">
-                      {format(q.issuedAt ?? q.updatedAt, "dd MMM yyyy")}
+                      {formatQuoteInstant(q.issuedAt ?? q.updatedAt, "dd MMM yyyy")}
                     </td>
                     <td className="px-3 py-2 align-middle text-right font-medium tabular-nums">
                       <Money value={decimalToNumber(q.grandTotal)} />

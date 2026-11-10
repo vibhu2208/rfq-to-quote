@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useOptimisticPathname } from "@/components/navigation-progress";
 import {
   BookMarked,
   BookOpen,
@@ -319,7 +319,7 @@ function LedgerDropdown({
 }
 
 export function AppNav({ email: userEmail }: { email: string }) {
-  const pathname = usePathname();
+  const pathname = useOptimisticPathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [menuPath, setMenuPath] = useState(pathname);

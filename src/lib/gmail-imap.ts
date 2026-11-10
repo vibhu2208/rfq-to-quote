@@ -21,7 +21,10 @@ import {
   emailLooksLikeRequirement,
   looksLikePromotionalEmail,
 } from "@/lib/inbound-requirement";
-import { emailBodyFromParts } from "@/lib/email-text";
+import {
+  emailBodyFromParts,
+  extractCustomerIdentityFromEmail,
+} from "@/lib/email-text";
 
 export type PolledEmail = {
   messageId: string;
@@ -149,6 +152,11 @@ async function ingestInboundEmail(
   // Unclear mail → SKIPPED for review. Clear requirements → normal lead.
   const isPromo = looksLikePromotionalEmail(signals);
   const isRequirement = emailLooksLikeRequirement(signals);
+  const { customerName, customerCompany } = extractCustomerIdentityFromEmail(
+    text,
+    fromName,
+    fromEmail
+  );
 
   if (!isRequirement) {
     const rfq = await createRfqWithMessage({
@@ -157,7 +165,8 @@ async function ingestInboundEmail(
       subject,
       rawText: text.slice(0, 20000),
       rawAttachments: attachments,
-      customerName: fromName || fromEmail,
+      customerName,
+      customerCompany,
       customerEmail: fromEmail,
       autoParse: false,
       intakeKind: isPromo ? "JUNK" : "SKIPPED",
@@ -182,7 +191,8 @@ async function ingestInboundEmail(
     subject,
     rawText: text.slice(0, 20000),
     rawAttachments: attachments,
-    customerName: fromName || fromEmail,
+    customerName,
+    customerCompany,
     customerEmail: fromEmail,
   });
 

@@ -289,9 +289,9 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   );
 
   try {
-    const { markLeadQuoted } = await import("@/lib/leads/stage");
+    // Draft create must NOT advance leadStage to QUOTE_SENT — that happens on send
+    // via syncLeadStageFromQuoteStatus(SENT). Keep activity for CRM history only.
     const { logLeadActivity } = await import("@/lib/leads/activity");
-    await markLeadQuoted(rfq.id);
     await logLeadActivity({
       rfqId: rfq.id,
       type: "QUOTE_GENERATED",

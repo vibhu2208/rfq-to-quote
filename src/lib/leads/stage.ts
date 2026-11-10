@@ -157,21 +157,11 @@ export async function syncLeadStageFromQuoteStatus(input: {
   });
 }
 
-export async function markLeadQuoted(rfqId: string, actorId?: string | null) {
-  const rfq = await prisma.rfq.findUnique({ where: { id: rfqId } });
-  if (!rfq || isTerminalStage(rfq.leadStage)) return rfq;
-
-  if (
-    rfq.leadStage === "NEW_LEAD" ||
-    rfq.leadStage === "CONTACTED" ||
-    rfq.leadStage === "QUALIFIED"
-  ) {
-    return changeLeadStage({
-      rfqId,
-      toStage: "QUOTE_SENT",
-      reason: "Quotation created",
-      actorId,
-    });
-  }
-  return rfq;
+/**
+ * @deprecated Draft quotation create must not mark QUOTE_SENT.
+ * Stage advances only when the quote is actually sent/viewed via
+ * `syncLeadStageFromQuoteStatus`. Kept as a no-op for any stale callers.
+ */
+export async function markLeadQuoted(rfqId: string, _actorId?: string | null) {
+  return prisma.rfq.findUnique({ where: { id: rfqId } });
 }
