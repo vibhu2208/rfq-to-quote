@@ -575,13 +575,15 @@ export function LeadDetailDrawer({ leadId, open, onClose, onChanged }: Props) {
                   typeof lead.parseConfidence === "number"
                     ? Math.round(lead.parseConfidence * 100)
                     : null;
-                const meta =
-                  lead.parsedSpecs &&
-                  typeof lead.parsedSpecs === "object" &&
-                  (lead.parsedSpecs as { _meta?: { summary?: string } })
-                    ._meta;
-                const summary =
-                  typeof meta?.summary === "string" ? meta.summary.trim() : "";
+                let summary = "";
+                if (lead.parsedSpecs && typeof lead.parsedSpecs === "object") {
+                  const root = lead.parsedSpecs as Record<string, unknown>;
+                  const meta = root._meta;
+                  if (meta && typeof meta === "object") {
+                    const raw = (meta as Record<string, unknown>).summary;
+                    if (typeof raw === "string") summary = raw.trim();
+                  }
+                }
 
                 if (
                   !rfqItems.length &&
