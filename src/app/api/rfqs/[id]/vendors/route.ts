@@ -147,7 +147,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
             : outreach?.quotedPrice != null
               ? Number(outreach.quotedPrice)
               : null),
-        outreach,
+        outreach: outreach ?? null,
       });
     }
   }
