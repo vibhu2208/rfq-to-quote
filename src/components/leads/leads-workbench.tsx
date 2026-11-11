@@ -187,6 +187,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   );
   const initialUrl = initialUrlRef.current;
   const urlSyncRef = useRef(searchParams.toString());
+  const prevDrawerLeadIdRef = useRef(initialUrl.leadId);
   const [page, setPage] = useState(initialUrl.page);
   const tableViewActive = !pathname.startsWith("/leads/pipeline");
   const [intakeKind, setIntakeKind] = useState<LeadIntakeFilter>(
@@ -336,8 +337,20 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     presetQuery,
   ]);
 
+  // Browser back/forward: URL → drawer so Back closes the lead drawer
+  // instead of leaving /leads.
+  useEffect(() => {
+    const qs = searchParams.toString();
+    if (qs === urlSyncRef.current) return;
+    urlSyncRef.current = qs;
+    const leadId = searchParams.get("leadId")?.trim() || null;
+    prevDrawerLeadIdRef.current = leadId;
+    setDrawerLeadId(leadId);
+  }, [searchParams]);
+
   // Keep list filters / intake tab / open drawer in the URL so browser back
   // from /rfq/[id] remounts the same sub-view instead of the default list.
+  // Opening a drawer uses push so Back closes it; filter tweaks use replace.
   useEffect(() => {
     const next = buildLeadsWorkbenchSearchParams(
       {
@@ -357,9 +370,20 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       },
       presetQuery
     ).toString();
-    if (next === urlSyncRef.current) return;
+    if (next === urlSyncRef.current) {
+      prevDrawerLeadIdRef.current = drawerLeadId;
+      return;
+    }
+    const openingDrawer =
+      Boolean(drawerLeadId) && !prevDrawerLeadIdRef.current;
+    prevDrawerLeadIdRef.current = drawerLeadId;
     urlSyncRef.current = next;
-    router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
+    const href = next ? `${pathname}?${next}` : pathname;
+    if (openingDrawer) {
+      router.push(href, { scroll: false });
+    } else {
+      router.replace(href, { scroll: false });
+    }
   }, [
     intakeKind,
     q,

@@ -3,6 +3,7 @@ import {
   formatQuoteDateDisplay,
   formatQuoteInstant,
   formatQuoteQty,
+  formatQuoteUnit,
   formatTaxAnalysis,
   parseQuoteDate,
   quoteShowHsn,
@@ -18,9 +19,19 @@ describe("quoteShowUnit", () => {
   });
 });
 
+describe("formatQuoteUnit", () => {
+  it("keeps Nos and Pcs distinct to match the editor selection", () => {
+    expect(formatQuoteUnit("nos")).toBe("NOS");
+    expect(formatQuoteUnit("pcs")).toBe("PCS");
+    expect(formatQuoteUnit("Pcs")).toBe("PCS");
+    expect(formatQuoteUnit("piece")).toBe("PCS");
+  });
+});
+
 describe("formatQuoteQty", () => {
   it("prints qty with the unit on the quotation", () => {
     expect(formatQuoteQty(2, "nos")).toBe("2 NOS");
+    expect(formatQuoteQty(50, "pcs")).toBe("50 PCS");
   });
 
   it("prints qty only when the quotation hides units", () => {

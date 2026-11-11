@@ -184,6 +184,14 @@ export function quoteUnitOptions(current?: string | null): Array<{ value: string
   return [...QUOTE_UNITS, { value, label: value }];
 }
 
+/** Display unit on preview/PDF — preserves editor choice (Pcs stays PCS, not NOS). */
+export function formatQuoteUnit(unit?: string | null): string {
+  const raw = (unit || DEFAULT_QUOTE_UNIT).trim();
+  if (!raw) return DEFAULT_QUOTE_UNIT.toUpperCase();
+  if (/^(pc|pcs|piece|pieces)$/i.test(raw)) return "PCS";
+  return normalizeQuoteUnit(raw).toUpperCase();
+}
+
 export function formatQuoteQty(
   qty: number,
   unit: string,
@@ -191,12 +199,7 @@ export function formatQuoteQty(
 ): string {
   const q = Number.isInteger(qty) ? String(qty) : String(qty);
   if (!quoteShowUnit(showUnit)) return q;
-  const raw = (unit || DEFAULT_QUOTE_UNIT).trim();
-  const u =
-    /^(pc|pcs|piece|pieces)$/i.test(raw) || raw.toLowerCase() === "nos"
-      ? "NOS"
-      : raw.toUpperCase();
-  return `${q} ${u}`;
+  return `${q} ${formatQuoteUnit(unit)}`;
 }
 
 export const DEFAULT_QUOTE_TAGLINE = "ENABLING IT   |   ISO 9001:2015";
