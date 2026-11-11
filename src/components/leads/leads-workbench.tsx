@@ -337,21 +337,20 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     presetQuery,
   ]);
 
-  // Browser back/forward: URL → drawer so Back closes the lead drawer
-  // instead of leaving /leads.
-  useEffect(() => {
-    const qs = searchParams.toString();
-    if (qs === urlSyncRef.current) return;
-    urlSyncRef.current = qs;
-    const leadId = searchParams.get("leadId")?.trim() || null;
-    prevDrawerLeadIdRef.current = leadId;
-    setDrawerLeadId(leadId);
-  }, [searchParams]);
-
   // Keep list filters / intake tab / open drawer in the URL so browser back
   // from /rfq/[id] remounts the same sub-view instead of the default list.
   // Opening a drawer uses push so Back closes it; filter tweaks use replace.
+  // If the URL changed externally (Back/Forward), sync drawer from leadId.
   useEffect(() => {
+    const qs = searchParams.toString();
+    if (qs !== urlSyncRef.current) {
+      urlSyncRef.current = qs;
+      const leadId = searchParams.get("leadId")?.trim() || null;
+      prevDrawerLeadIdRef.current = leadId;
+      setDrawerLeadId(leadId);
+      return;
+    }
+
     const next = buildLeadsWorkbenchSearchParams(
       {
         intakeKind,
@@ -401,6 +400,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     pathname,
     presetQuery,
     router,
+    searchParams,
   ]);
 
   const listFilters = useMemo<LeadsListFilters>(
