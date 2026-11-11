@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
+import { BuyerRequiredError } from "@/lib/quote-buyer-required";
 import { buildQuotePdfBuffer } from "@/lib/pdf/render-quote-buffer";
 
 type Params = { params: Promise<{ id: string }> };
@@ -44,6 +45,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
       },
     });
   } catch (e) {
+    if (e instanceof BuyerRequiredError) {
+      return NextResponse.json({ error: e.message }, { status: 400 });
+    }
     const message = e instanceof Error ? e.message : "PDF generation failed";
     console.error("Quote PDF failed", e);
     return NextResponse.json({ error: message }, { status: 500 });

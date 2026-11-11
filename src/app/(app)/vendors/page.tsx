@@ -24,7 +24,7 @@ type VendorContact = {
   name: string;
   email: string;
   phone: string;
-  role: string;
+  role?: string;
   isPrimary: boolean;
   vendorCategoryId?: string | null;
   category?: string;
@@ -400,7 +400,7 @@ export default function VendorsPage() {
               name: contact.name,
               email: contact.email,
               phone: contact.phone,
-              role: contact.role,
+              role: contact.role || "",
               isPrimary: contact.isPrimary,
               vendorCategoryId: contact.vendorCategoryId || null,
               category: contact.category || "",
@@ -486,7 +486,7 @@ export default function VendorsPage() {
         name: contact.name.trim(),
         email: contact.email.trim(),
         phone: contact.phone.trim(),
-        role: contact.role.trim(),
+        role: (contact.role || "").trim(),
         vendorCategoryId: contact.vendorCategoryId || null,
         category: (contact.category || "").trim(),
         subcategory: (contact.subcategory || "").trim(),

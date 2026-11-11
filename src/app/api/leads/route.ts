@@ -62,7 +62,9 @@ const leadListSelect = {
     orderBy: { createdAt: "desc" as const },
     take: 5,
   },
-  _count: { select: { quotes: true, messages: true, followUps: true } },
+  _count: {
+    select: { quotes: true, messages: true, followUps: true, attachments: true },
+  },
 };
 
 function truncate(text: string, max: number) {

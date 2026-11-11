@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 export const QUOTE_ATTACHMENT_BUCKET = "quote-attachments";
+export const LEAD_ATTACHMENT_BUCKET = "lead-attachments";
 
 export function getSupabaseAdmin(): SupabaseClient | null {
   const url = process.env.SUPABASE_URL?.trim();

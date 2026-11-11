@@ -135,7 +135,6 @@ function serializeListVendor(vendor: {
     name: string;
     email: string;
     phone: string;
-    role: string;
     isPrimary: boolean;
     vendorCategoryId: string | null;
   }>;
@@ -153,20 +152,17 @@ function serializeListVendor(vendor: {
       id: row.id,
       category: row.category,
       subcategory: row.subcategory,
-      keywords: [],
+      keywords: [] as string[],
     })),
     contacts: vendor.contacts.map((contact) => ({
       id: contact.id,
       name: contact.name,
       email: contact.email,
       phone: contact.phone,
-      role: contact.role,
       isPrimary: contact.isPrimary,
       vendorCategoryId: contact.vendorCategoryId,
-      category: "",
-      subcategory: "",
     })),
-    declinedOutreaches: [],
+    declinedOutreaches: [] as unknown[],
     declinedCount: vendor._count.outreaches,
   };
 }
@@ -213,12 +209,16 @@ export async function GET(request: NextRequest) {
     MAX_PAGE_SIZE
   );
   const limitParam = Number(request.nextUrl.searchParams.get("limit") || "");
+  // Always bound list responses. Bare GET /api/vendors previously returned the
+  // full directory (~3k rows / multi-MB decoded); keep a hard ceiling.
   const take =
     Number.isFinite(limitParam) && limitParam > 0
       ? Math.min(Math.floor(limitParam), MAX_PAGE_SIZE)
       : light
         ? 40
-        : undefined;
+        : list || paged
+          ? undefined
+          : DEFAULT_PAGE_SIZE;
 
   if (sync === "true" || sync === "1") {
     await deleteDummyVendors();
@@ -259,7 +259,6 @@ export async function GET(request: NextRequest) {
               name: true,
               email: true,
               phone: true,
-              role: true,
               isPrimary: true,
               vendorCategoryId: true,
             },

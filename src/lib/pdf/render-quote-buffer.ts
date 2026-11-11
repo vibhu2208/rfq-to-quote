@@ -2,6 +2,7 @@ import type { Quote, QuoteLineItem, Product } from "@prisma/client";
 import { getCompanyConfig } from "@/lib/company";
 import { round2 } from "@/lib/accounting/money";
 import { decimalToNumber } from "@/lib/quotes";
+import { assertBuyerReadyForExport } from "@/lib/quote-buyer-required";
 import { effectiveUnitPrice } from "@/lib/quote-discount";
 import { formatWarrantyLabel } from "@/lib/quote-warranty";
 import { renderQuotePdf } from "@/lib/pdf/quote-document";
@@ -25,6 +26,8 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
   buffer: Buffer;
   filename: string;
 }> {
+  assertBuyerReadyForExport(quote);
+
   const company = getCompanyConfig();
   const withGst = quote.withGst;
 

@@ -67,6 +67,7 @@ import {
   type ClientContactHit,
   type ClientHit,
 } from "@/components/client-company-field";
+import { buyerRequiredGaps } from "@/lib/quote-buyer-required";
 import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
 import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 import { QuoteCalculator } from "@/components/quote-calculator";
@@ -323,11 +324,7 @@ function formatGstAddress(parts: {
 }
 
 function buyerGaps(form: QuoteFormState) {
-  const gaps: string[] = [];
-  if (!form.buyerCompany.trim()) gaps.push("company name");
-  if (!form.buyerAddress.trim()) gaps.push("address");
-  if (!form.buyerState.trim()) gaps.push("state");
-  return gaps;
+  return buyerRequiredGaps(form);
 }
 
 const emptyQuote = (): QuoteFormState => ({
@@ -1020,7 +1017,7 @@ export function QuoteBuilder({
 
   const calcRef = useRef(calc);
   const lastSavedJsonRef = useRef<string | null>(null);
-  const baselineJsonRef = useRef<string | null>(null);
+  const hydratedSaveRef = useRef(false);
   const saveChainRef = useRef(Promise.resolve(true));
   const savingRef = useRef(false);
   calcRef.current = calc;
@@ -1118,20 +1115,22 @@ export function QuoteBuilder({
     () => JSON.stringify(quoteSavePayload(form, calc)),
     [form, calc]
   );
+  // Dirty only vs last persisted payload — never vs page-load baseline.
+  // Matching the initial load after a later save must still trigger a PUT.
   const hasPendingSave =
-    baselineJsonRef.current !== null &&
-    savePayloadJson !== baselineJsonRef.current &&
+    hydratedSaveRef.current &&
     savePayloadJson !== lastSavedJsonRef.current;
 
   useEffect(() => {
-    if (baselineJsonRef.current === null) {
-      baselineJsonRef.current = savePayloadJson;
+    if (!hydratedSaveRef.current) {
+      // Loaded form matches server for edits; treat as last saved so mount
+      // does not autosave, but later edits (including reverting to this value
+      // after a different save) compare only against lastSavedJsonRef.
+      lastSavedJsonRef.current = savePayloadJson;
+      hydratedSaveRef.current = true;
       return;
     }
-    if (
-      savePayloadJson === baselineJsonRef.current ||
-      savePayloadJson === lastSavedJsonRef.current
-    ) {
+    if (savePayloadJson === lastSavedJsonRef.current) {
       return;
     }
     const timer = window.setTimeout(() => {
@@ -1145,9 +1144,7 @@ export function QuoteBuilder({
       const json = JSON.stringify(
         quoteSavePayload(formRef.current, calcRef.current)
       );
-      return (
-        json !== baselineJsonRef.current && json !== lastSavedJsonRef.current
-      );
+      return hydratedSaveRef.current && json !== lastSavedJsonRef.current;
     };
     const flush = () => {
       if (!isDirty()) return;
@@ -1516,8 +1513,8 @@ export function QuoteBuilder({
     }
     try {
       await downloadQuotePdf(id, formRef.current.quoteNumber || "quote");
-    } catch {
-      setMsg("PDF generation failed");
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "PDF generation failed");
     }
   }
 

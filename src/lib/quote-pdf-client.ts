@@ -1,7 +1,17 @@
+async function pdfErrorMessage(res: Response): Promise<string> {
+  try {
+    const data = (await res.json()) as { error?: unknown };
+    if (typeof data.error === "string" && data.error.trim()) return data.error;
+  } catch {
+    // ignore non-JSON bodies
+  }
+  return "PDF generation failed";
+}
+
 export async function fetchQuotePdfBlob(quoteId: string): Promise<Blob> {
   const res = await fetch(`/api/quotes/${quoteId}/pdf`);
   if (!res.ok) {
-    throw new Error("PDF generation failed");
+    throw new Error(await pdfErrorMessage(res));
   }
   return res.blob();
 }
