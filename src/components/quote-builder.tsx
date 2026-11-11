@@ -35,6 +35,7 @@ import {
   isQuoteUnitPriceInRange,
   MAX_QUOTE_UNIT_PRICE,
 } from "@/lib/accounting/money";
+import { catalogBindingLooksMismatched } from "@/lib/product-match";
 import { INDIAN_STATES } from "@/lib/states";
 import {
   resolveQuoteSendDefaults,
@@ -2482,6 +2483,23 @@ export function QuoteBuilder({
                                 }
                               />
                             </div>
+                            {line.productId &&
+                            line.aliasName.trim() &&
+                            catalogBindingLooksMismatched(
+                              line.aliasName,
+                              [line.catalogName, line.description]
+                                .filter(Boolean)
+                                .join(" ")
+                            ) ? (
+                              <p className="mt-1 rounded-md border border-amber-200/80 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                                Catalog mismatch — review suggestions; this SKU may not match the RFQ line.
+                              </p>
+                            ) : null}
+                            {!line.productId && line.aliasName.trim() ? (
+                              <p className="mt-1 rounded-md border border-amber-200/80 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
+                                No confident catalog match — pick a product from search/suggestions.
+                              </p>
+                            ) : null}
                             {searchIdx === idx ? (
                               <div className="absolute left-0 z-20 mt-1 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
                                 <input

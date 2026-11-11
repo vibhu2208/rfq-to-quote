@@ -109,7 +109,12 @@ export async function POST(req: NextRequest) {
     }
 
     const channel = resolveEmailChannel(email.fromEmail);
-    const { customerName, customerCompany } = extractCustomerIdentityFromEmail(
+    const {
+      customerName,
+      customerCompany,
+      customerPhone,
+      customerEmail,
+    } = extractCustomerIdentityFromEmail(
       email.text,
       email.fromName,
       email.fromEmail
@@ -122,7 +127,8 @@ export async function POST(req: NextRequest) {
       rawAttachments: email.attachments,
       customerName,
       customerCompany,
-      customerEmail: email.fromEmail,
+      customerPhone,
+      customerEmail: customerEmail || email.fromEmail,
     });
 
     return NextResponse.json({ ok: true, rfqId: rfq.id, status: rfq.status, channel });

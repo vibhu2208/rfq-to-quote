@@ -152,11 +152,12 @@ async function ingestInboundEmail(
   // Unclear mail → SKIPPED for review. Clear requirements → normal lead.
   const isPromo = looksLikePromotionalEmail(signals);
   const isRequirement = emailLooksLikeRequirement(signals);
-  const { customerName, customerCompany } = extractCustomerIdentityFromEmail(
-    text,
-    fromName,
-    fromEmail
-  );
+  const {
+    customerName,
+    customerCompany,
+    customerPhone,
+    customerEmail,
+  } = extractCustomerIdentityFromEmail(text, fromName, fromEmail);
 
   if (!isRequirement) {
     const rfq = await createRfqWithMessage({
@@ -167,7 +168,8 @@ async function ingestInboundEmail(
       rawAttachments: attachments,
       customerName,
       customerCompany,
-      customerEmail: fromEmail,
+      customerPhone,
+      customerEmail: customerEmail || fromEmail,
       autoParse: false,
       intakeKind: isPromo ? "JUNK" : "SKIPPED",
       junkReason: isPromo
@@ -193,7 +195,8 @@ async function ingestInboundEmail(
     rawAttachments: attachments,
     customerName,
     customerCompany,
-    customerEmail: fromEmail,
+    customerPhone,
+    customerEmail: customerEmail || fromEmail,
   });
 
   return {

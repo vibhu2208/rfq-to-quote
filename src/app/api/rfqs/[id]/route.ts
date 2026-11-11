@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { normalizeStoredRfqCategories } from "@/lib/categories";
+import { normalizeStoredCustomerIdentity } from "@/lib/email-text";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -19,6 +20,44 @@ function withNormalizedCategories<T extends {
     ...rfq,
     parsedCategory: normalized.parsedCategory,
     parsedSpecs: normalized.parsedSpecs || rfq.parsedSpecs,
+  };
+}
+
+async function withNormalizedCustomerIdentity<
+  T extends {
+    id: string;
+    rawText?: string | null;
+    customerName?: string | null;
+    customerCompany?: string | null;
+    customerPhone?: string | null;
+    customerEmail?: string | null;
+  },
+>(rfq: T): Promise<T> {
+  const normalized = normalizeStoredCustomerIdentity({
+    rawText: rfq.rawText,
+    customerName: rfq.customerName,
+    customerCompany: rfq.customerCompany,
+    customerPhone: rfq.customerPhone,
+    customerEmail: rfq.customerEmail,
+  });
+  if (!normalized.changed) return rfq;
+
+  await prisma.rfq.update({
+    where: { id: rfq.id },
+    data: {
+      customerName: normalized.customerName,
+      customerCompany: normalized.customerCompany,
+      customerPhone: normalized.customerPhone,
+      customerEmail: normalized.customerEmail,
+    },
+  });
+
+  return {
+    ...rfq,
+    customerName: normalized.customerName,
+    customerCompany: normalized.customerCompany,
+    customerPhone: normalized.customerPhone,
+    customerEmail: normalized.customerEmail,
   };
 }
 
@@ -55,8 +94,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
   });
   if (!rfq) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // Read-only repair for the response. Persist via re-parse / backfill, not GET.
-  return NextResponse.json(withNormalizedCategories(rfq));
+  const withIdentity = await withNormalizedCustomerIdentity(rfq);
+  // Category repair stays response-only; identity persist fixes pre-signature leads.
+  return NextResponse.json(withNormalizedCategories(withIdentity));
 }
 
 const productSnapshotSchema = z.object({

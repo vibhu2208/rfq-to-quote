@@ -4,6 +4,7 @@ import {
   extractCustomerIdentityFromEmail,
   htmlToPlainText,
   normalizeOutboundEmailText,
+  normalizeStoredCustomerIdentity,
   plainTextToEmailHtml,
   structureEmailBodyForDisplay,
 } from "@/lib/email-text";
@@ -78,6 +79,8 @@ Contact: Vaibhav Singh
     ).toEqual({
       customerName: "Vaibhav Singh",
       customerCompany: "Chote Bade Cafe",
+      customerPhone: "",
+      customerEmail: "buyer@example.com",
     });
   });
 
@@ -91,6 +94,8 @@ Contact: Vaibhav Singh
     ).toEqual({
       customerName: "Priya Sharma",
       customerCompany: "Acme Pvt Ltd",
+      customerPhone: "",
+      customerEmail: "priya@acme.test",
     });
   });
 
@@ -104,6 +109,85 @@ Contact: Vaibhav Singh
     ).toEqual({
       customerName: "Vaibhav Singh",
       customerCompany: "Chote Bade Cafe",
+      customerPhone: "",
+      customerEmail: "buyer@example.com",
+    });
+  });
+
+  it("parses freeform Regards signature for name, company, and phone", () => {
+    const body = `Hi team,
+
+We are setting up a small branch office in Nashik and would like your best price for the following:
+
+1. Eight-port gigabit PoE switch - 3 nos
+
+Regards,
+Rohan Mehta
+IT Procurement Lead
+Shreeji Logistics Pvt. Ltd.
+Nashik, Maharashtra
++91 98220 45117`;
+    expect(
+      extractCustomerIdentityFromEmail(
+        body,
+        "Chotebade cafe",
+        "chotebadecafe@gmail.com"
+      )
+    ).toEqual({
+      customerName: "Rohan Mehta",
+      customerCompany: "Shreeji Logistics Pvt. Ltd.",
+      customerPhone: "+91 98220 45117",
+      customerEmail: "chotebadecafe@gmail.com",
+    });
+  });
+
+  it("repairs legacy leads that stored the From mailbox name as contact", () => {
+    const body = `
+RFQ: Network switches, Wi-Fi access points and 24 monitors for new office
+
+Company: Chote Bade Cafe
+Contact: Vaibhav Singh
+`;
+    expect(
+      normalizeStoredCustomerIdentity({
+        rawText: body,
+        customerName: "Chotebade cafe",
+        customerCompany: "",
+      })
+    ).toEqual({
+      customerName: "Vaibhav Singh",
+      customerCompany: "Chote Bade Cafe",
+      customerPhone: "",
+      customerEmail: "",
+      changed: true,
+    });
+  });
+
+  it("repairs freeform signature leads missing company and phone", () => {
+    const body = `Hi team,
+
+Please quote PoE switches and monitors.
+
+Regards,
+Rohan Mehta
+IT Procurement Lead
+Shreeji Logistics Pvt. Ltd.
+Nashik, Maharashtra
++91 98220 45117`;
+    expect(
+      normalizeStoredCustomerIdentity({
+        rawText: body,
+        customerName: "Chotebade cafe",
+        customerCompany: "",
+        customerPhone: "",
+        customerEmail: "chotebadecafe@gmail.com",
+      })
+    ).toEqual({
+      customerName: "Rohan Mehta",
+      customerCompany: "Shreeji Logistics Pvt. Ltd.",
+      customerPhone: "+91 98220 45117",
+      customerEmail: "chotebadecafe@gmail.com",
+      changed: true,
     });
   });
 });

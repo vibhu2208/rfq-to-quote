@@ -63,6 +63,7 @@ Return ONLY JSON: {"results":[{"line":1,"ids":["catalog-id",...]}]}
 Rules:
 - Pick the product the buyer is BUYING, not listed features/accessories (e.g. mic, ops, wifi, ssd inside an IFP spec).
 - Required interfaces/ports in the RFQ (HDMI, DisplayPort/DP, VGA, USB-C) must appear in the candidate name/description. Do not substitute VGA for DisplayPort/DP.
+- Keep exact type nouns: patch panel ≠ patch cord; CAT6 cord ≠ display/monitor; UPS capacity (1kVA ≠ 2kVA); switch port count must match; do not prefer PoE unless the RFQ asks for PoE; monitor diagonal must match (24" ≠ 32").
 - Use only ids from that line's cands.
 - Best matches first, max ${CATALOG_SUGGESTION_LIMIT} ids per line.
 - If nothing fits, ids: [].`;

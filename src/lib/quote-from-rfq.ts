@@ -2,7 +2,10 @@ import { prisma } from "@/lib/prisma";
 import { nextQuoteNumber, decimalToNumber } from "@/lib/quotes";
 import { catalogSellPrice, resolveQuoteUnitPrice } from "@/lib/product-price";
 import { extractRfqItems } from "@/lib/rfq-items";
-import { matchProductsToRfqItems } from "@/lib/product-match";
+import {
+  matchProductsToRfqItems,
+  shouldAutoBindCatalogMatch,
+} from "@/lib/product-match";
 import { matchRfqCatalogHybrid } from "@/lib/hybrid-catalog-match";
 import {
   quoteLinePresentation,
@@ -11,13 +14,15 @@ import {
 import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
 
 export type QuoteFromRfqLine = {
-  productId: string;
+  productId: string | null;
   qty: number;
   unitPrice?: number;
   costPrice?: number;
   costVendorName?: string;
   aliasName?: string;
   unit?: string;
+  /** True when top catalog hit was skipped as weak/mismatched. */
+  matchWeak?: boolean;
 };
 
 export type CreateQuoteFromRfqInput = {
@@ -134,10 +139,14 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   }
 
   if (lineRequests.length > 0) {
-    const ids = lineRequests.map((l) => l.productId);
-    let products = await prisma.product.findMany({
-      where: { id: { in: ids }, active: true },
-    });
+    const ids = lineRequests
+      .map((l) => l.productId)
+      .filter((id): id is string => Boolean(id));
+    let products = ids.length
+      ? await prisma.product.findMany({
+          where: { id: { in: ids }, active: true },
+        })
+      : [];
     if (products.length < ids.length) {
       const found = new Set(products.map((p) => p.id));
       const missing = ids.filter((id) => !found.has(id));
@@ -150,38 +159,79 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
       lineRequests.length === requirementItems.length
         ? lineRequests.map((req) => req.productId)
         : [];
-    lines = lineRequests
-      .map((req, i) => {
-        const p = byId.get(req.productId);
-        if (!p) return null;
-        const qty = req.qty > 0 ? req.qty : 1;
-        const fromRequirement = requirementForProduct({
-          productId: p.id,
-          lineIndex: i,
-          requirements: requirementItems,
-          topMatchProductIds,
-          claimed,
+    lines = lineRequests.map((req, i) => {
+      const qty = req.qty > 0 ? req.qty : 1;
+      if (!req.productId) {
+        const requirement = requirementItems[i];
+        const presented = quoteLinePresentation({
+          clientName: req.aliasName || requirement?.description || "From RFQ",
+          clientCode: requirement?.code,
+          clientBrand: requirement?.brand,
+          clientModel: requirement?.model,
+          clientUnit: req.unit || requirement?.unit,
+          extraNotes: requirement?.extraNotes,
+          catalogName: req.aliasName || requirement?.description || "From RFQ",
         });
-        return buildLine(
-          p,
+        return {
+          productId: null,
+          description: presented.description,
+          aliasName: presented.aliasName,
           qty,
-          i,
-          req.unitPrice,
-          {
-            name: req.aliasName || fromRequirement?.description,
-            code: fromRequirement?.code,
-            brand: fromRequirement?.brand,
-            model: fromRequirement?.model,
-            unit: req.unit || fromRequirement?.unit,
-            extraNotes: fromRequirement?.extraNotes,
-          },
-          {
-            price: req.costPrice,
-            vendorName: req.costVendorName,
-          }
-        );
-      })
-      .filter(Boolean) as LineCreate[];
+          unit: presented.unit,
+          unitPrice: 0,
+          taxRate: 18,
+          lineTotal: 0,
+          sortOrder: i,
+        } satisfies LineCreate;
+      }
+
+      const p = byId.get(req.productId);
+      if (!p) {
+        const presented = quoteLinePresentation({
+          clientName: req.aliasName || "From RFQ",
+          catalogName: req.aliasName || "From RFQ",
+          clientUnit: req.unit,
+        });
+        return {
+          productId: null,
+          description: presented.description,
+          aliasName: presented.aliasName,
+          qty,
+          unit: presented.unit,
+          unitPrice: 0,
+          taxRate: 18,
+          lineTotal: 0,
+          sortOrder: i,
+        } satisfies LineCreate;
+      }
+      const fromRequirement = requirementForProduct({
+        productId: p.id,
+        lineIndex: i,
+        requirements: requirementItems,
+        topMatchProductIds: topMatchProductIds.filter(
+          (id): id is string => Boolean(id)
+        ),
+        claimed,
+      });
+      return buildLine(
+        p,
+        qty,
+        i,
+        req.unitPrice,
+        {
+          name: req.aliasName || fromRequirement?.description,
+          code: fromRequirement?.code,
+          brand: fromRequirement?.brand,
+          model: fromRequirement?.model,
+          unit: req.unit || fromRequirement?.unit,
+          extraNotes: fromRequirement?.extraNotes,
+        },
+        {
+          price: req.costPrice,
+          vendorName: req.costVendorName,
+        }
+      );
+    });
   }
 
   if (lines.length === 0 && requirementItems.length > 1) {
@@ -323,17 +373,34 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
 
   for (const item of itemMatches) {
     const top = item.matches[0];
-    if (!top || used.has(top.product.id)) continue;
-    used.add(top.product.id);
+    const qty = item.requirement.quantity > 0 ? item.requirement.quantity : 1;
+    const aliasName = item.requirement.description;
+    const unit = item.requirement.unit;
+    const reqText = [item.requirement.brand, item.requirement.description]
+      .filter(Boolean)
+      .join(" ");
+
+    if (
+      top &&
+      !used.has(top.product.id) &&
+      shouldAutoBindCatalogMatch(top, reqText)
+    ) {
+      used.add(top.product.id);
+      lines.push({ productId: top.product.id, qty, aliasName, unit });
+      continue;
+    }
+
+    // Keep the RFQ line unbound so the trader can pick from suggestions.
     lines.push({
-      productId: top.product.id,
-      qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
-      aliasName: item.requirement.description,
-      unit: item.requirement.unit,
+      productId: null,
+      qty,
+      aliasName,
+      unit,
+      matchWeak: Boolean(top),
     });
   }
 
-  if (lines.length === 0 && overall[0]) {
+  if (lines.length === 0 && overall[0] && shouldAutoBindCatalogMatch(overall[0], rfq.subject || "")) {
     const specs = rfq.parsedSpecs as Record<string, unknown> | null;
     const defaultQty =
       typeof specs?.quantity === "number" && specs.quantity > 0 ? specs.quantity : 1;

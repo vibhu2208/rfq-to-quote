@@ -337,6 +337,7 @@ const CATEGORY_TEXT_CUES: Array<{ category: ProductCategory; patterns: RegExp[] 
       /\b(?:display\s*port|dp)\s*(?:cables?|cords?|leads?|adapters?)\b/i,
       /\bcat\s*[56](?:e|a)?\b/i,
       /\bpatch\s*cables?\b/i,
+      /\bpatch\s*cords?\b/i,
     ],
   },
   {

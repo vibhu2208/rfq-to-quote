@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { assignLead } from "@/lib/leads/assignment";
 import { logLeadActivity } from "@/lib/leads/activity";
 import { listLeadActivities } from "@/lib/leads/activity";
+import { normalizeStoredCustomerIdentity } from "@/lib/email-text";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -194,6 +195,44 @@ async function getFullLead(id: string) {
   return { ...lead, activities, invoices };
 }
 
+async function repairCustomerIdentityFromBody<
+  T extends {
+    id: string;
+    rawText?: string | null;
+    customerName?: string | null;
+    customerCompany?: string | null;
+    customerPhone?: string | null;
+    customerEmail?: string | null;
+  },
+>(lead: T): Promise<T> {
+  const normalized = normalizeStoredCustomerIdentity({
+    rawText: lead.rawText,
+    customerName: lead.customerName,
+    customerCompany: lead.customerCompany,
+    customerPhone: lead.customerPhone,
+    customerEmail: lead.customerEmail,
+  });
+  if (!normalized.changed) return lead;
+
+  await prisma.rfq.update({
+    where: { id: lead.id },
+    data: {
+      customerName: normalized.customerName,
+      customerCompany: normalized.customerCompany,
+      customerPhone: normalized.customerPhone,
+      customerEmail: normalized.customerEmail,
+    },
+  });
+
+  return {
+    ...lead,
+    customerName: normalized.customerName,
+    customerCompany: normalized.customerCompany,
+    customerPhone: normalized.customerPhone,
+    customerEmail: normalized.customerEmail,
+  };
+}
+
 export async function GET(req: NextRequest, { params }: Params) {
   const { error } = await requireSession();
   if (error) return error;
@@ -204,7 +243,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     view === "drawer" ? await getDrawerLead(id) : await getFullLead(id);
 
   if (!payload) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(payload);
+  return NextResponse.json(await repairCustomerIdentityFromBody(payload));
 }
 
 export async function PATCH(req: NextRequest, { params }: Params) {

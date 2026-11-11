@@ -70,6 +70,15 @@ const TYPE_SYNONYMS = [
   "router",
   "cable",
   "cables",
+  "patchcord",
+  "patchcords",
+  "patchcable",
+  "patchcables",
+  "patchpanel",
+  "patchpanels",
+  "cord",
+  "cords",
+  "poe",
   "ssd",
   "hdd",
   "ram",
@@ -155,11 +164,204 @@ const IDF_WEIGHT_MAX = 18;
 /** Minimum weighted score to keep a candidate (allows a single IDF/type hit). */
 const MIN_MATCH_SCORE = IDF_WEIGHT_MIN;
 
+/**
+ * Auto-bind threshold for RFQ → quote. Below this (or on type/spec conflict)
+ * leave the line unbound so the user picks from suggestions.
+ */
+export const MIN_AUTO_BIND_SCORE = 22;
+
 /** Retrieval window before AI re-rank. */
 export const CATALOG_RETRIEVAL_LIMIT = 20;
 
 /** UI / quote suggestion width after re-rank. */
 export const CATALOG_SUGGESTION_LIMIT = 4;
+
+export type CatalogTypeFamily =
+  | "monitor"
+  | "display"
+  | "cable"
+  | "patch_cord"
+  | "patch_panel"
+  | "ups"
+  | "switch"
+  | null;
+
+export type MatchConstraints = {
+  screenInches: number | null;
+  cableMeters: number | null;
+  capacityKva: number | null;
+  portCount: number | null;
+  wantsPoe: boolean | null;
+  typeFamily: CatalogTypeFamily;
+};
+
+/** Structured specs used as hard filters (beyond bag-of-words). */
+export function extractMatchConstraints(text: string): MatchConstraints {
+  const t = String(text || "").toLowerCase();
+
+  const screenInches = (() => {
+    const m = t.match(/\b(\d{2}(?:\.\d+)?)\s*(?:-?\s*)?(?:inch(?:es)?|in\b|")\b/);
+    if (m) return Number(m[1]);
+    // Avoid treating "24-port" as a 24" display.
+    if (/\b\d+\s*-?\s*ports?\b/.test(t)) return null;
+    const m2 = t.match(
+      /\b(\d{2}(?:\.\d+)?)\s+(?:fhd|uhd|qhd|ips|led|lcd)?\s*(?:monitor|display|tv)\b/
+    );
+    return m2 ? Number(m2[1]) : null;
+  })();
+
+  const cableMeters = (() => {
+    if (
+      !/\b(patch\s*cords?|patch\s*cables?|cat\s*[56]|hdmi\s*cables?|network\s*cables?|lan\s*cables?)\b/.test(
+        t
+      )
+    ) {
+      return null;
+    }
+    const m = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|mtr|meter|metre|meters|metres)\b/);
+    return m ? Number(m[1]) : null;
+  })();
+
+  const capacityKva = (() => {
+    const kva = t.match(/\b(\d+(?:\.\d+)?)\s*kva\b/);
+    if (kva) return Number(kva[1]);
+    const va = t.match(/\b(\d+(?:\.\d+)?)\s*va\b/);
+    return va ? Number(va[1]) / 1000 : null;
+  })();
+
+  const portCount = (() => {
+    const m = t.match(/\b(\d{1,3})\s*-?\s*ports?\b/);
+    return m ? Number(m[1]) : null;
+  })();
+
+  const wantsPoe = /\bpoe\b/.test(t) ? true : null;
+
+  const typeFamily: CatalogTypeFamily = (() => {
+    if (/\bpatch\s*panels?\b/.test(t)) return "patch_panel";
+    if (/\bpatch\s*cords?\b|\bpatch\s*cables?\b/.test(t)) return "patch_cord";
+    if (/\bmonitors?\b|\btft\b/.test(t)) return "monitor";
+    if (
+      /\b(?:led\s*)?displays?\b/.test(t) &&
+      !/\bdisplay\s*port\b/.test(t) &&
+      !/\bmonitors?\b/.test(t)
+    ) {
+      return "display";
+    }
+    if (/\bups\b/.test(t)) return "ups";
+    if (/\bswitches?\b/.test(t)) return "switch";
+    if (/\bcat\s*[56]\b|\bcables?\b|\bcords?\b/.test(t)) return "cable";
+    return null;
+  })();
+
+  return {
+    screenInches,
+    cableMeters,
+    capacityKva,
+    portCount,
+    wantsPoe,
+    typeFamily,
+  };
+}
+
+const TYPE_CONFLICTS: Record<string, CatalogTypeFamily[]> = {
+  monitor: ["cable", "patch_cord", "patch_panel", "switch", "ups"],
+  display: ["cable", "patch_cord", "patch_panel", "switch", "ups", "monitor"],
+  cable: ["monitor", "display", "ups", "switch", "patch_panel"],
+  patch_cord: ["monitor", "display", "ups", "switch", "patch_panel"],
+  patch_panel: ["monitor", "display", "ups", "patch_cord", "cable"],
+  ups: ["monitor", "display", "cable", "patch_cord", "patch_panel", "switch"],
+  switch: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups"],
+};
+
+export function constraintsConflict(
+  req: MatchConstraints,
+  product: MatchConstraints
+): boolean {
+  if (
+    req.typeFamily &&
+    product.typeFamily &&
+    TYPE_CONFLICTS[req.typeFamily]?.includes(product.typeFamily)
+  ) {
+    return true;
+  }
+
+  if (
+    req.screenInches != null &&
+    product.screenInches != null &&
+    Math.abs(req.screenInches - product.screenInches) >= 1
+  ) {
+    return true;
+  }
+
+  if (
+    req.cableMeters != null &&
+    product.cableMeters != null &&
+    Math.abs(req.cableMeters - product.cableMeters) > 0.05
+  ) {
+    return true;
+  }
+
+  // Qty-like "50 CAT6" must not bind to a 50" panel just because of the number.
+  if (
+    req.cableMeters != null &&
+    (product.typeFamily === "monitor" || product.typeFamily === "display")
+  ) {
+    return true;
+  }
+  if (
+    (req.typeFamily === "patch_cord" ||
+      req.typeFamily === "cable" ||
+      req.typeFamily === "patch_panel") &&
+    product.screenInches != null &&
+    (product.typeFamily === "monitor" || product.typeFamily === "display")
+  ) {
+    return true;
+  }
+
+  if (
+    req.capacityKva != null &&
+    product.capacityKva != null &&
+    Math.abs(req.capacityKva - product.capacityKva) > 0.05
+  ) {
+    return true;
+  }
+
+  if (
+    req.portCount != null &&
+    product.portCount != null &&
+    req.portCount !== product.portCount
+  ) {
+    return true;
+  }
+
+  // RFQ asked for PoE but product has no PoE signal.
+  if (req.wantsPoe === true && product.wantsPoe !== true) {
+    return true;
+  }
+
+  return false;
+}
+
+function constraintScoreBonus(req: MatchConstraints, product: MatchConstraints): number {
+  let bonus = 0;
+  if (req.typeFamily && req.typeFamily === product.typeFamily) bonus += 12;
+  if (req.screenInches != null && req.screenInches === product.screenInches) bonus += 10;
+  if (req.cableMeters != null && product.cableMeters != null) bonus += 8;
+  if (req.capacityKva != null && product.capacityKva != null) bonus += 10;
+  if (req.portCount != null && req.portCount === product.portCount) bonus += 8;
+  if (req.wantsPoe === true && product.wantsPoe === true) bonus += 6;
+  return bonus;
+}
+
+/** Soft demotion when product adds PoE/size extras the RFQ never asked for. */
+function constraintScorePenalty(req: MatchConstraints, product: MatchConstraints): number {
+  let score = 1;
+  if (req.wantsPoe == null && product.wantsPoe === true && req.typeFamily === "switch") {
+    score *= 0.45;
+  }
+  return score;
+}
+
 
 function flattenValues(value: unknown, out: string[] = []): string[] {
   if (value == null) return out;
@@ -191,6 +393,9 @@ export function tokenize(text: string): string[] {
     // Normalize common interface spellings before compound splits.
     .replace(/display[\s_-]*port/g, "displayport")
     .replace(/usb[\s_-]*c\b/g, "usbc")
+    .replace(/patch\s*cords?/g, "patchcord")
+    .replace(/patch\s*panels?/g, "patchpanel")
+    .replace(/patch\s*cables?/g, "patchcable")
     // "HDMI+DisplayPort" / "HDMI/DP" must become separate tokens.
     .replace(/([a-z0-9])[+/&]+([a-z0-9])/g, "$1 $2")
     .replace(/[^a-z0-9.]+/gi, " ")
@@ -275,6 +480,32 @@ export type ProductMatch = {
   score: number;
   matchedTokens: string[];
 };
+
+export function shouldAutoBindCatalogMatch(
+  match: Pick<ProductMatch, "score" | "product"> | null | undefined,
+  requirementText: string
+): boolean {
+  if (!match || match.score < MIN_AUTO_BIND_SCORE) return false;
+  const req = extractMatchConstraints(requirementText);
+  const product = extractMatchConstraints(
+    `${match.product.name} ${match.product.description || ""}`
+  );
+  return !constraintsConflict(req, product);
+}
+
+/** Quote-editor warning when bound catalog contradicts the RFQ line wording. */
+export function catalogBindingLooksMismatched(
+  requirementText: string,
+  productText: string
+): boolean {
+  const req = extractMatchConstraints(requirementText);
+  const product = extractMatchConstraints(productText);
+  if (constraintsConflict(req, product)) return true;
+  if (req.wantsPoe == null && product.wantsPoe === true && req.typeFamily === "switch") {
+    return true;
+  }
+  return false;
+}
 
 function toProductMatch(p: Product, score: number, matchedTokens: string[]): ProductMatch {
   return {
@@ -423,7 +654,8 @@ function scoreIndexedProduct(
   ctx: CatalogMatchContext,
   extraBrands: Set<string>,
   parsedBrand: string | null | undefined,
-  parsedCategory: string | null | undefined
+  parsedCategory: string | null | undefined,
+  constraintText?: string
 ): ProductMatch | null {
   const matchedTokens: string[] = [];
   let score = 0;
@@ -475,6 +707,16 @@ function scoreIndexedProduct(
     score += requiredPorts.size * 8;
   }
 
+  const reqText =
+    constraintText ||
+    [parsedBrand, parsedCategory, ...keywords].filter(Boolean).join(" ");
+  const productText = [indexed.product.name, indexed.product.description || ""].join(" ");
+  const reqConstraints = extractMatchConstraints(reqText);
+  const productConstraints = extractMatchConstraints(productText);
+  if (constraintsConflict(reqConstraints, productConstraints)) return null;
+  score += constraintScoreBonus(reqConstraints, productConstraints);
+  score = Math.round(score * constraintScorePenalty(reqConstraints, productConstraints));
+
   if (isFeatureNoiseCandidate(indexed, keywords.length, matchedTokens, ctx, extraBrands)) {
     score = Math.round(score * 0.2);
   }
@@ -517,6 +759,7 @@ export function retrieveCatalogCandidates(
     keywords: string[];
     parsedBrand?: string | null;
     parsedCategory?: string | null;
+    constraintText?: string | null;
   },
   limit = CATALOG_RETRIEVAL_LIMIT
 ): ProductMatch[] {
@@ -538,7 +781,8 @@ export function retrieveCatalogCandidates(
       ctx,
       extraBrands,
       input.parsedBrand,
-      input.parsedCategory
+      input.parsedCategory,
+      input.constraintText || undefined
     );
     if (match) scored.push(match);
   }
@@ -552,11 +796,12 @@ function scorePoolWithContext(
   keywords: string[],
   parsedBrand: string | null | undefined,
   parsedCategory: string | null | undefined,
-  limit: number
+  limit: number,
+  constraintText?: string | null
 ): ProductMatch[] {
   return retrieveCatalogCandidates(
     ctx,
-    { keywords, parsedBrand, parsedCategory },
+    { keywords, parsedBrand, parsedCategory, constraintText },
     limit
   );
 }
@@ -621,7 +866,14 @@ function matchRequirementItem(
   }
 
   const category = item.category || fallbackCategory;
-  const scored = scorePoolWithContext(ctx, keywords, item.brand, category, limit);
+  const scored = scorePoolWithContext(
+    ctx,
+    keywords,
+    item.brand,
+    category,
+    limit,
+    searchText
+  );
   const seen = new Set(exact.map((m) => m.product.id));
   const matches = [...exact, ...scored.filter((m) => !seen.has(m.product.id))].slice(0, limit);
 

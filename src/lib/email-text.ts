@@ -78,54 +78,262 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+function labeledEmailIdentityValue(text: string, labels: string[]): string {
+  const pattern = new RegExp(
+    `(?:^|[\\n\\r]|\\s)(?:${labels.join("|")})\\s*[:=]\\s*([^\\n\\r]+)`,
+    "i"
+  );
+  const match = text.match(pattern);
+  if (!match?.[1]) return "";
+  return match[1]
+    .trim()
+    // Stop before a following labeled field jammed on the same line
+    .replace(
+      /\s+(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name))?|Email|E-?mail|Phone|Mobile|Tel|Website|Web)\s*[:=].*$/i,
+      ""
+    )
+    .replace(/[|,;]+$/g, "")
+    .trim();
+}
+
+const COMPANY_LINE_RE =
+  /\b(?:Pvt\.?\s*Ltd\.?|Private\s+Limited|Ltd\.?|LLP|LLC|Inc\.?|Corp\.?|Corporation|Technologies|Solutions|Logistics|Enterprises|Industries|Hospital|School|University|College|Cafe|Café|Restaurant)\b/i;
+
+const JOB_TITLE_RE =
+  /\b(?:IT\s+)?(?:Procurement|Purchase|Operations|Sales|Marketing|Accounts|Finance|Admin(?:istration)?|HR|Human\s+Resources)?\s*(?:Lead|Manager|Head|Director|Officer|Executive|Engineer|Coordinator|Assistant|Specialist|Consultant|Owner|Founder|CEO|CTO|CFO|COO|MD|VP)\b|\b(?:Team\s+Lead|Project\s+Manager)\b/i;
+
+const PHONE_VALUE_RE =
+  /(?:\+?\d[\d\s\-()]{7,}\d)/;
+
+const EMAIL_VALUE_RE =
+  /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+function looksLikePersonName(line: string): boolean {
+  const cleaned = line.replace(/[.,]/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned || cleaned.length > 60) return false;
+  if (COMPANY_LINE_RE.test(cleaned) || JOB_TITLE_RE.test(cleaned)) return false;
+  if (PHONE_VALUE_RE.test(cleaned) || EMAIL_VALUE_RE.test(cleaned)) return false;
+  if (/[@/:#]/.test(cleaned)) return false;
+  const parts = cleaned.split(/\s+/);
+  if (parts.length < 2 || parts.length > 4) return false;
+  return parts.every((p) => /^[A-Z][a-zA-Z'’-]*$/.test(p) || /^[A-Z]\.?$/.test(p));
+}
+
+function looksLikeCompanyLine(line: string): boolean {
+  const cleaned = line.trim();
+  if (!cleaned || cleaned.length > 120) return false;
+  if (PHONE_VALUE_RE.test(cleaned) || EMAIL_VALUE_RE.test(cleaned)) return false;
+  if (JOB_TITLE_RE.test(cleaned) && !COMPANY_LINE_RE.test(cleaned)) return false;
+  return COMPANY_LINE_RE.test(cleaned);
+}
+
+function normalizePhoneCandidate(value: string): string {
+  const match = value.match(PHONE_VALUE_RE);
+  if (!match) return "";
+  return match[0].replace(/\s+/g, " ").trim();
+}
+
+/** Freeform block after Regards/Thanks: name, title, company, phone/email. */
+export function extractFreeformSignatureIdentity(body: string): {
+  contact: string;
+  company: string;
+  phone: string;
+  email: string;
+} {
+  const text = String(body || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const signOff = text.match(
+    /(?:^|\n)\s*(?:Regards|Thanks|Thank you|Best regards|Warm regards|Sincerely|With regards|Yours (?:truly|sincerely)|Best)\s*[,!]?\s*(?:\n+|$)/i
+  );
+  if (!signOff || signOff.index == null) {
+    return { contact: "", company: "", phone: "", email: "" };
+  }
+
+  const after = text.slice(signOff.index + signOff[0].length);
+  const lines = after
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+
+  let contact = "";
+  let company = "";
+  let phone = "";
+  let email = "";
+
+  for (const line of lines) {
+    if (!phone) {
+      const phoneHit = normalizePhoneCandidate(line);
+      if (phoneHit && phoneHit.replace(/\D/g, "").length >= 10) {
+        phone = phoneHit;
+        // Pure phone line — skip other roles
+        if (/^[\d+\s\-()]+$/.test(line.replace(/\s+/g, " ").trim())) continue;
+      }
+    }
+    if (!email) {
+      const emailHit = line.match(EMAIL_VALUE_RE)?.[0];
+      if (emailHit) {
+        email = emailHit;
+        if (line.trim() === emailHit) continue;
+      }
+    }
+    if (!contact && looksLikePersonName(line)) {
+      contact = line.replace(/\s+/g, " ").trim();
+      continue;
+    }
+    if (!company && looksLikeCompanyLine(line)) {
+      company = line.replace(/\s+/g, " ").trim();
+      continue;
+    }
+  }
+
+  // Trailing phone/email anywhere in signature if not on own line yet
+  if (!phone) {
+    const anywhere = after.match(PHONE_VALUE_RE);
+    if (anywhere && anywhere[0].replace(/\D/g, "").length >= 10) {
+      phone = anywhere[0].replace(/\s+/g, " ").trim();
+    }
+  }
+  if (!email) {
+    const anywhere = after.match(EMAIL_VALUE_RE);
+    if (anywhere) email = anywhere[0];
+  }
+
+  return { contact, company, phone, email };
+}
+
+/** Signature identity from labeled fields and/or freeform closing block. */
+export function extractLabeledCustomerIdentity(body: string): {
+  contact: string;
+  company: string;
+  phone: string;
+  email: string;
+} {
+  const text = String(body || "");
+  const labeled = {
+    company: labeledEmailIdentityValue(text, [
+      "Company\\s*Name",
+      "Company",
+      "Organisation",
+      "Organization",
+      "Org",
+    ]),
+    // Prefer Contact* labels; bare "Name:" is too ambiguous in RFQ bodies.
+    contact: labeledEmailIdentityValue(text, [
+      "Contact\\s*Person",
+      "Contact\\s*Name",
+      "Contact",
+    ]),
+    phone: normalizePhoneCandidate(
+      labeledEmailIdentityValue(text, ["Phone", "Mobile", "Tel(?:ephone)?", "Cell"])
+    ),
+    email: (
+      labeledEmailIdentityValue(text, ["E-?mail", "Email\\s*Id", "Email\\s*ID", "Mail"]).match(
+        EMAIL_VALUE_RE
+      ) || [""]
+    )[0],
+  };
+
+  const freeform = extractFreeformSignatureIdentity(text);
+  return {
+    contact: labeled.contact || freeform.contact,
+    company: labeled.company || freeform.company,
+    phone: labeled.phone || freeform.phone,
+    email: labeled.email || freeform.email,
+  };
+}
+
+export type CustomerIdentityFromEmail = {
+  customerName: string;
+  customerCompany: string;
+  customerPhone: string;
+  customerEmail: string;
+};
+
 /**
- * Read labeled signature / footer identity from an inbound email body.
- * Prefer explicit `Contact:` / `Company:` lines over the From display name
+ * Read labeled / freeform signature identity from an inbound email body.
+ * Prefer explicit Contact/Company (or Regards block) over the From display name
  * (mailbox names are often the company trade name, not the person).
  */
 export function extractCustomerIdentityFromEmail(
   body: string,
   fromName = "",
   fromEmail = ""
-): { customerName: string; customerCompany: string } {
-  const text = String(body || "");
-
-  const labeledValue = (labels: string[]): string => {
-    const pattern = new RegExp(
-      `(?:^|[\\n\\r]|\\s)(?:${labels.join("|")})\\s*[:=]\\s*([^\\n\\r]+)`,
-      "i"
-    );
-    const match = text.match(pattern);
-    if (!match?.[1]) return "";
-    return match[1]
-      .trim()
-      // Stop before a following labeled field jammed on the same line
-      .replace(
-        /\s+(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name))?|Email|E-?mail|Phone|Mobile|Tel|Website|Web)\s*[:=].*$/i,
-        ""
-      )
-      .replace(/[|,;]+$/g, "")
-      .trim();
+): CustomerIdentityFromEmail {
+  const labeled = extractLabeledCustomerIdentity(body);
+  return {
+    customerName: labeled.contact || fromName.trim() || fromEmail.trim(),
+    customerCompany: labeled.company,
+    customerPhone: labeled.phone,
+    customerEmail: labeled.email || fromEmail.trim(),
   };
+}
 
-  const company = labeledValue([
-    "Company\\s*Name",
-    "Company",
-    "Organisation",
-    "Organization",
-    "Org",
-  ]);
+/**
+ * Repair leads ingested before signature parsing: fill blank company/phone/email
+ * and replace mailbox-display contact when the body has a clearer identity.
+ */
+export function normalizeStoredCustomerIdentity(input: {
+  rawText?: string | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+}): {
+  customerName: string;
+  customerCompany: string;
+  customerPhone: string;
+  customerEmail: string;
+  changed: boolean;
+} {
+  const currentName = String(input.customerName || "").trim();
+  const currentCompany = String(input.customerCompany || "").trim();
+  const currentPhone = String(input.customerPhone || "").trim();
+  const currentEmail = String(input.customerEmail || "").trim();
+  const labeled = extractLabeledCustomerIdentity(input.rawText || "");
 
-  // Prefer Contact* labels; bare "Name:" is too ambiguous in RFQ bodies.
-  const contact = labeledValue([
-    "Contact\\s*Person",
-    "Contact\\s*Name",
-    "Contact",
-  ]);
+  let customerName = currentName;
+  let customerCompany = currentCompany;
+  let customerPhone = currentPhone;
+  let customerEmail = currentEmail;
+  let changed = false;
+
+  if (labeled.company && !currentCompany) {
+    customerCompany = labeled.company;
+    changed = true;
+  }
+
+  // Classic bug: contact = From display name, company blank, signature has both.
+  if (labeled.contact && (!currentName || !currentCompany || customerName.toLowerCase() === currentCompany.toLowerCase())) {
+    if (customerName.toLowerCase() !== labeled.contact.toLowerCase()) {
+      customerName = labeled.contact;
+      changed = true;
+    }
+  } else if (
+    labeled.contact &&
+    currentName &&
+    !looksLikePersonName(currentName) &&
+    looksLikePersonName(labeled.contact)
+  ) {
+    customerName = labeled.contact;
+    changed = true;
+  }
+
+  if (labeled.phone && !currentPhone) {
+    customerPhone = labeled.phone;
+    changed = true;
+  }
+
+  if (labeled.email && !currentEmail) {
+    customerEmail = labeled.email;
+    changed = true;
+  }
 
   return {
-    customerName: contact || fromName.trim() || fromEmail.trim(),
-    customerCompany: company,
+    customerName,
+    customerCompany,
+    customerPhone,
+    customerEmail,
+    changed,
   };
 }
 
