@@ -36,7 +36,7 @@ export function s3ConfigFromEnv(
 
 let client: S3Client | null = null;
 let clientKey = "";
-let bucketReady: Promise<void> | null = null;
+const bucketReadyByName = new Map<string, Promise<void>>();
 
 function isMissingBucket(error: unknown): boolean {
   const name =
@@ -60,14 +60,23 @@ function s3Client(config: S3StorageConfig): S3Client {
       },
     });
     clientKey = key;
-    bucketReady = null;
+    bucketReadyByName.clear();
   }
   return client;
 }
 
+function withBucket(
+  config: S3StorageConfig,
+  bucket?: string
+): S3StorageConfig {
+  if (!bucket || bucket === config.bucket) return config;
+  return { ...config, bucket };
+}
+
 async function ensureBucket(config: S3StorageConfig): Promise<void> {
-  if (!bucketReady) {
-    bucketReady = (async () => {
+  let ready = bucketReadyByName.get(config.bucket);
+  if (!ready) {
+    ready = (async () => {
       const s3 = s3Client(config);
       try {
         await s3.send(new HeadBucketCommand({ Bucket: config.bucket }));
@@ -83,11 +92,12 @@ async function ensureBucket(config: S3StorageConfig): Promise<void> {
         }
       }
     })().catch((e) => {
-      bucketReady = null;
+      bucketReadyByName.delete(config.bucket);
       throw e;
     });
+    bucketReadyByName.set(config.bucket, ready);
   }
-  await bucketReady;
+  await ready;
 }
 
 async function putObject(config: S3StorageConfig, input: {
@@ -109,25 +119,37 @@ export async function uploadToS3(input: {
   key: string;
   body: Buffer;
   contentType: string;
+  bucket?: string;
 }): Promise<string> {
   const config = s3ConfigFromEnv();
   if (!config) throw new Error("S3 is not configured");
+  const resolved = withBucket(config, input.bucket);
   try {
-    await putObject(config, input);
+    await putObject(resolved, input);
   } catch (error) {
     if (!isMissingBucket(error)) throw error;
-    await ensureBucket(config);
-    await putObject(config, input);
+    await ensureBucket(resolved);
+    await putObject(resolved, input);
   }
   return input.key;
 }
 
-export async function downloadFromS3(key: string): Promise<Buffer | null> {
+export async function ensureS3Bucket(bucket?: string): Promise<void> {
+  const config = s3ConfigFromEnv();
+  if (!config) return;
+  await ensureBucket(withBucket(config, bucket));
+}
+
+export async function downloadFromS3(
+  key: string,
+  bucket?: string
+): Promise<Buffer | null> {
   const config = s3ConfigFromEnv();
   if (!config || !key) return null;
+  const resolved = withBucket(config, bucket);
   try {
-    const out = await s3Client(config).send(
-      new GetObjectCommand({ Bucket: config.bucket, Key: key })
+    const out = await s3Client(resolved).send(
+      new GetObjectCommand({ Bucket: resolved.bucket, Key: key })
     );
     if (!out.Body) return null;
     return Buffer.from(await out.Body.transformToByteArray());
@@ -136,10 +158,11 @@ export async function downloadFromS3(key: string): Promise<Buffer | null> {
   }
 }
 
-export async function deleteFromS3(key: string): Promise<void> {
+export async function deleteFromS3(key: string, bucket?: string): Promise<void> {
   const config = s3ConfigFromEnv();
   if (!config || !key) return;
-  await s3Client(config)
-    .send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }))
+  const resolved = withBucket(config, bucket);
+  await s3Client(resolved)
+    .send(new DeleteObjectCommand({ Bucket: resolved.bucket, Key: key }))
     .catch(() => undefined);
 }

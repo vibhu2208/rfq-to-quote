@@ -95,6 +95,15 @@ function serializeProduct(p: {
   };
 }
 
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+
+function parsePositiveInt(value: string | null, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return fallback;
+  return Math.floor(n);
+}
+
 export async function GET(req: NextRequest) {
   const { error } = await requireSession();
   if (error) return error;
@@ -103,6 +112,14 @@ export async function GET(req: NextRequest) {
   const q = searchParams.get("q")?.trim() || "";
   const activeParam = searchParams.get("active");
   const withMeta = searchParams.get("withMeta") === "1";
+  const pageParam = searchParams.get("page");
+  const paged = pageParam != null && pageParam !== "";
+  const page = paged ? parsePositiveInt(pageParam, 1) : 1;
+  const pageSize = Math.min(
+    parsePositiveInt(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE),
+    MAX_PAGE_SIZE
+  );
+  // Catalog list uses page/pageSize; pickers keep take-based autocomplete.
   const take = Math.min(Number(searchParams.get("take") || 100), 2000);
   const tokens = searchTokens(q);
 
@@ -123,11 +140,11 @@ export async function GET(req: NextRequest) {
   // (so "dell 16gb" finds "Dell Latitude 16GB RAM", not only contiguous substrings).
   const tokenFilters = tokens.length > 0 ? tokens.map(tokenOr) : [];
 
-  // Pull a wider pool when searching so relevance ranking can surface the best name hits
-  // instead of the first N alphabetically.
-  const fetchTake = q ? Math.min(Math.max(take * 5, 50), 2000) : take;
   const activeWhere =
     activeParam === "true" ? { active: true } : activeParam === "false" ? { active: false } : {};
+  const where = {
+    AND: [activeWhere, ...tokenFilters],
+  };
   const productSelect = {
     id: true,
     code: true,
@@ -155,13 +172,38 @@ export async function GET(req: NextRequest) {
     createdAt: true,
     updatedAt: true,
   } as const;
+  const orderBy = [{ active: "desc" as const }, { name: "asc" as const }];
+
+  // Server-side paging for the catalog table — no full-catalog take=2000.
+  if (paged) {
+    const skip = (page - 1) * pageSize;
+    const [total, products] = await Promise.all([
+      prisma.product.count({ where }),
+      prisma.product.findMany({
+        where,
+        select: productSelect,
+        orderBy,
+        skip,
+        take: pageSize,
+      }),
+    ]);
+
+    return NextResponse.json({
+      items: products.map(serializeProduct),
+      total,
+      page,
+      pageSize,
+    });
+  }
+
+  // Pull a wider pool when searching so relevance ranking can surface the best name hits
+  // instead of the first N alphabetically.
+  const fetchTake = q ? Math.min(Math.max(take * 5, 50), 2000) : take;
 
   const products = await prisma.product.findMany({
-    where: {
-      AND: [activeWhere, ...tokenFilters],
-    },
+    where,
     select: productSelect,
-    orderBy: [{ active: "desc" }, { name: "asc" }],
+    orderBy,
     take: fetchTake,
   });
 

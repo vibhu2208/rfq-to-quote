@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import {
-  deleteQuoteAttachmentFile,
-  downloadQuoteAttachmentFile,
+  deleteLeadAttachmentFile,
+  downloadLeadAttachmentFile,
 } from "@/lib/supabase-storage";
 
 type Params = { params: Promise<{ id: string; docId: string }> };
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   let bytes: Uint8Array | null = row.data ? new Uint8Array(row.data) : null;
   if ((!bytes || bytes.length === 0) && row.storageKey) {
-    const stored = await downloadQuoteAttachmentFile(row.storageKey);
+    const stored = await downloadLeadAttachmentFile(row.storageKey);
     if (stored) bytes = new Uint8Array(stored);
   }
 
@@ -65,7 +65,7 @@ export async function DELETE(_req: NextRequest, { params }: Params) {
   if (!row) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   if (row.storageKey) {
-    await deleteQuoteAttachmentFile(row.storageKey).catch(() => undefined);
+    await deleteLeadAttachmentFile(row.storageKey).catch(() => undefined);
   }
   await prisma.leadAttachment.delete({ where: { id: row.id } });
   return NextResponse.json({ ok: true });

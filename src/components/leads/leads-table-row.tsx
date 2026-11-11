@@ -470,11 +470,24 @@ export const LeadsTableRow = memo(function LeadsTableRow({
                   e.stopPropagation();
                   onUpload();
                 }}
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                aria-label="Upload document"
-                title="Upload document"
+                className="relative inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
+                aria-label={
+                  (row._count?.attachments || 0) > 0
+                    ? `Documents (${row._count.attachments})`
+                    : "Upload document"
+                }
+                title={
+                  (row._count?.attachments || 0) > 0
+                    ? `Documents (${row._count.attachments})`
+                    : "Upload document"
+                }
               >
                 <Upload className="h-3.5 w-3.5" strokeWidth={1.75} />
+                {(row._count?.attachments || 0) > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 min-w-3 rounded-full bg-mid-green px-0.5 text-center text-[9px] leading-3 text-background">
+                    {row._count.attachments > 9 ? "9+" : row._count.attachments}
+                  </span>
+                ) : null}
               </button>
               {row.intakeKind === "JUNK" ||
               row.intakeKind === "SKIPPED" ? (

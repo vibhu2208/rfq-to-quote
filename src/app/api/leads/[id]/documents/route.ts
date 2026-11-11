@@ -7,7 +7,12 @@ import {
   formatAttachmentSize,
   QUOTE_ATTACHMENT_MAX_BYTES,
 } from "@/lib/quote-attachments";
-import { uploadLeadAttachmentFile } from "@/lib/supabase-storage";
+import { s3ConfigFromEnv } from "@/lib/s3-storage";
+import {
+  ensureLeadAttachmentBucket,
+  uploadLeadAttachmentFile,
+} from "@/lib/supabase-storage";
+import { supabaseStorageConfigured } from "@/lib/supabase";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -30,6 +35,14 @@ function meta(row: {
     hasFile: row.size > 0,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+function asUploadedFile(value: FormDataEntryValue | null): File | null {
+  if (!value || typeof value === "string") return null;
+  const candidate = value as Blob & { name?: string; arrayBuffer?: () => Promise<ArrayBuffer> };
+  if (typeof candidate.arrayBuffer !== "function") return null;
+  if (!("size" in candidate) || !(candidate.size > 0)) return null;
+  return candidate as File;
 }
 
 export async function GET(_req: NextRequest, { params }: Params) {
@@ -81,9 +94,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   const form = await req.formData();
   const noteField = form.get("note");
   const note = typeof noteField === "string" ? noteField.trim() : "";
-  const uploaded = form.get("file");
-  const file =
-    uploaded instanceof File && uploaded.size > 0 ? uploaded : null;
+  const file = asUploadedFile(form.get("file"));
 
   if (!file) {
     return NextResponse.json({ error: "Choose a document to upload" }, { status: 400 });
@@ -102,18 +113,37 @@ export async function POST(req: NextRequest, { params }: Params) {
   const attachmentId = randomUUID();
   const fileName = filenameFromUpload(file);
   const fileType = file.type || "application/octet-stream";
+  const storageConfigured = Boolean(s3ConfigFromEnv() || supabaseStorageConfigured());
   let storageKey: string | null = null;
 
-  try {
-    storageKey = await uploadLeadAttachmentFile({
-      leadId: id,
-      attachmentId,
-      fileName,
-      contentType: fileType,
-      body: buffer,
-    });
-  } catch (e) {
-    console.warn("Lead document storage upload skipped", e);
+  if (storageConfigured) {
+    try {
+      await ensureLeadAttachmentBucket();
+      storageKey = await uploadLeadAttachmentFile({
+        leadId: id,
+        attachmentId,
+        fileName,
+        contentType: fileType,
+        body: buffer,
+      });
+    } catch (e) {
+      console.error("Lead document storage upload failed", e);
+      return NextResponse.json(
+        {
+          error:
+            e instanceof Error
+              ? e.message
+              : "Could not upload document to storage",
+        },
+        { status: 502 }
+      );
+    }
+    if (!storageKey) {
+      return NextResponse.json(
+        { error: "Could not upload document to storage" },
+        { status: 502 }
+      );
+    }
   }
 
   const created = await prisma.leadAttachment.create({

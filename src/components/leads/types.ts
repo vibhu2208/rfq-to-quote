@@ -41,5 +41,10 @@ export type LeadRow = {
     body?: string;
     createdAt: string;
   }[];
-  _count: { quotes: number; messages: number; followUps: number };
+  _count: {
+    quotes: number;
+    messages: number;
+    followUps: number;
+    attachments: number;
+  };
 };

@@ -43,6 +43,8 @@ export default async function QuotesPage({ searchParams }: Props) {
         buyerName: true,
         buyerEmail: true,
         buyerPhone: true,
+        buyerAddress: true,
+        buyerState: true,
         needsAssistance: true,
         lastReplyIntent: true,
         sentAt: true,
@@ -167,6 +169,9 @@ export default async function QuotesPage({ searchParams }: Props) {
                           quoteName: q.quoteName,
                           buyerEmail: q.buyerEmail,
                           buyerPhone: q.buyerPhone,
+                          buyerCompany: q.buyerCompany,
+                          buyerAddress: q.buyerAddress,
+                          buyerState: q.buyerState,
                         }}
                         attachmentCount={q._count.attachments}
                       />

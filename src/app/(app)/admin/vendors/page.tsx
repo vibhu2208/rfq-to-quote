@@ -301,6 +301,9 @@ function AdminVendorsPageInner() {
   const [selectedVendor, setSelectedVendor] = useState<VendorListItem | null>(
     null
   );
+  const [selectedVendorLoading, setSelectedVendorLoading] = useState(
+    Boolean(initialVendorId)
+  );
 
   const [mapOpen, setMapOpen] = useState(false);
   const [mapForm, setMapForm] = useState<MapForm>(emptyMapForm);
@@ -485,12 +488,17 @@ function AdminVendorsPageInner() {
   useEffect(() => {
     if (!selectedVendorId) {
       setSelectedVendor(null);
+      setSelectedVendorLoading(false);
       return;
     }
     const cached = vendors.find((vendor) => vendor.id === selectedVendorId);
-    if (cached && cached.categories?.length) {
-      setSelectedVendor(cached);
-    }
+    // Use any cached row (including zero categories) so deep-links / switches
+    // never flash the empty "Select a vendor" pane while detail loads.
+    setSelectedVendor((current) => {
+      if (cached) return cached;
+      return current?.id === selectedVendorId ? current : null;
+    });
+    setSelectedVendorLoading(true);
     let cancelled = false;
     void (async () => {
       try {
@@ -506,6 +514,8 @@ function AdminVendorsPageInner() {
         }
       } catch {
         // keep cached vendor if present
+      } finally {
+        if (!cancelled) setSelectedVendorLoading(false);
       }
     })();
     return () => {
@@ -1989,12 +1999,23 @@ function AdminVendorsPageInner() {
           </MappingPanel>
 
           <MappingPanel className="p-5">
-            {!selectedVendor ? (
+            {!selectedVendorId ? (
               <MappingEmptyState>
                 Select a vendor to assign categories, subcategories, and POCs.
               </MappingEmptyState>
+            ) : selectedVendorLoading && !selectedVendor ? (
+              <MappingEmptyState>Loading vendor…</MappingEmptyState>
+            ) : !selectedVendor ? (
+              <MappingEmptyState>
+                Could not load this vendor. Try selecting it again.
+              </MappingEmptyState>
             ) : (
-              <div className="space-y-4">
+              <div
+                className={`space-y-4 transition-opacity ${
+                  selectedVendorLoading ? "opacity-60" : ""
+                }`}
+                aria-busy={selectedVendorLoading}
+              >
                 {(() => {
                   const companyPocs = selectedVendor.contacts.filter(
                     (contact) => !contact.vendorCategoryId

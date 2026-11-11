@@ -14,6 +14,11 @@ import {
   Upload,
   X,
 } from "lucide-react";
+import {
+  buyerRequiredGaps,
+  buyerRequiredMessage,
+} from "@/lib/quote-buyer-required";
+import { useToast } from "@/components/app-toast";
 
 const QuotePdfPreviewModal = dynamic(
   () => import("@/components/quote-pdf-preview-modal").then((m) => m.QuotePdfPreviewModal),
@@ -30,6 +35,9 @@ export type QuoteRowActionQuote = {
   quoteName?: string | null;
   buyerEmail: string;
   buyerPhone: string;
+  buyerCompany?: string | null;
+  buyerAddress?: string | null;
+  buyerState?: string | null;
 };
 
 export function QuoteRowActions({
@@ -39,6 +47,7 @@ export function QuoteRowActions({
   quote: QuoteRowActionQuote;
   attachmentCount?: number;
 }) {
+  const { toast } = useToast();
   const [busy, setBusy] = useState<"print" | "download" | "email" | null>(null);
   const [error, setError] = useState("");
   const [emailOpen, setEmailOpen] = useState(false);
@@ -52,45 +61,65 @@ export function QuoteRowActions({
 
   const fileName = quote.quoteNumber || "quote";
 
+  function exportBlockedMessage() {
+    const gaps = buyerRequiredGaps(quote);
+    if (gaps.length === 0) return "";
+    return `${buyerRequiredMessage(gaps)} Open the quote to add them.`;
+  }
+
+  function guardExport(): boolean {
+    const message = exportBlockedMessage();
+    if (!message) return true;
+    toast(message, "error");
+    return false;
+  }
+
   async function onPrint() {
+    if (!guardExport()) return;
     setBusy("print");
-    setError("");
     try {
       const { printQuotePdf } = await import("@/lib/quote-pdf-client");
       await printQuotePdf(quote.id);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Print failed");
+      toast(e instanceof Error ? e.message : "Print failed", "error");
     } finally {
       setBusy(null);
     }
   }
 
   async function onDownload() {
+    if (!guardExport()) return;
     setBusy("download");
-    setError("");
     try {
       const { downloadQuotePdf } = await import("@/lib/quote-pdf-client");
       await downloadQuotePdf(quote.id, fileName);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Download failed");
+      toast(e instanceof Error ? e.message : "Download failed", "error");
     } finally {
       setBusy(null);
     }
   }
 
+  function openPreview() {
+    if (!guardExport()) return;
+    setPreviewOpen(true);
+  }
+
   function openEmail() {
     setSendTo(quote.buyerEmail.trim());
     setSendNote("");
-    setError("");
     setWhatsAppOpen(false);
+    if (!guardExport()) return;
+    setError("");
     setEmailOpen(true);
   }
 
   function openWhatsApp() {
     setSendTo(quote.buyerPhone.trim());
     setSendNote("");
-    setError("");
     setEmailOpen(false);
+    if (!guardExport()) return;
+    setError("");
     setWhatsAppOpen(true);
   }
 
@@ -100,6 +129,7 @@ export function QuoteRowActions({
       setError(channel === "EMAIL" ? "Enter an email address" : "Enter a WhatsApp number");
       return;
     }
+    if (!guardExport()) return;
     setSending(true);
     setError("");
     try {
@@ -139,10 +169,7 @@ export function QuoteRowActions({
           type="button"
           className={btn}
           title="Preview"
-          onClick={() => {
-            setError("");
-            setPreviewOpen(true);
-          }}
+          onClick={openPreview}
         >
           <Eye className="h-4 w-4" strokeWidth={1.5} />
           <span className="sr-only">Preview</span>
@@ -151,10 +178,7 @@ export function QuoteRowActions({
           type="button"
           className={`${btn} relative`}
           title="Attach note, screenshot, or file"
-          onClick={() => {
-            setError("");
-            setAttachOpen(true);
-          }}
+          onClick={() => setAttachOpen(true)}
         >
           <Upload className="h-4 w-4" strokeWidth={1.5} />
           {attached > 0 ? (
@@ -192,9 +216,6 @@ export function QuoteRowActions({
           <span className="sr-only">Download</span>
         </button>
       </div>
-      {error && !emailOpen && !whatsAppOpen ? (
-        <p className="mt-1 text-right text-[11px] text-dark-primary">{error}</p>
-      ) : null}
 
       {emailOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">

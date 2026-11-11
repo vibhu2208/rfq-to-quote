@@ -63,6 +63,7 @@ import {
   toLocalDateTimeValue,
 } from "@/components/ui/date-time-picker";
 import { buildReminderCopy } from "@/lib/leads/reminder-copy";
+import { formatAttachmentSize } from "@/lib/quote-attachments";
 import { useLeadsList } from "@/hooks/use-leads-list";
 import {
   DEFAULT_LEAD_COLUMNS,
@@ -292,6 +293,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     note: string;
     file: File | null;
     saving: boolean;
+    loadingDocs: boolean;
+    docs: {
+      id: string;
+      fileName: string;
+      size: number;
+      note: string;
+      createdAt: string;
+    }[];
   } | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const activityLeaveTimer = useRef<ReturnType<typeof setTimeout> | null>(
@@ -981,7 +990,12 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     patchRow(remindForm.leadId, {
       nextFollowUpAt: due.toISOString(),
       _count: {
-        ...(current?._count || { quotes: 0, messages: 0, followUps: 0 }),
+        ...(current?._count || {
+          quotes: 0,
+          messages: 0,
+          followUps: 0,
+          attachments: 0,
+        }),
         followUps: (current?._count?.followUps || 0) + 1,
       },
     });
@@ -1050,6 +1064,26 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     patchRemindForm({ due: toLocalDateTimeValue(d) });
   }
 
+  async function loadLeadDocuments(leadId: string) {
+    const res = await fetch(`/api/leads/${leadId}/documents`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === "string" ? data.error : "Could not load documents"
+      );
+    }
+    const docs = Array.isArray(data.documents)
+      ? (data.documents as {
+          id: string;
+          fileName: string;
+          size: number;
+          note: string;
+          createdAt: string;
+        }[])
+      : [];
+    return docs;
+  }
+
   function openUploadDoc(row: LeadRow) {
     setUploadForm({
       leadId: row.id,
@@ -1059,7 +1093,36 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       note: "",
       file: null,
       saving: false,
+      loadingDocs: true,
+      docs: [],
     });
+    void loadLeadDocuments(row.id)
+      .then((docs) => {
+        setUploadForm((prev) =>
+          prev && prev.leadId === row.id
+            ? { ...prev, docs, loadingDocs: false }
+            : prev
+        );
+        const current = rows.find((r) => r.id === row.id);
+        patchRow(row.id, {
+          _count: {
+            ...(current?._count || {
+              quotes: 0,
+              messages: 0,
+              followUps: 0,
+              attachments: 0,
+            }),
+            attachments: docs.length,
+          },
+        });
+      })
+      .catch(() => {
+        setUploadForm((prev) =>
+          prev && prev.leadId === row.id
+            ? { ...prev, loadingDocs: false }
+            : prev
+        );
+      });
   }
 
   async function submitUploadDoc() {
@@ -1085,8 +1148,22 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       );
       return;
     }
-    const data = (await res.json().catch(() => ({}))) as { fileName?: string };
+    const data = (await res.json().catch(() => ({}))) as {
+      id?: string;
+      fileName?: string;
+      size?: number;
+      note?: string;
+      createdAt?: string;
+    };
     const fileName = data.fileName || uploadForm.file.name;
+    const nextDoc = {
+      id: data.id || `local-${Date.now()}`,
+      fileName,
+      size: typeof data.size === "number" ? data.size : uploadForm.file.size,
+      note: data.note || uploadForm.note.trim(),
+      createdAt: data.createdAt || new Date().toISOString(),
+    };
+    const nextDocs = [nextDoc, ...uploadForm.docs];
     prependActivity(uploadForm.leadId, {
       id: `local-doc-${Date.now()}`,
       type: "NOTE",
@@ -1094,11 +1171,64 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       body: uploadForm.note.trim() || undefined,
       createdAt: new Date().toISOString(),
     });
-    setUploadForm(null);
+    const current = rows.find((r) => r.id === uploadForm.leadId);
+    patchRow(uploadForm.leadId, {
+      _count: {
+        ...(current?._count || {
+          quotes: 0,
+          messages: 0,
+          followUps: 0,
+          attachments: 0,
+        }),
+        attachments: nextDocs.length,
+      },
+    });
+    setUploadForm((prev) =>
+      prev
+        ? {
+            ...prev,
+            file: null,
+            note: "",
+            saving: false,
+            docs: nextDocs,
+            loadingDocs: false,
+          }
+        : prev
+    );
+    if (uploadInputRef.current) uploadInputRef.current.value = "";
     setActionToast({
       title: `Document uploaded · ${fileName}`,
       tone: "success",
     });
+  }
+
+  async function deleteLeadDocument(docId: string) {
+    if (!uploadForm) return;
+    const res = await fetch(
+      `/api/leads/${uploadForm.leadId}/documents/${docId}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      window.alert(
+        typeof data.error === "string" ? data.error : "Could not delete document"
+      );
+      return;
+    }
+    const nextDocs = uploadForm.docs.filter((d) => d.id !== docId);
+    const current = rows.find((r) => r.id === uploadForm.leadId);
+    patchRow(uploadForm.leadId, {
+      _count: {
+        ...(current?._count || {
+          quotes: 0,
+          messages: 0,
+          followUps: 0,
+          attachments: 0,
+        }),
+        attachments: nextDocs.length,
+      },
+    });
+    setUploadForm((prev) => (prev ? { ...prev, docs: nextDocs } : prev));
   }
 
   function applyDrawerPatch(patch?: LeadDrawerRowPatch) {
@@ -2711,18 +2841,21 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="upload-doc-title"
-                className="relative z-10 w-full max-w-md rounded-2xl border border-dark-primary/10 bg-white p-5 shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
+                className="relative z-10 flex max-h-[min(88vh,40rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex shrink-0 items-start justify-between gap-3 px-5 pt-5">
                   <div>
                     <p
                       id="upload-doc-title"
                       className="text-base font-semibold text-dark-primary"
                     >
-                      Upload document
+                      Documents
+                      {uploadForm.docs.length > 0
+                        ? ` (${uploadForm.docs.length})`
+                        : ""}
                     </p>
                     <p className="mt-0.5 text-xs text-mid-green">
-                      Attach a file related to {uploadForm.contactLabel}.
+                      Attach files related to {uploadForm.contactLabel}.
                     </p>
                   </div>
                   <button
@@ -2735,7 +2868,61 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                 </div>
 
-                <div className="mt-4 space-y-3">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 py-4">
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                      Uploaded files
+                    </p>
+                    {uploadForm.loadingDocs ? (
+                      <p className="rounded-xl bg-dark-secondary/[0.04] px-3 py-4 text-center text-xs text-mid-green">
+                        Loading documents…
+                      </p>
+                    ) : uploadForm.docs.length === 0 ? (
+                      <p className="rounded-xl bg-dark-secondary/[0.04] px-3 py-4 text-center text-xs text-mid-green">
+                        No documents yet
+                      </p>
+                    ) : (
+                      <ul className="space-y-1.5">
+                        {uploadForm.docs.map((doc) => (
+                          <li
+                            key={doc.id}
+                            className="flex items-center gap-2 rounded-xl border border-dark-primary/8 px-3 py-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-dark-primary">
+                                {doc.fileName}
+                              </p>
+                              <p className="text-[11px] text-mid-green">
+                                {formatAttachmentSize(doc.size)}
+                                {doc.note ? ` · ${doc.note}` : ""}
+                              </p>
+                            </div>
+                            <a
+                              href={`/api/leads/${uploadForm.leadId}/documents/${doc.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
+                              aria-label={`Download ${doc.fileName}`}
+                              title="Download"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <Download className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </a>
+                            <button
+                              type="button"
+                              onClick={() => void deleteLeadDocument(doc.id)}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-red-50 hover:text-red-700"
+                              aria-label={`Delete ${doc.fileName}`}
+                              title="Delete"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
                   <input
                     ref={uploadInputRef}
                     type="file"
@@ -2766,7 +2953,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                         );
                       }
                     }}
-                    className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-dark-primary/20 bg-dark-secondary/[0.04] px-4 py-8 text-center hover:border-mid-green/40 hover:bg-mid-green/[0.06]"
+                    className="flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-dark-primary/20 bg-dark-secondary/[0.04] px-4 py-6 text-center hover:border-mid-green/40 hover:bg-mid-green/[0.06]"
                   >
                     <Upload className="h-5 w-5 text-mid-green" strokeWidth={1.75} />
                     {uploadForm.file ? (
@@ -2809,13 +2996,13 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </label>
                 </div>
 
-                <div className="mt-5 flex justify-end gap-2">
+                <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 px-5 py-3">
                   <button
                     type="button"
                     onClick={() => setUploadForm(null)}
                     className="h-9 rounded-full px-3 text-sm text-mid-green hover:bg-dark-secondary/8"
                   >
-                    Cancel
+                    Close
                   </button>
                   <button
                     type="button"
