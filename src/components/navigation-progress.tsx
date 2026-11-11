@@ -110,9 +110,20 @@ function paintPendingHref(href: string, setPendingHref: (href: string) => void) 
   // can be deferred with that transition and never paint until the destination
   // is ready — leaving the previous page on screen. flushSync forces the
   // skeleton into the DOM before Next continues the navigation.
-  flushSync(() => {
-    setPendingHref(href);
+  //
+  // Always schedule via a microtask: router.replace/push from a useEffect (e.g.
+  // filter URL sync) invokes onRouterTransitionStart while React is still
+  // committing, and flushSync is illegal in that window.
+  queueMicrotask(() => {
+    flushSync(() => {
+      setPendingHref(href);
+    });
   });
+}
+
+function isPathnameChange(href: string): boolean {
+  const nextPath = href.split("?")[0] || href;
+  return nextPath !== window.location.pathname;
 }
 
 /**
@@ -136,13 +147,14 @@ export function RouteTransitionProvider({
   useEffect(() => {
     function onClick(e: MouseEvent) {
       const href = isInternalNavClick(e);
-      if (!href) return;
+      // Query-only updates stay on the same page — no full-route skeleton.
+      if (!href || !isPathnameChange(href)) return;
       paintPendingHref(href, setPendingHref);
     }
 
     function onRouterStart(e: Event) {
       const href = (e as CustomEvent<RouteTransitionStartDetail>).detail?.href;
-      if (!href) return;
+      if (!href || !isPathnameChange(href)) return;
       paintPendingHref(href, setPendingHref);
     }
 

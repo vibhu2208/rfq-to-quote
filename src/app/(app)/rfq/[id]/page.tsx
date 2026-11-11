@@ -2684,7 +2684,11 @@ export default function RfqDetailPage() {
       setVendorSearchBusy(true);
       try {
         const q = vendorSearch.trim();
-        const vendorParams = new URLSearchParams({ active: "true" });
+        const vendorParams = new URLSearchParams({
+          active: "true",
+          list: "1",
+          limit: "25",
+        });
         const partyParams = new URLSearchParams({
           active: "true",
           take: "25",
@@ -2888,7 +2892,11 @@ export default function RfqDetailPage() {
     }
 
     // Prefer an existing vendor with the same phone/email before creating one.
-    const lookupParams = new URLSearchParams({ active: "true" });
+    const lookupParams = new URLSearchParams({
+      active: "true",
+      list: "1",
+      limit: "25",
+    });
     const lookupQ = email || phoneTail(phone) || party.legalName.trim();
     if (lookupQ) lookupParams.set("q", lookupQ);
     const existingRes = await fetch(`/api/vendors?${lookupParams}`);
