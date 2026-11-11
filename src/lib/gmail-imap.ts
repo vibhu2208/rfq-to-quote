@@ -21,10 +21,8 @@ import {
   emailLooksLikeRequirement,
   looksLikePromotionalEmail,
 } from "@/lib/inbound-requirement";
-import {
-  emailBodyFromParts,
-  extractCustomerIdentityFromEmail,
-} from "@/lib/email-text";
+import { emailBodyFromParts } from "@/lib/email-text";
+import { resolveCustomerIdentityFromEmail } from "@/lib/ai/extract-signature-identity";
 
 export type PolledEmail = {
   messageId: string;
@@ -157,7 +155,7 @@ async function ingestInboundEmail(
     customerCompany,
     customerPhone,
     customerEmail,
-  } = extractCustomerIdentityFromEmail(text, fromName, fromEmail);
+  } = await resolveCustomerIdentityFromEmail(text, fromName, fromEmail);
 
   if (!isRequirement) {
     const rfq = await createRfqWithMessage({

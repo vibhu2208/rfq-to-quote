@@ -2,6 +2,7 @@ import type { ProductMatch, RequirementMatch } from "@/lib/product-match";
 import {
   applyRerankOrder,
   CATALOG_SUGGESTION_LIMIT,
+  filterMatchesForRequirement,
 } from "@/lib/product-match";
 
 function extractJson(text: string): unknown {
@@ -63,7 +64,8 @@ Return ONLY JSON: {"results":[{"line":1,"ids":["catalog-id",...]}]}
 Rules:
 - Pick the product the buyer is BUYING, not listed features/accessories (e.g. mic, ops, wifi, ssd inside an IFP spec).
 - Required interfaces/ports in the RFQ (HDMI, DisplayPort/DP, VGA, USB-C) must appear in the candidate name/description. Do not substitute VGA for DisplayPort/DP.
-- Keep exact type nouns: patch panel ≠ patch cord; CAT6 cord ≠ display/monitor; UPS capacity (1kVA ≠ 2kVA); switch port count must match; do not prefer PoE unless the RFQ asks for PoE; monitor diagonal must match (24" ≠ 32").
+- Keep exact type nouns: patch panel ≠ patch cord ≠ network switch; CAT6/jumper leads ≠ display/TV/monitor; UPS capacity (1kVA ≠ 2kVA); switch port count must match (16-port ≠ 24-port); do not prefer PoE unless the RFQ asks for PoE; monitor diagonal must match (24" ≠ 32"); RAM capacity must match (16GB ≠ 8GB).
+- Never rank a product only because a quantity number equals a screen size or port count.
 - Use only ids from that line's cands.
 - Best matches first, max ${CATALOG_SUGGESTION_LIMIT} ids per line.
 - If nothing fits, ids: [].`;
@@ -153,13 +155,27 @@ export function applyRerankToItemMatches(
   limit = CATALOG_SUGGESTION_LIMIT
 ): RequirementMatch[] {
   return itemMatches.map((item) => {
-    if (item.matches.some((m) => m.score >= 1000)) {
-      return { ...item, matches: item.matches.slice(0, limit) };
+    const reqText = [
+      item.requirement.brand,
+      item.requirement.description,
+      item.requirement.model,
+      item.requirement.code,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const compatible = filterMatchesForRequirement(reqText, item.matches);
+
+    if (compatible.some((m) => m.score >= 1000)) {
+      return { ...item, matches: compatible.slice(0, limit) };
     }
     const ids = rankedByLine[item.lineNumber];
     const matches: ProductMatch[] = ids
-      ? applyRerankOrder(item.matches, ids, limit)
-      : item.matches.slice(0, limit);
+      ? applyRerankOrder(compatible, ids, limit)
+      : compatible.slice(0, limit);
+    // If AI only ranked conflicting SKUs, fall back to constraint-safe scores.
+    if (matches.length === 0 && compatible.length > 0) {
+      return { ...item, matches: compatible.slice(0, limit) };
+    }
     return { ...item, matches };
   });
 }

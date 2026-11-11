@@ -89,7 +89,7 @@ function labeledEmailIdentityValue(text: string, labels: string[]): string {
     .trim()
     // Stop before a following labeled field jammed on the same line
     .replace(
-      /\s+(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name))?|Email|E-?mail|Phone|Mobile|Tel|Website|Web)\s*[:=].*$/i,
+      /\s+(?:Company(?:\s*Name)?|Organisation|Organization|Org|Contact(?:\s*(?:Person|Name))?|Email|E-?mail|Phone|Mobile|Mob|Tel|Ph|Cell|Website|Web)\s*[:=].*$/i,
       ""
     )
     .replace(/[|,;]+$/g, "")
@@ -119,6 +119,22 @@ function looksLikePersonName(line: string): boolean {
   return parts.every((p) => /^[A-Z][a-zA-Z'’-]*$/.test(p) || /^[A-Z]\.?$/.test(p));
 }
 
+/** "Priya Nair | Admin Manager" / "Priya Nair - Admin Manager" */
+function personNameFromTitleLine(line: string): string {
+  const parts = String(line || "")
+    .split(/\s*[|–—]\s*|\s+-\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return "";
+  const name = parts[0];
+  const rest = parts.slice(1).join(" ");
+  if (!looksLikePersonName(name)) return "";
+  if (!(JOB_TITLE_RE.test(rest) || /\b(?:manager|lead|head|director|officer|executive)\b/i.test(rest))) {
+    return "";
+  }
+  return name;
+}
+
 function looksLikeCompanyLine(line: string): boolean {
   const cleaned = line.trim();
   if (!cleaned || cleaned.length > 120) return false;
@@ -133,6 +149,12 @@ function normalizePhoneCandidate(value: string): string {
   return match[0].replace(/\s+/g, " ").trim();
 }
 
+function isSignOffResidueLine(line: string): boolean {
+  return /^(?:&?\s*regards|thanks(?:\s*(?:&|and)\s*regards)?|thank you|best|sincerely)[,!.\s]*$/i.test(
+    line.trim()
+  );
+}
+
 /** Freeform block after Regards/Thanks: name, title, company, phone/email. */
 export function extractFreeformSignatureIdentity(body: string): {
   contact: string;
@@ -141,8 +163,9 @@ export function extractFreeformSignatureIdentity(body: string): {
   email: string;
 } {
   const text = String(body || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // Longer phrases first so "Thanks & regards" is not truncated to "Thanks".
   const signOff = text.match(
-    /(?:^|\n)\s*(?:Regards|Thanks|Thank you|Best regards|Warm regards|Sincerely|With regards|Yours (?:truly|sincerely)|Best)\s*[,!]?\s*(?:\n+|$)/i
+    /(?:^|\n)\s*(?:Thanks\s*(?:&|and)\s*regards|Thanking you(?:\s*(?:&|and)\s*regards)?|Best regards|Warm regards|With regards|Yours (?:truly|sincerely)|Thank you|Thanks|Regards|Sincerely|Best)\s*[,!]?\s*(?:\n+|$)/i
   );
   if (!signOff || signOff.index == null) {
     return { contact: "", company: "", phone: "", email: "" };
@@ -152,7 +175,7 @@ export function extractFreeformSignatureIdentity(body: string): {
   const lines = after
     .split("\n")
     .map((l) => l.trim())
-    .filter(Boolean)
+    .filter((l) => l && !isSignOffResidueLine(l))
     .slice(0, 8);
 
   let contact = "";
@@ -165,8 +188,14 @@ export function extractFreeformSignatureIdentity(body: string): {
       const phoneHit = normalizePhoneCandidate(line);
       if (phoneHit && phoneHit.replace(/\D/g, "").length >= 10) {
         phone = phoneHit;
-        // Pure phone line — skip other roles
-        if (/^[\d+\s\-()]+$/.test(line.replace(/\s+/g, " ").trim())) continue;
+        // Pure / labeled phone line — skip other roles
+        if (
+          /^(?:(?:mob(?:ile)?|ph(?:one)?|tel(?:ephone)?|cell)\s*[:=])?[\d+\s\-()]+$/i.test(
+            line.replace(/\s+/g, " ").trim()
+          )
+        ) {
+          continue;
+        }
       }
     }
     if (!email) {
@@ -176,9 +205,16 @@ export function extractFreeformSignatureIdentity(body: string): {
         if (line.trim() === emailHit) continue;
       }
     }
-    if (!contact && looksLikePersonName(line)) {
-      contact = line.replace(/\s+/g, " ").trim();
-      continue;
+    if (!contact) {
+      const fromTitle = personNameFromTitleLine(line);
+      if (fromTitle) {
+        contact = fromTitle;
+        continue;
+      }
+      if (looksLikePersonName(line)) {
+        contact = line.replace(/\s+/g, " ").trim();
+        continue;
+      }
     }
     if (!company && looksLikeCompanyLine(line)) {
       company = line.replace(/\s+/g, " ").trim();
@@ -224,7 +260,14 @@ export function extractLabeledCustomerIdentity(body: string): {
       "Contact",
     ]),
     phone: normalizePhoneCandidate(
-      labeledEmailIdentityValue(text, ["Phone", "Mobile", "Tel(?:ephone)?", "Cell"])
+      labeledEmailIdentityValue(text, [
+        "Phone",
+        "Mobile",
+        "Mob(?:ile)?",
+        "Tel(?:ephone)?",
+        "Ph",
+        "Cell",
+      ])
     ),
     email: (
       labeledEmailIdentityValue(text, ["E-?mail", "Email\\s*Id", "Email\\s*ID", "Mail"]).match(

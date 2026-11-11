@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { normalizeStoredRfqCategories } from "@/lib/categories";
 import { normalizeStoredCustomerIdentity } from "@/lib/email-text";
+import { resolveCustomerIdentityFromEmail } from "@/lib/ai/extract-signature-identity";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -33,32 +34,49 @@ async function withNormalizedCustomerIdentity<
     customerEmail?: string | null;
   },
 >(rfq: T): Promise<T> {
-  const normalized = normalizeStoredCustomerIdentity({
+  const heuristic = normalizeStoredCustomerIdentity({
     rawText: rfq.rawText,
     customerName: rfq.customerName,
     customerCompany: rfq.customerCompany,
     customerPhone: rfq.customerPhone,
     customerEmail: rfq.customerEmail,
   });
-  if (!normalized.changed) return rfq;
+
+  let next = {
+    customerName: heuristic.customerName,
+    customerCompany: heuristic.customerCompany,
+    customerPhone: heuristic.customerPhone,
+    customerEmail: heuristic.customerEmail,
+  };
+
+  if (!next.customerCompany.trim() || !next.customerPhone.trim()) {
+    const resolved = await resolveCustomerIdentityFromEmail(
+      rfq.rawText || "",
+      next.customerName,
+      next.customerEmail
+    );
+    next = {
+      customerName: resolved.customerName || next.customerName,
+      customerCompany: resolved.customerCompany || next.customerCompany,
+      customerPhone: resolved.customerPhone || next.customerPhone,
+      customerEmail: resolved.customerEmail || next.customerEmail,
+    };
+  }
+
+  const changed =
+    next.customerName !== String(rfq.customerName || "").trim() ||
+    next.customerCompany !== String(rfq.customerCompany || "").trim() ||
+    next.customerPhone !== String(rfq.customerPhone || "").trim() ||
+    next.customerEmail !== String(rfq.customerEmail || "").trim();
+
+  if (!changed) return rfq;
 
   await prisma.rfq.update({
     where: { id: rfq.id },
-    data: {
-      customerName: normalized.customerName,
-      customerCompany: normalized.customerCompany,
-      customerPhone: normalized.customerPhone,
-      customerEmail: normalized.customerEmail,
-    },
+    data: next,
   });
 
-  return {
-    ...rfq,
-    customerName: normalized.customerName,
-    customerCompany: normalized.customerCompany,
-    customerPhone: normalized.customerPhone,
-    customerEmail: normalized.customerEmail,
-  };
+  return { ...rfq, ...next };
 }
 
 export async function GET(_req: NextRequest, { params }: Params) {

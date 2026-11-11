@@ -6,6 +6,7 @@ import { assignLead } from "@/lib/leads/assignment";
 import { logLeadActivity } from "@/lib/leads/activity";
 import { listLeadActivities } from "@/lib/leads/activity";
 import { normalizeStoredCustomerIdentity } from "@/lib/email-text";
+import { resolveCustomerIdentityFromEmail } from "@/lib/ai/extract-signature-identity";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -205,32 +206,50 @@ async function repairCustomerIdentityFromBody<
     customerEmail?: string | null;
   },
 >(lead: T): Promise<T> {
-  const normalized = normalizeStoredCustomerIdentity({
+  const heuristic = normalizeStoredCustomerIdentity({
     rawText: lead.rawText,
     customerName: lead.customerName,
     customerCompany: lead.customerCompany,
     customerPhone: lead.customerPhone,
     customerEmail: lead.customerEmail,
   });
-  if (!normalized.changed) return lead;
+
+  let next = {
+    customerName: heuristic.customerName,
+    customerCompany: heuristic.customerCompany,
+    customerPhone: heuristic.customerPhone,
+    customerEmail: heuristic.customerEmail,
+  };
+
+  // If heuristics still look weak, ask Gemini Flash Lite (signature only).
+  if (!next.customerCompany.trim() || !next.customerPhone.trim()) {
+    const resolved = await resolveCustomerIdentityFromEmail(
+      lead.rawText || "",
+      next.customerName,
+      next.customerEmail
+    );
+    next = {
+      customerName: resolved.customerName || next.customerName,
+      customerCompany: resolved.customerCompany || next.customerCompany,
+      customerPhone: resolved.customerPhone || next.customerPhone,
+      customerEmail: resolved.customerEmail || next.customerEmail,
+    };
+  }
+
+  const changed =
+    next.customerName !== String(lead.customerName || "").trim() ||
+    next.customerCompany !== String(lead.customerCompany || "").trim() ||
+    next.customerPhone !== String(lead.customerPhone || "").trim() ||
+    next.customerEmail !== String(lead.customerEmail || "").trim();
+
+  if (!changed) return lead;
 
   await prisma.rfq.update({
     where: { id: lead.id },
-    data: {
-      customerName: normalized.customerName,
-      customerCompany: normalized.customerCompany,
-      customerPhone: normalized.customerPhone,
-      customerEmail: normalized.customerEmail,
-    },
+    data: next,
   });
 
-  return {
-    ...lead,
-    customerName: normalized.customerName,
-    customerCompany: normalized.customerCompany,
-    customerPhone: normalized.customerPhone,
-    customerEmail: normalized.customerEmail,
-  };
+  return { ...lead, ...next };
 }
 
 export async function GET(req: NextRequest, { params }: Params) {

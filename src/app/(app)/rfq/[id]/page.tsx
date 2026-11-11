@@ -3856,10 +3856,10 @@ export default function RfqDetailPage() {
           {error || "RFQ not found"}
         </p>
         <Link
-          href="/inbox"
+          href="/leads"
           className="mt-4 inline-flex h-9 items-center rounded-full bg-mid-green px-3.5 text-sm font-medium text-background hover:bg-dark-secondary"
         >
-          Back to inbox
+          Back to leads
         </Link>
       </div>
     );

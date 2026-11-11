@@ -141,6 +141,32 @@ Nashik, Maharashtra
     });
   });
 
+  it("parses Thanks & regards with Name | Title and Mob:", () => {
+    const body = `Dear Sir/Madam,
+
+Kindly share your quotation for the below requirement for our Kochi office:
+
+- Unmanaged switch with sixteen ports - 2 units
+
+Thanks & regards,
+Priya Nair | Admin Manager
+Coastal Pharma Solutions LLP
+Kochi, Kerala
+Mob: 94470 31256`;
+    expect(
+      extractCustomerIdentityFromEmail(
+        body,
+        "Chotebade cafe",
+        "chotebadecafe@gmail.com"
+      )
+    ).toEqual({
+      customerName: "Priya Nair",
+      customerCompany: "Coastal Pharma Solutions LLP",
+      customerPhone: "94470 31256",
+      customerEmail: "chotebadecafe@gmail.com",
+    });
+  });
+
   it("repairs legacy leads that stored the From mailbox name as contact", () => {
     const body = `
 RFQ: Network switches, Wi-Fi access points and 24 monitors for new office

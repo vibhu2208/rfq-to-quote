@@ -121,17 +121,51 @@ const catalog = [
     category: "TFT",
     description: "32 inch 4K UHD monitor, HDMI/DP",
   }),
+  fakeProduct({
+    id: "sw24",
+    code: "SW-24-DL",
+    name: "24 PORT D-LINK SWITCH",
+    category: "NETWORKING",
+    brand: "D-Link",
+    description: "24 port gigabit switch D-Link",
+  }),
+  fakeProduct({
+    id: "ram8",
+    code: "RAM-DDR4-8",
+    name: "8GB DDR4 Desktop RAM",
+    category: "RAM",
+    description: "8 GB DDR4 desktop memory",
+  }),
+  fakeProduct({
+    id: "ram16",
+    code: "RAM-DDR4-16",
+    name: "16GB DDR4 Desktop RAM",
+    category: "RAM",
+    description: "16 GB DDR4 desktop memory stick",
+  }),
 ];
 
 describe("extractMatchConstraints", () => {
-  it("reads screen size, cable length, kVA, and port count", () => {
+  it("reads screen size, cable length, kVA, port count, and RAM", () => {
     expect(extractMatchConstraints("24-inch FHD monitor").screenInches).toBe(24);
+    expect(extractMatchConstraints('24" Full HD IPS display').screenInches).toBe(
+      24
+    );
     expect(extractMatchConstraints("Cat6 patch cord 1 m").cableMeters).toBe(1);
     expect(extractMatchConstraints("1 kVA UPS").capacityKva).toBe(1);
     expect(extractMatchConstraints("16-port switch").portCount).toBe(16);
+    expect(extractMatchConstraints("Sixteen-port network switch").portCount).toBe(
+      16
+    );
     expect(extractMatchConstraints("24-port patch panel").typeFamily).toBe(
       "patch_panel"
     );
+    expect(extractMatchConstraints("Short CAT-6 jumper leads").typeFamily).toBe(
+      "patch_cord"
+    );
+    expect(
+      extractMatchConstraints("16 GB DDR4 desktop memory stick").capacityGb
+    ).toBe(16);
   });
 });
 
@@ -247,5 +281,80 @@ describe("catalog auto-match constraints", () => {
     expect(shouldAutoBindCatalogMatch(wrong, "50 CAT6 1 m patch cords")).toBe(
       false
     );
+  });
+
+  it("KAN-15: real Pune RFQ lines do not bind on quantity/size collisions", () => {
+    const lines = [
+      {
+        description: "Sixteen-port network switch for the office floor",
+        quantity: 3,
+        unit: "pcs",
+        category: "NETWORKING",
+        expectCode: "151041",
+        // PoE 16-port may still appear as an alt; 24-port must never.
+        rejectCodes: ["SW-24-DL"],
+      },
+      {
+        description: "Short CAT-6 jumper leads",
+        quantity: 50,
+        unit: "pcs",
+        category: "CABLE",
+        expectCode: "151900",
+        rejectCodes: ["148968"],
+      },
+      {
+        description: "24-port Cat6 patch panel",
+        quantity: 2,
+        unit: "pcs",
+        brand: "D-Link",
+        category: "NETWORKING",
+        expectCode: "147529",
+        rejectCodes: ["SW-24-DL", "147690"],
+      },
+      {
+        description: '24" Full HD IPS display, must have a DisplayPort input',
+        quantity: 10,
+        unit: "pcs",
+        category: "TFT",
+        expectCode: "MON-24-DP",
+        rejectCodes: ["MON-32-4K"],
+      },
+      {
+        description: "16 GB DDR4 desktop memory stick",
+        quantity: 12,
+        unit: "pcs",
+        category: "RAM",
+        expectCode: "RAM-DDR4-16",
+        rejectCodes: ["RAM-DDR4-8"],
+      },
+    ] as const;
+
+    for (const line of lines) {
+      const matches = matchProductsToRfqItems(catalog, {
+        parsedSpecs: {
+          items: [
+            {
+              description: line.description,
+              quantity: line.quantity,
+              unit: line.unit,
+              brand: "brand" in line ? line.brand : null,
+              category: line.category,
+            },
+          ],
+        },
+      });
+      expect(matches[0]?.matches[0]?.product.code, line.description).toBe(
+        line.expectCode
+      );
+      for (const code of line.rejectCodes) {
+        expect(
+          matches[0]?.matches.every((m) => m.product.code !== code),
+          `${line.description} should not suggest ${code}`
+        ).toBe(true);
+      }
+      expect(
+        shouldAutoBindCatalogMatch(matches[0]?.matches[0], line.description)
+      ).toBe(true);
+    }
   });
 });

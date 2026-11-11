@@ -1,8 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -45,6 +52,7 @@ import {
   relativeTime,
 } from "@/components/leads/leads-workbench-helpers";
 import type { LeadRow } from "@/components/leads/types";
+import { AppPageSkeleton } from "@/components/page-skeleton";
 import {
   DateTimePicker,
   toLocalDateTimeValue,
@@ -65,9 +73,11 @@ import {
 import type { LeadIntakeFilter } from "@/lib/leads/filters";
 import {
   LEADS_PAGE_SIZE,
+  buildLeadsWorkbenchSearchParams,
   fetchLeadSavedViews,
   fetchLeadUsers,
   leadsKeys,
+  parseLeadsWorkbenchSearchParams,
   type LeadsListFilters,
   type LeadsListResponse,
 } from "@/lib/leads/query";
@@ -128,44 +138,54 @@ type Props = {
   presetQuery?: Record<string, string>;
 };
 
-export function LeadsWorkbench({ title, presetQuery }: Props) {
+export function LeadsWorkbench(props: Props) {
+  return (
+    <Suspense fallback={<AppPageSkeleton variant="table" />}>
+      <LeadsWorkbenchInner {...props} />
+    </Suspense>
+  );
+}
+
+function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const pathname = usePathname();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
-  const [page, setPage] = useState(0);
+  const initialUrlRef = useRef(
+    parseLeadsWorkbenchSearchParams(searchParams, presetQuery)
+  );
+  const initialUrl = initialUrlRef.current;
+  const urlSyncRef = useRef(searchParams.toString());
+  const [page, setPage] = useState(initialUrl.page);
   const tableViewActive = !pathname.startsWith("/leads/pipeline");
-  const [intakeKind, setIntakeKind] = useState<LeadIntakeFilter>(() => {
-    // Pipeline views stay on real requirements; All includes junk/skipped.
-    if (
-      presetQuery?.hotOnly ||
-      presetQuery?.wonOnly ||
-      presetQuery?.lostOnly ||
-      presetQuery?.mine
-    ) {
-      return "REQUIREMENT";
-    }
-    return "all";
-  });
-  const [q, setQ] = useState("");
-  const [debouncedQ, setDebouncedQ] = useState("");
-  const [stage, setStage] = useState("");
-  const [priority, setPriority] = useState("");
-  const [channel, setChannel] = useState("");
-  const [assignee, setAssignee] = useState("");
-  const [category, setCategory] = useState("");
-  const [datePreset, setDatePreset] = useState("all");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
-  const [slaStatus, setSlaStatus] = useState("");
+  const [intakeKind, setIntakeKind] = useState<LeadIntakeFilter>(
+    initialUrl.intakeKind
+  );
+  const [q, setQ] = useState(initialUrl.q);
+  const [debouncedQ, setDebouncedQ] = useState(initialUrl.q);
+  const [stage, setStage] = useState(initialUrl.stage);
+  const [priority, setPriority] = useState(initialUrl.priority);
+  const [channel, setChannel] = useState(initialUrl.channel);
+  const [assignee, setAssignee] = useState(initialUrl.assignee);
+  const [category, setCategory] = useState(initialUrl.category);
+  const [datePreset, setDatePreset] = useState(initialUrl.datePreset);
+  const [dateFrom, setDateFrom] = useState(initialUrl.dateFrom);
+  const [dateTo, setDateTo] = useState(initialUrl.dateTo);
+  const [slaStatus, setSlaStatus] = useState(initialUrl.slaStatus);
   const [headerFilter, setHeaderFilter] = useState<{
     col: HeaderFilterCol;
     top: number;
     left: number;
   } | null>(null);
   const [showImportExport, setShowImportExport] = useState(false);
-  const [showCustomRange, setShowCustomRange] = useState(false);
+  const [showCustomRange, setShowCustomRange] = useState(
+    initialUrl.datePreset === "custom"
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [promotingId, setPromotingId] = useState<string | null>(null);
-  const [drawerLeadId, setDrawerLeadId] = useState<string | null>(null);
+  const [drawerLeadId, setDrawerLeadId] = useState<string | null>(
+    initialUrl.leadId
+  );
   const [captureOpen, setCaptureOpen] = useState(false);
   const [expandedContacts, setExpandedContacts] = useState<Set<string>>(
     () => new Set()
@@ -236,7 +256,13 @@ export function LeadsWorkbench({ title, presetQuery }: Props) {
     return () => clearTimeout(t);
   }, [q]);
 
+  const skipFilterPageReset = useRef(true);
   useEffect(() => {
+    // Preserve page restored from the URL on the first paint.
+    if (skipFilterPageReset.current) {
+      skipFilterPageReset.current = false;
+      return;
+    }
     setPage(0);
   }, [
     debouncedQ,
@@ -251,6 +277,49 @@ export function LeadsWorkbench({ title, presetQuery }: Props) {
     slaStatus,
     intakeKind,
     presetQuery,
+  ]);
+
+  // Keep list filters / intake tab / open drawer in the URL so browser back
+  // from /rfq/[id] remounts the same sub-view instead of the default list.
+  useEffect(() => {
+    const next = buildLeadsWorkbenchSearchParams(
+      {
+        intakeKind,
+        q,
+        stage,
+        priority,
+        channel,
+        assignee,
+        category,
+        datePreset,
+        dateFrom,
+        dateTo,
+        slaStatus,
+        page,
+        leadId: drawerLeadId,
+      },
+      presetQuery
+    ).toString();
+    if (next === urlSyncRef.current) return;
+    urlSyncRef.current = next;
+    router.replace(next ? `${pathname}?${next}` : pathname, { scroll: false });
+  }, [
+    intakeKind,
+    q,
+    stage,
+    priority,
+    channel,
+    assignee,
+    category,
+    datePreset,
+    dateFrom,
+    dateTo,
+    slaStatus,
+    page,
+    drawerLeadId,
+    pathname,
+    presetQuery,
+    router,
   ]);
 
   const listFilters = useMemo<LeadsListFilters>(

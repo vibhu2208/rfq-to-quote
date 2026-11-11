@@ -21,6 +21,107 @@ export type LeadsListFilters = {
   presetQuery?: string | Record<string, string>;
 };
 
+/** Browser-URL state for LeadsWorkbench (survives navigate → browser back). */
+export type LeadsWorkbenchUrlState = {
+  intakeKind: LeadIntakeFilter;
+  q: string;
+  stage: string;
+  priority: string;
+  channel: string;
+  assignee: string;
+  category: string;
+  datePreset: string;
+  dateFrom: string;
+  dateTo: string;
+  slaStatus: string;
+  page: number;
+  leadId: string | null;
+};
+
+const WORKBENCH_INTAKE_VALUES = new Set<LeadIntakeFilter>([
+  "all",
+  "review",
+  "REQUIREMENT",
+  "JUNK",
+  "SKIPPED",
+]);
+
+export function defaultWorkbenchIntakeKind(
+  presetQuery?: Record<string, string>
+): LeadIntakeFilter {
+  if (
+    presetQuery?.hotOnly ||
+    presetQuery?.wonOnly ||
+    presetQuery?.lostOnly ||
+    presetQuery?.mine
+  ) {
+    return "REQUIREMENT";
+  }
+  return "all";
+}
+
+export function parseLeadsWorkbenchSearchParams(
+  params: URLSearchParams,
+  presetQuery?: Record<string, string>
+): LeadsWorkbenchUrlState {
+  const intakeRaw = params.get("intakeKind");
+  const intakeKind =
+    intakeRaw && WORKBENCH_INTAKE_VALUES.has(intakeRaw as LeadIntakeFilter)
+      ? (intakeRaw as LeadIntakeFilter)
+      : defaultWorkbenchIntakeKind(presetQuery);
+
+  const pageRaw = Number(params.get("page") || "0");
+  const page =
+    Number.isFinite(pageRaw) && pageRaw > 0 ? Math.floor(pageRaw) : 0;
+  const leadId = params.get("leadId")?.trim() || null;
+
+  return {
+    intakeKind,
+    q: params.get("q") || "",
+    stage: params.get("stage") || "",
+    priority: params.get("priority") || "",
+    channel: params.get("channel") || "",
+    assignee: params.get("assignedToUserId") || "",
+    category: params.get("category") || "",
+    datePreset: params.get("datePreset") || "all",
+    dateFrom: params.get("dateFrom") || "",
+    dateTo: params.get("dateTo") || "",
+    slaStatus: params.get("slaStatus") || "",
+    page,
+    leadId,
+  };
+}
+
+export function buildLeadsWorkbenchSearchParams(
+  state: LeadsWorkbenchUrlState,
+  presetQuery?: Record<string, string>
+) {
+  const params = new URLSearchParams();
+  const defaultIntake = defaultWorkbenchIntakeKind(presetQuery);
+
+  if (state.intakeKind !== defaultIntake) {
+    params.set("intakeKind", state.intakeKind);
+  }
+  if (state.q) params.set("q", state.q);
+  if (state.stage) params.set("stage", state.stage);
+  if (state.priority) params.set("priority", state.priority);
+  if (state.channel) params.set("channel", state.channel);
+  if (state.assignee) params.set("assignedToUserId", state.assignee);
+  if (state.category.trim()) params.set("category", state.category.trim());
+  if (state.datePreset && state.datePreset !== "all") {
+    params.set("datePreset", state.datePreset);
+  }
+  if (state.datePreset === "custom") {
+    if (state.dateFrom) params.set("dateFrom", state.dateFrom);
+    if (state.dateTo) params.set("dateTo", state.dateTo);
+  }
+  if (state.slaStatus) params.set("slaStatus", state.slaStatus);
+  if (state.page > 0) params.set("page", String(state.page));
+  if (state.leadId) params.set("leadId", state.leadId);
+
+  return params;
+}
+
 export type LeadsListResponse = {
   items: LeadRow[];
   total: number;

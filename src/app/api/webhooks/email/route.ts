@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { extractCustomerIdentityFromEmail } from "@/lib/email-text";
+import { resolveCustomerIdentityFromEmail } from "@/lib/ai/extract-signature-identity";
 import { createRfqWithMessage, resolveEmailChannel } from "@/lib/rfq";
 
 /**
@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
       customerCompany,
       customerPhone,
       customerEmail,
-    } = extractCustomerIdentityFromEmail(
+    } = await resolveCustomerIdentityFromEmail(
       email.text,
       email.fromName,
       email.fromEmail

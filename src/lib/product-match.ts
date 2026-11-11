@@ -184,40 +184,84 @@ export type CatalogTypeFamily =
   | "patch_panel"
   | "ups"
   | "switch"
+  | "ram"
+  | "ssd"
+  | "hdd"
   | null;
 
 export type MatchConstraints = {
   screenInches: number | null;
   cableMeters: number | null;
   capacityKva: number | null;
+  capacityGb: number | null;
   portCount: number | null;
   wantsPoe: boolean | null;
   typeFamily: CatalogTypeFamily;
 };
 
+const WORD_PORT_COUNTS: Record<string, number> = {
+  four: 4,
+  five: 5,
+  six: 6,
+  eight: 8,
+  twelve: 12,
+  sixteen: 16,
+  twenty: 20,
+  "twenty four": 24,
+  twentyfour: 24,
+  "twenty-eight": 28,
+  twentyeight: 28,
+  thirty: 30,
+  "thirty two": 32,
+  thirtytwo: 32,
+  forty: 40,
+  fortyeight: 48,
+  "forty eight": 48,
+};
+
+/** Expand spoken port counts / hyphens so constraint regexes see digits. */
+export function normalizeConstraintText(text: string): string {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[“”″]/g, '"')
+    .replace(/\bcat[\s\-]*([56])e?\b/gi, "cat$1")
+    .replace(/\b(twenty[\s\-]+four|twentyfour)\s*-?\s*ports?\b/gi, "24-port")
+    .replace(/\b(thirty[\s\-]+two|thirtytwo)\s*-?\s*ports?\b/gi, "32-port")
+    .replace(/\b(forty[\s\-]+eight|fortyeight)\s*-?\s*ports?\b/gi, "48-port")
+    .replace(
+      /\b(four|five|six|eight|twelve|sixteen|twenty|thirty|forty)\s*-?\s*ports?\b/gi,
+      (full, word: string) => {
+        const n = WORD_PORT_COUNTS[word.toLowerCase()];
+        return n ? `${n}-port` : full;
+      }
+    );
+}
+
+function isCableLikeText(t: string): boolean {
+  return /\b(?:patch\s*(?:cords?|cables?|leads?)|jumper\s*(?:cords?|cables?|leads?)|cat[56]\b|hdmi\s*cables?|network\s*cables?|lan\s*cables?|ethernet\s*cables?)\b/.test(
+    t
+  );
+}
+
 /** Structured specs used as hard filters (beyond bag-of-words). */
 export function extractMatchConstraints(text: string): MatchConstraints {
-  const t = String(text || "").toLowerCase();
+  const t = normalizeConstraintText(text);
 
   const screenInches = (() => {
-    const m = t.match(/\b(\d{2}(?:\.\d+)?)\s*(?:-?\s*)?(?:inch(?:es)?|in\b|")\b/);
-    if (m) return Number(m[1]);
     // Avoid treating "24-port" as a 24" display.
-    if (/\b\d+\s*-?\s*ports?\b/.test(t)) return null;
-    const m2 = t.match(
-      /\b(\d{2}(?:\.\d+)?)\s+(?:fhd|uhd|qhd|ips|led|lcd)?\s*(?:monitor|display|tv)\b/
+    const withoutPorts = t.replace(/\b\d{1,3}\s*-?\s*ports?\b/g, " ");
+    const m = withoutPorts.match(
+      /\b(\d{2}(?:\.\d+)?)\s*(?:-?\s*)?(?:inch(?:es)?|in\b|["″])/
+    );
+    if (m) return Number(m[1]);
+    const m2 = withoutPorts.match(
+      /\b(\d{2}(?:\.\d+)?)\s+(?:fhd|uhd|qhd|ips|led|lcd)?\s*(?:monitor|display|tv|screen)\b/
     );
     return m2 ? Number(m2[1]) : null;
   })();
 
   const cableMeters = (() => {
-    if (
-      !/\b(patch\s*cords?|patch\s*cables?|cat\s*[56]|hdmi\s*cables?|network\s*cables?|lan\s*cables?)\b/.test(
-        t
-      )
-    ) {
-      return null;
-    }
+    if (!isCableLikeText(t)) return null;
     const m = t.match(/\b(\d+(?:\.\d+)?)\s*(?:m|mtr|meter|metre|meters|metres)\b/);
     return m ? Number(m[1]) : null;
   })();
@@ -225,8 +269,24 @@ export function extractMatchConstraints(text: string): MatchConstraints {
   const capacityKva = (() => {
     const kva = t.match(/\b(\d+(?:\.\d+)?)\s*kva\b/);
     if (kva) return Number(kva[1]);
-    const va = t.match(/\b(\d+(?:\.\d+)?)\s*va\b/);
+    // Prefer explicit VA only when UPS context (avoid grabbing random numbers).
+    if (!/\bups\b/.test(t)) return null;
+    const va = t.match(/\b(\d{3,5})\s*va\b/);
     return va ? Number(va[1]) / 1000 : null;
+  })();
+
+  const capacityGb = (() => {
+    if (
+      !/\b(?:ram|memory|ddr\d?|dimm|sodimm|ssd|hdd|hard\s*disk|solid\s*state|nvme)\b/.test(
+        t
+      )
+    ) {
+      return null;
+    }
+    const gb = t.match(/\b(\d+)\s*gb\b/);
+    if (gb) return Number(gb[1]);
+    const tb = t.match(/\b(\d+(?:\.\d+)?)\s*tb\b/);
+    return tb ? Math.round(Number(tb[1]) * 1024) : null;
   })();
 
   const portCount = (() => {
@@ -237,9 +297,22 @@ export function extractMatchConstraints(text: string): MatchConstraints {
   const wantsPoe = /\bpoe\b/.test(t) ? true : null;
 
   const typeFamily: CatalogTypeFamily = (() => {
-    if (/\bpatch\s*panels?\b/.test(t)) return "patch_panel";
-    if (/\bpatch\s*cords?\b|\bpatch\s*cables?\b/.test(t)) return "patch_cord";
-    if (/\bmonitors?\b|\btft\b/.test(t)) return "monitor";
+    if (/\bpatch\s*panels?\b|\bpatch\s*penals?\b/.test(t)) return "patch_panel";
+    if (
+      /\b(?:patch|jumper)\s*(?:cords?|cables?|leads?)\b/.test(t) ||
+      (/\bcat[56]\b/.test(t) && /\b(?:leads?|cords?|cables?|jumpers?)\b/.test(t))
+    ) {
+      return "patch_cord";
+    }
+    if (/\bmonitors?\b|\btft\b|\bscreens?\b/.test(t)) return "monitor";
+    // Office "24\" FHD IPS display" / DisplayPort panels are monitors, not LED walls.
+    if (
+      /\bdisplays?\b/.test(t) &&
+      (/\b(?:fhd|uhd|qhd|ips|displayport|hdmi)\b/.test(t) || screenInches != null) &&
+      !/\b(?:led\s*wall|video\s*wall|samsung\s*display)\b/.test(t)
+    ) {
+      return "monitor";
+    }
     if (
       /\b(?:led\s*)?displays?\b/.test(t) &&
       !/\bdisplay\s*port\b/.test(t) &&
@@ -248,8 +321,15 @@ export function extractMatchConstraints(text: string): MatchConstraints {
       return "display";
     }
     if (/\bups\b/.test(t)) return "ups";
-    if (/\bswitches?\b/.test(t)) return "switch";
-    if (/\bcat\s*[56]\b|\bcables?\b|\bcords?\b/.test(t)) return "cable";
+    // `switches?` wrongly matches only "switche(s)", not "switch".
+    if (/\bswitch(?:es)?\b/.test(t)) return "switch";
+    if (/\b(?:ram|memory\s*sticks?|ddr\d?)\b/.test(t)) return "ram";
+    if (/\b(?:ssd|solid\s*state)\b/.test(t)) return "ssd";
+    if (/\b(?:hdd|hard\s*disk|hard\s*drive)\b/.test(t)) return "hdd";
+    if (/\bcat[56]\b|\bcables?\b|\bcords?\b|\bleads?\b/.test(t) && isCableLikeText(t)) {
+      return "cable";
+    }
+    if (/\bcat[56]\b|\bcables?\b|\bcords?\b/.test(t)) return "cable";
     return null;
   })();
 
@@ -257,6 +337,7 @@ export function extractMatchConstraints(text: string): MatchConstraints {
     screenInches,
     cableMeters,
     capacityKva,
+    capacityGb,
     portCount,
     wantsPoe,
     typeFamily,
@@ -264,13 +345,16 @@ export function extractMatchConstraints(text: string): MatchConstraints {
 }
 
 const TYPE_CONFLICTS: Record<string, CatalogTypeFamily[]> = {
-  monitor: ["cable", "patch_cord", "patch_panel", "switch", "ups"],
-  display: ["cable", "patch_cord", "patch_panel", "switch", "ups", "monitor"],
-  cable: ["monitor", "display", "ups", "switch", "patch_panel"],
-  patch_cord: ["monitor", "display", "ups", "switch", "patch_panel"],
-  patch_panel: ["monitor", "display", "ups", "patch_cord", "cable"],
-  ups: ["monitor", "display", "cable", "patch_cord", "patch_panel", "switch"],
-  switch: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups"],
+  monitor: ["cable", "patch_cord", "patch_panel", "switch", "ups", "ram", "ssd", "hdd", "display"],
+  display: ["cable", "patch_cord", "patch_panel", "switch", "ups", "monitor", "ram", "ssd", "hdd"],
+  cable: ["monitor", "display", "ups", "switch", "patch_panel", "ram", "ssd", "hdd"],
+  patch_cord: ["monitor", "display", "ups", "switch", "patch_panel", "ram", "ssd", "hdd"],
+  patch_panel: ["monitor", "display", "ups", "patch_cord", "cable", "switch", "ram", "ssd", "hdd"],
+  ups: ["monitor", "display", "cable", "patch_cord", "patch_panel", "switch", "ram", "ssd", "hdd"],
+  switch: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups", "ram", "ssd", "hdd"],
+  ram: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups", "switch", "ssd", "hdd"],
+  ssd: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups", "switch", "ram", "hdd"],
+  hdd: ["monitor", "display", "cable", "patch_cord", "patch_panel", "ups", "switch", "ram", "ssd"],
 };
 
 export function constraintsConflict(
@@ -301,9 +385,12 @@ export function constraintsConflict(
     return true;
   }
 
-  // Qty-like "50 CAT6" must not bind to a 50" panel just because of the number.
+  // Qty-like "50 CAT6" / jumper leads must not bind to a panel/TV.
   if (
-    req.cableMeters != null &&
+    (req.cableMeters != null ||
+      req.typeFamily === "patch_cord" ||
+      req.typeFamily === "cable" ||
+      req.typeFamily === "patch_panel") &&
     (product.typeFamily === "monitor" || product.typeFamily === "display")
   ) {
     return true;
@@ -312,8 +399,7 @@ export function constraintsConflict(
     (req.typeFamily === "patch_cord" ||
       req.typeFamily === "cable" ||
       req.typeFamily === "patch_panel") &&
-    product.screenInches != null &&
-    (product.typeFamily === "monitor" || product.typeFamily === "display")
+    product.screenInches != null
   ) {
     return true;
   }
@@ -322,6 +408,14 @@ export function constraintsConflict(
     req.capacityKva != null &&
     product.capacityKva != null &&
     Math.abs(req.capacityKva - product.capacityKva) > 0.05
+  ) {
+    return true;
+  }
+
+  if (
+    req.capacityGb != null &&
+    product.capacityGb != null &&
+    req.capacityGb !== product.capacityGb
   ) {
     return true;
   }
@@ -348,6 +442,7 @@ function constraintScoreBonus(req: MatchConstraints, product: MatchConstraints):
   if (req.screenInches != null && req.screenInches === product.screenInches) bonus += 10;
   if (req.cableMeters != null && product.cableMeters != null) bonus += 8;
   if (req.capacityKva != null && product.capacityKva != null) bonus += 10;
+  if (req.capacityGb != null && req.capacityGb === product.capacityGb) bonus += 12;
   if (req.portCount != null && req.portCount === product.portCount) bonus += 8;
   if (req.wantsPoe === true && product.wantsPoe === true) bonus += 6;
   return bonus;
@@ -388,14 +483,16 @@ function flattenValues(value: unknown, out: string[] = []): string[] {
 
 /** Split text into searchable tokens (lowercase, alphanumeric chunks). */
 export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
+  return normalizeConstraintText(text)
     // Normalize common interface spellings before compound splits.
     .replace(/display[\s_-]*port/g, "displayport")
     .replace(/usb[\s_-]*c\b/g, "usbc")
     .replace(/patch\s*cords?/g, "patchcord")
     .replace(/patch\s*panels?/g, "patchpanel")
+    .replace(/patch\s*penals?/g, "patchpanel")
     .replace(/patch\s*cables?/g, "patchcable")
+    .replace(/patch\s*leads?/g, "patchcord")
+    .replace(/jumper\s*(?:cords?|cables?|leads?)/g, "patchcord")
     // "HDMI+DisplayPort" / "HDMI/DP" must become separate tokens.
     .replace(/([a-z0-9])[+/&]+([a-z0-9])/g, "$1 $2")
     .replace(/[^a-z0-9.]+/gi, " ")
@@ -729,11 +826,13 @@ function ensureBrandCandidates(
   scored: ProductMatch[],
   ctx: CatalogMatchContext,
   brandTokens: string[],
-  limit: number
+  limit: number,
+  constraintText?: string | null
 ): ProductMatch[] {
   if (brandTokens.length === 0) return scored.slice(0, limit);
   const seen = new Set(scored.map((m) => m.product.id));
   const extras: ProductMatch[] = [];
+  const reqText = String(constraintText || "").trim();
 
   for (const indexed of ctx.products) {
     if (seen.has(indexed.product.id)) continue;
@@ -741,6 +840,15 @@ function ensureBrandCandidates(
       (b) => haystackHasToken(indexed.brandTokens, b) || haystackHasToken(indexed.tokens, b)
     );
     if (!hit) continue;
+    if (
+      reqText &&
+      catalogBindingLooksMismatched(
+        reqText,
+        `${indexed.product.name} ${indexed.product.description || ""}`
+      )
+    ) {
+      continue;
+    }
     extras.push(toProductMatch(indexed.product, WEIGHT_BRAND, brandTokens));
     seen.add(indexed.product.id);
     if (scored.length + extras.length >= limit) break;
@@ -788,7 +896,13 @@ export function retrieveCatalogCandidates(
   }
 
   scored.sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name));
-  return ensureBrandCandidates(scored, ctx, [...extraBrands], limit);
+  return ensureBrandCandidates(
+    scored,
+    ctx,
+    [...extraBrands],
+    limit,
+    input.constraintText
+  );
 }
 
 function scorePoolWithContext(
@@ -841,18 +955,24 @@ function matchRequirementItem(
   limit: number
 ): { keywords: string[]; matches: ProductMatch[] } {
   const searchText = requirementSearchText(item);
+  // Never feed line quantity into keywords — "50 pcs" must not rank 50" TVs.
   const parsedSpecs = {
     brand: item.brand,
     model: item.model,
     description: item.description,
-    quantity: item.quantity,
-    unit: item.unit,
+    code: item.code,
     specs: {},
   };
 
   const keywords = extractKeywords({
     parsedSpecs,
     rawText: searchText,
+  }).filter((kw) => {
+    // Drop bare integers that only echo a line qty (2–4 digits) unless the
+    // description itself contains that number as a real spec token.
+    if (!/^\d{1,4}$/.test(kw)) return true;
+    const desc = normalizeConstraintText(item.description || "");
+    return new RegExp(`(?:^|[^0-9])${kw}(?:[^0-9]|$)`).test(desc);
   });
   const code = (item.code || "").trim().toLowerCase();
   const exact = code
@@ -878,6 +998,20 @@ function matchRequirementItem(
   const matches = [...exact, ...scored.filter((m) => !seen.has(m.product.id))].slice(0, limit);
 
   return { keywords, matches };
+}
+
+/** Drop constraint-conflicting suggestions (used after AI re-rank). */
+export function filterMatchesForRequirement(
+  requirementText: string,
+  matches: ProductMatch[]
+): ProductMatch[] {
+  return matches.filter(
+    (m) =>
+      !catalogBindingLooksMismatched(
+        requirementText,
+        `${m.product.name} ${m.product.description || ""}`
+      )
+  );
 }
 
 /**
