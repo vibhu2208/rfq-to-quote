@@ -188,3 +188,66 @@ export function groupMasterData(
 
   return groups;
 }
+
+export function hasMasterFields(data: unknown): data is Record<string, unknown> {
+  return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
+}
+
+export type ProductMasterSeed = {
+  code?: string | null;
+  name?: string | null;
+  description?: string | null;
+  unit?: string | null;
+  productType?: string | null;
+  sourceProductId?: string | null;
+  category?: string | null;
+  subCategory?: string | null;
+  brand?: string | null;
+  hsnCode?: string | null;
+  gstTaxName?: string | null;
+  modelNo?: string | null;
+  partNo?: string | null;
+  mrp?: number | null;
+  openingStock?: number | null;
+  basePrice?: number | null;
+  offerPrice?: number | null;
+  lastPrice?: number | null;
+  taxRate?: number | null;
+  taxCategory?: string | null;
+};
+
+/** Fallback master-data shape when a product has no Excel masterData JSON. */
+export function productMasterFallback(p: ProductMasterSeed): Record<string, unknown> {
+  return {
+    ProductID: p.sourceProductId || p.code,
+    ProductName: p.name,
+    Specs: p.description,
+    LeadCatName: p.category,
+    SubCatName: p.subCategory,
+    Brand: p.brand,
+    ModelNo: p.modelNo,
+    PartNo: p.partNo,
+    UnitName: p.unit,
+    Cost: p.basePrice,
+    MRP: p.mrp ?? p.offerPrice,
+    LastPrice: p.lastPrice ?? p.offerPrice,
+    GSTTaxName: p.gstTaxName || p.taxCategory,
+    HSN_SCA: p.hsnCode,
+    ProductTypeName: p.productType,
+    OpStock: p.openingStock,
+  };
+}
+
+/** Internal editor label for a catalog-bound quote line (code + name). */
+export function catalogProductRefLabel(opts: {
+  sourceProductId?: string | null;
+  code?: string | null;
+  name?: string | null;
+}): string {
+  const id = String(opts.sourceProductId || opts.code || "").trim();
+  const name = String(opts.name || "").trim();
+  if (id && name) return `${id} · ${name}`;
+  if (id) return id;
+  if (name) return name;
+  return "Mapped product";
+}

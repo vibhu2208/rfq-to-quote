@@ -4,7 +4,6 @@ import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { normalizeStoredRfqCategories } from "@/lib/categories";
 import { normalizeStoredCustomerIdentity } from "@/lib/email-text";
-import { resolveCustomerIdentityFromEmail } from "@/lib/ai/extract-signature-identity";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -24,6 +23,11 @@ function withNormalizedCategories<T extends {
   };
 }
 
+/**
+ * Heuristic-only identity repair on GET so the RFQ workspace critical path
+ * stays DB-bound. Gemini signature extraction already runs on email ingest
+ * (webhooks / IMAP) and must not gate workspace open.
+ */
 async function withNormalizedCustomerIdentity<
   T extends {
     id: string;
@@ -42,26 +46,12 @@ async function withNormalizedCustomerIdentity<
     customerEmail: rfq.customerEmail,
   });
 
-  let next = {
+  const next = {
     customerName: heuristic.customerName,
     customerCompany: heuristic.customerCompany,
     customerPhone: heuristic.customerPhone,
     customerEmail: heuristic.customerEmail,
   };
-
-  if (!next.customerCompany.trim() || !next.customerPhone.trim()) {
-    const resolved = await resolveCustomerIdentityFromEmail(
-      rfq.rawText || "",
-      next.customerName,
-      next.customerEmail
-    );
-    next = {
-      customerName: resolved.customerName || next.customerName,
-      customerCompany: resolved.customerCompany || next.customerCompany,
-      customerPhone: resolved.customerPhone || next.customerPhone,
-      customerEmail: resolved.customerEmail || next.customerEmail,
-    };
-  }
 
   const changed =
     next.customerName !== String(rfq.customerName || "").trim() ||

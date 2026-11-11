@@ -4,6 +4,8 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { Money } from "@/components/ui";
 import { MasterDetailDialog } from "@/components/master-detail-dialog";
+import { AppPageSkeleton } from "@/components/page-skeleton";
+import { hasMasterFields, productMasterFallback } from "@/lib/master-data";
 
 type Product = {
   id: string;
@@ -31,31 +33,6 @@ type Product = {
   masterData?: Record<string, unknown> | null;
   active: boolean;
 };
-
-function productMasterFallback(p: Product): Record<string, unknown> {
-  return {
-    ProductID: p.sourceProductId || p.code,
-    ProductName: p.name,
-    Specs: p.description,
-    LeadCatName: p.category,
-    SubCatName: p.subCategory,
-    Brand: p.brand,
-    ModelNo: p.modelNo,
-    PartNo: p.partNo,
-    UnitName: p.unit,
-    Cost: p.basePrice,
-    MRP: p.mrp ?? p.offerPrice,
-    LastPrice: p.lastPrice ?? p.offerPrice,
-    GSTTaxName: p.gstTaxName || p.taxCategory,
-    HSN_SCA: p.hsnCode,
-    ProductTypeName: p.productType,
-    OpStock: p.openingStock,
-  };
-}
-
-function hasMasterFields(data: unknown): data is Record<string, unknown> {
-  return Boolean(data && typeof data === "object" && Object.keys(data as object).length > 0);
-}
 
 const emptyForm = {
   code: "",
@@ -176,6 +153,12 @@ export default function ProductsPage() {
     if (!confirm("Deactivate this product?")) return;
     await fetch(`/api/products/${id}`, { method: "DELETE" });
     load();
+  }
+
+  // Initial client fetch: keep a route-level skeleton so soft-nav never lands on
+  // a stale prior page + empty "Loading…" table.
+  if (loading && products.length === 0) {
+    return <AppPageSkeleton variant="table" />;
   }
 
   return (

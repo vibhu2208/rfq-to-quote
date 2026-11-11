@@ -12,10 +12,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { format } from "date-fns";
 import {
   ArrowUpDown,
   Bell,
   CalendarDays,
+  CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -23,7 +25,9 @@ import {
   Download,
   Filter,
   Inbox,
+  Mail,
   MailWarning,
+  MessageCircle,
   Phone,
   Plus,
   RefreshCw,
@@ -55,8 +59,10 @@ import type { LeadRow } from "@/components/leads/types";
 import { AppPageSkeleton } from "@/components/page-skeleton";
 import {
   DateTimePicker,
+  parseLocalDateTimeValue,
   toLocalDateTimeValue,
 } from "@/components/ui/date-time-picker";
+import { buildReminderCopy } from "@/lib/leads/reminder-copy";
 import { useLeadsList } from "@/hooks/use-leads-list";
 import {
   DEFAULT_LEAD_COLUMNS,
@@ -122,6 +128,31 @@ const CALL_OUTCOMES = [
   "DND / Do Not Call",
   "Other",
 ] as const;
+
+function reminderDraftFor(row: {
+  leadNumber: string;
+  customerName?: string;
+  customerCompany?: string;
+  due: string;
+  title: string;
+  comment: string;
+}) {
+  const due =
+    parseLocalDateTimeValue(row.due) ||
+    (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      d.setHours(10, 0, 0, 0);
+      return d;
+    })();
+  return buildReminderCopy({
+    customerName: (row.customerName || row.customerCompany || "").trim(),
+    leadNumber: row.leadNumber,
+    dueAt: due,
+    title: row.title,
+    notes: row.comment,
+  });
+}
 
 function defaultRemindDue() {
   const tomorrow = new Date();
@@ -212,10 +243,37 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const [remindForm, setRemindForm] = useState<{
     leadId: string;
     leadNumber: string;
+    customerName: string;
+    customerCompany: string;
+    customerEmail: string;
+    customerPhone: string;
     due: string;
     type: string;
     title: string;
+    comment: string;
+    notifyEmail: boolean;
+    notifyWhatsapp: boolean;
+    emailSubject: string;
+    emailBody: string;
+    whatsappBody: string;
+    emailEdited: boolean;
+    whatsappEdited: boolean;
+    scheduledOpen: boolean;
+    scheduled: {
+      id: string;
+      type: string;
+      status: string;
+      dueAt: string;
+      title: string;
+      notes: string;
+    }[];
+    scheduledLoading: boolean;
     saving: boolean;
+  } | null>(null);
+  const [actionToast, setActionToast] = useState<{
+    title: string;
+    detail?: string;
+    tone: "success" | "warning";
   } | null>(null);
   const [callLogForm, setCallLogForm] = useState<{
     leadId: string;
@@ -248,7 +306,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const [showColumns, setShowColumns] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [saveViewName, setSaveViewName] = useState("");
-  const [pollMsg, setPollMsg] = useState("");
   const [polling, setPolling] = useState(false);
 
   useEffect(() => {
@@ -436,14 +493,21 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
   async function pollInbox() {
     setPolling(true);
-    setPollMsg("Checking Outlook + WhatsApp…");
+    setActionToast({
+      title: "Checking inbox…",
+      detail: "Outlook + WhatsApp",
+      tone: "success",
+    });
     try {
       const res = await fetch("/api/cron/inbox-poll", { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setPollMsg(
-          typeof data.error === "string" ? data.error : "Inbox poll failed"
-        );
+        setActionToast({
+          title: "Inbox poll failed",
+          detail:
+            typeof data.error === "string" ? data.error : undefined,
+          tone: "warning",
+        });
         return;
       }
       const email = data.email && typeof data.email === "object" ? data.email : data;
@@ -472,7 +536,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           );
         }
       }
-      setPollMsg(parts.join(" · "));
+      setActionToast({
+        title: "Inbox updated",
+        detail: parts.join(" · "),
+        tone: "success",
+      });
       await load();
     } finally {
       setPolling(false);
@@ -609,7 +677,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         );
         return;
       }
-      setPollMsg("Promoted junk/skipped item to a requirement lead");
+      setActionToast({
+        title: "Promoted to requirement lead",
+        tone: "success",
+      });
       patchRow(id, { intakeKind: "REQUIREMENT" });
     } finally {
       setPromotingId(null);
@@ -617,13 +688,117 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   }
 
   function openRemind(row: LeadRow) {
+    const email = (row.customerEmail || "").trim();
+    const phone = (row.customerPhone || "").trim();
+    const due = defaultRemindDue();
+    const title = `Follow up · ${row.leadNumber}`;
+    const draft = reminderDraftFor({
+      leadNumber: row.leadNumber,
+      customerName: row.customerName,
+      customerCompany: row.customerCompany,
+      due,
+      title,
+      comment: "",
+    });
     setRemindForm({
       leadId: row.id,
       leadNumber: row.leadNumber,
-      due: defaultRemindDue(),
+      customerName: (row.customerName || "").trim(),
+      customerCompany: (row.customerCompany || "").trim(),
+      customerEmail: email,
+      customerPhone: phone,
+      due,
       type: "CALL",
-      title: `Follow up · ${row.leadNumber}`,
+      title,
+      comment: "",
+      notifyEmail: false,
+      notifyWhatsapp: false,
+      emailSubject: draft.subject,
+      emailBody: draft.text,
+      whatsappBody: draft.text,
+      emailEdited: false,
+      whatsappEdited: false,
+      scheduledOpen: false,
+      scheduled: [],
+      scheduledLoading: true,
       saving: false,
+    });
+    void (async () => {
+      try {
+        const res = await fetch(`/api/leads/${row.id}/follow-ups`);
+        const data = await res.json().catch(() => ({}));
+        const items = Array.isArray(data.items) ? data.items : [];
+        const scheduled = items
+          .filter(
+            (item: { status?: string }) =>
+              item.status === "PENDING" || item.status === "OVERDUE"
+          )
+          .map(
+            (item: {
+              id: string;
+              type?: string;
+              status?: string;
+              dueAt?: string;
+              title?: string;
+              notes?: string;
+            }) => ({
+              id: item.id,
+              type: item.type || "TASK",
+              status: item.status || "PENDING",
+              dueAt: item.dueAt || "",
+              title: item.title || "",
+              notes: item.notes || "",
+            })
+          );
+        setRemindForm((prev) =>
+          prev && prev.leadId === row.id
+            ? {
+                ...prev,
+                scheduled,
+                scheduledLoading: false,
+                scheduledOpen: scheduled.length > 0,
+              }
+            : prev
+        );
+      } catch {
+        setRemindForm((prev) =>
+          prev && prev.leadId === row.id
+            ? { ...prev, scheduledLoading: false }
+            : prev
+        );
+      }
+    })();
+  }
+
+  function patchRemindForm(
+    patch:
+      | Partial<NonNullable<typeof remindForm>>
+      | ((
+          prev: NonNullable<typeof remindForm>
+        ) => Partial<NonNullable<typeof remindForm>>)
+  ) {
+    setRemindForm((prev) => {
+      if (!prev) return prev;
+      const nextPatch = typeof patch === "function" ? patch(prev) : patch;
+      const merged = { ...prev, ...nextPatch };
+      if (!merged.emailEdited || !merged.whatsappEdited) {
+        const draft = reminderDraftFor({
+          leadNumber: merged.leadNumber,
+          customerName: merged.customerName,
+          customerCompany: merged.customerCompany,
+          due: merged.due,
+          title: merged.title,
+          comment: merged.comment,
+        });
+        if (!merged.emailEdited) {
+          merged.emailSubject = draft.subject;
+          merged.emailBody = draft.text;
+        }
+        if (!merged.whatsappEdited) {
+          merged.whatsappBody = draft.text;
+        }
+      }
+      return merged;
     });
   }
 
@@ -721,7 +896,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           { nextFollowUpAt: due.toISOString() }
         );
         setCallLogForm(null);
-        setPollMsg(`Call logged · ${callLogForm.outcome}`);
+        setActionToast({
+          title: `Call logged · ${callLogForm.outcome}`,
+          tone: "success",
+        });
         return;
       }
     }
@@ -734,7 +912,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       createdAt: new Date().toISOString(),
     });
     setCallLogForm(null);
-    setPollMsg(`Call logged · ${callLogForm.outcome}`);
+    setActionToast({
+      title: `Call logged · ${callLogForm.outcome}`,
+      tone: "success",
+    });
   }
 
   async function submitRemind() {
@@ -745,6 +926,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       return;
     }
     setRemindForm((prev) => (prev ? { ...prev, saving: true } : prev));
+    const notifyEmail =
+      remindForm.notifyEmail && Boolean(remindForm.customerEmail);
+    const notifyWhatsapp =
+      remindForm.notifyWhatsapp && Boolean(remindForm.customerPhone);
     const res = await fetch(`/api/leads/${remindForm.leadId}/follow-ups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -752,10 +937,16 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         type: remindForm.type,
         dueAt: due.toISOString(),
         title: remindForm.title.trim() || "Reminder",
+        notes: remindForm.comment.trim() || undefined,
+        notifyEmail,
+        notifyWhatsapp,
+        emailSubject: remindForm.emailSubject.trim() || undefined,
+        emailBody: remindForm.emailBody.trim() || undefined,
+        whatsappBody: remindForm.whatsappBody.trim() || undefined,
       }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
       setRemindForm((prev) => (prev ? { ...prev, saving: false } : prev));
       window.alert(
         typeof data.error === "string" ? data.error : "Could not set reminder"
@@ -770,13 +961,56 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         followUps: (current?._count?.followUps || 0) + 1,
       },
     });
+    const notifications =
+      data && typeof data === "object" && data.notifications
+        ? (data.notifications as {
+            email?: { sent: boolean; to?: string; error?: string };
+            whatsapp?: { sent: boolean; to?: string; error?: string };
+          })
+        : {};
+    const leadNumber = remindForm.leadNumber;
     setRemindForm(null);
-    setPollMsg(`Reminder set for ${remindForm.leadNumber}`);
+
+    const details: string[] = [];
+    let tone: "success" | "warning" = "success";
+    if (notifications.email) {
+      if (notifications.email.sent) {
+        details.push(
+          `Email sent to ${notifications.email.to || "the client"}`
+        );
+      } else {
+        tone = "warning";
+        details.push(
+          notifications.email.error || "Email could not be sent"
+        );
+      }
+    }
+    if (notifications.whatsapp) {
+      if (notifications.whatsapp.sent) {
+        details.push(
+          `WhatsApp sent to ${notifications.whatsapp.to || "the client"}`
+        );
+      } else {
+        tone = "warning";
+        details.push(
+          notifications.whatsapp.error || "WhatsApp could not be sent"
+        );
+      }
+    }
+
+    setActionToast({
+      title: `Reminder set for ${leadNumber}`,
+      detail: details.length ? details.join(" · ") : undefined,
+      tone,
+    });
   }
 
   function setRemindPreset(kind: "1h" | "tomorrow" | "3d" | "week") {
     const d = new Date();
-    if (kind === "1h") d.setHours(d.getHours() + 1);
+    if (kind === "1h") {
+      d.setMinutes(d.getMinutes() + 60);
+      d.setMinutes(Math.round(d.getMinutes() / 15) * 15, 0, 0);
+    }
     if (kind === "tomorrow") {
       d.setDate(d.getDate() + 1);
       d.setHours(10, 0, 0, 0);
@@ -789,9 +1023,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       d.setDate(d.getDate() + 7);
       d.setHours(10, 0, 0, 0);
     }
-    setRemindForm((prev) =>
-      prev ? { ...prev, due: toLocalDateTimeValue(d) } : prev
-    );
+    patchRemindForm({ due: toLocalDateTimeValue(d) });
   }
 
   function openUploadDoc(row: LeadRow) {
@@ -839,7 +1071,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       createdAt: new Date().toISOString(),
     });
     setUploadForm(null);
-    setPollMsg(`Document uploaded · ${fileName}`);
+    setActionToast({
+      title: `Document uploaded · ${fileName}`,
+      tone: "success",
+    });
   }
 
   function applyDrawerPatch(patch?: LeadDrawerRowPatch) {
@@ -903,6 +1138,12 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [remindForm, callLogForm, uploadForm]);
+
+  useEffect(() => {
+    if (!actionToast) return;
+    const timer = window.setTimeout(() => setActionToast(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [actionToast]);
 
   useEffect(() => {
     if (!quotesPopover && !headerFilter && !showImportExport && !showCustomRange)
@@ -1148,12 +1389,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      {pollMsg ? (
-        <p className="rounded-xl bg-mid-green/10 px-3 py-2 text-xs text-mid-green">
-          {pollMsg}
-        </p>
-      ) : null}
-
       <div className="flex min-h-0 flex-1 gap-3">
         <aside
           className={`hidden shrink-0 flex-col sm:flex ${
@@ -1826,7 +2061,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         open={captureOpen}
         onClose={() => setCaptureOpen(false)}
         onCreated={(id) => {
-          setPollMsg("Requirement created");
+          setActionToast({
+            title: "Requirement created",
+            tone: "success",
+          });
           void load().then(() => setDrawerLeadId(id));
         }}
       />
@@ -1841,7 +2079,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
       {remindForm
         ? createPortal(
-            <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center p-3 sm:p-4">
               <button
                 type="button"
                 className="absolute inset-0 bg-dark-primary/40"
@@ -1852,109 +2090,402 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="remind-title"
-                className="relative z-10 w-full max-w-2xl rounded-2xl border border-dark-primary/10 bg-white p-6 shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
+                className="relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_24px_60px_rgba(11,43,38,0.2)] sm:max-h-[calc(100dvh-2rem)]"
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div>
+                <div className="flex shrink-0 items-center justify-between gap-3 border-b border-dark-primary/8 px-5 py-2.5">
+                  <div className="flex min-w-0 items-baseline gap-2">
                     <p
                       id="remind-title"
-                      className="text-base font-semibold text-dark-primary"
+                      className="text-sm font-semibold tracking-tight text-dark-primary"
                     >
-                      Set reminder
+                      Reminder
                     </p>
-                    <p className="mt-0.5 text-xs text-mid-green">
+                    <p className="truncate text-xs text-mid-green">
                       {remindForm.leadNumber}
                     </p>
                   </div>
                   <button
                     type="button"
                     onClick={() => setRemindForm(null)}
-                    className="rounded-full p-1 text-mid-green hover:bg-dark-secondary/10"
+                    className="rounded-full p-1 text-mid-green transition-colors hover:bg-dark-secondary/10 hover:text-dark-primary"
                     aria-label="Close"
                   >
-                    <X className="h-4 w-4" />
+                    <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {(
-                    [
-                      ["1h", "In 1 hour"],
-                      ["tomorrow", "Tomorrow 10am"],
-                      ["3d", "In 3 days"],
-                      ["week", "Next week"],
-                    ] as const
-                  ).map(([key, label]) => (
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-3 lg:overflow-hidden">
+                  <div className="mb-3 shrink-0 rounded-xl border border-dark-primary/10">
                     <button
-                      key={key}
                       type="button"
-                      onClick={() => setRemindPreset(key)}
-                      className="rounded-full bg-dark-secondary/[0.06] px-3 py-1.5 text-xs font-medium text-dark-primary hover:bg-mid-green/15"
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="mt-5 space-y-4">
-                  <div className="space-y-1.5">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                      When
-                    </span>
-                    <DateTimePicker
-                      id="remind-when"
-                      value={remindForm.due}
-                      onChange={(due) =>
-                        setRemindForm((prev) =>
-                          prev ? { ...prev, due } : prev
-                        )
+                      onClick={() =>
+                        patchRemindForm({
+                          scheduledOpen: !remindForm.scheduledOpen,
+                        })
                       }
-                    />
-                  </div>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="block space-y-1.5">
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                        Type
+                      className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left"
+                      aria-expanded={remindForm.scheduledOpen}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                          Scheduled
+                        </span>
+                        <span className="rounded-full bg-dark-secondary/[0.08] px-2 py-0.5 text-[11px] font-medium tabular-nums text-dark-primary">
+                          {remindForm.scheduledLoading
+                            ? "…"
+                            : remindForm.scheduled.length}
+                        </span>
                       </span>
-                      <select
-                        value={remindForm.type}
-                        onChange={(e) =>
-                          setRemindForm((prev) =>
-                            prev ? { ...prev, type: e.target.value } : prev
-                          )
-                        }
-                        className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
-                      >
-                        {REMIND_TYPES.map((t) => (
-                          <option key={t.value} value={t.value}>
-                            {t.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="block space-y-1.5">
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
-                        Note
-                      </span>
-                      <input
-                        value={remindForm.title}
-                        onChange={(e) =>
-                          setRemindForm((prev) =>
-                            prev ? { ...prev, title: e.target.value } : prev
-                          )
-                        }
-                        placeholder="What should you remember?"
-                        className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
+                      <ChevronDown
+                        className={[
+                          "h-4 w-4 shrink-0 text-mid-green transition-transform",
+                          remindForm.scheduledOpen ? "rotate-180" : "",
+                        ].join(" ")}
                       />
-                    </label>
+                    </button>
+                    {remindForm.scheduledOpen ? (
+                      <div className="border-t border-dark-primary/8 px-3 py-2">
+                        {remindForm.scheduledLoading ? (
+                          <p className="text-xs text-mid-green">
+                            Loading reminders…
+                          </p>
+                        ) : remindForm.scheduled.length ? (
+                          <ul className="grid max-h-28 gap-2 overflow-y-auto [scrollbar-width:thin] sm:grid-cols-2">
+                            {remindForm.scheduled.map((item) => {
+                              const dueDate = item.dueAt
+                                ? new Date(item.dueAt)
+                                : null;
+                              const overdue = item.status === "OVERDUE";
+                              return (
+                                <li
+                                  key={item.id}
+                                  className="flex items-start justify-between gap-3 rounded-lg bg-dark-secondary/[0.04] px-2.5 py-2"
+                                >
+                                  <div className="min-w-0">
+                                    <p className="truncate text-sm font-medium text-dark-primary">
+                                      {item.title || item.type}
+                                    </p>
+                                    <p className="mt-0.5 truncate text-[11px] text-mid-green">
+                                      {item.type}
+                                      {item.notes ? ` · ${item.notes}` : ""}
+                                    </p>
+                                  </div>
+                                  <div className="shrink-0 text-right">
+                                    <p
+                                      className={[
+                                        "text-xs font-semibold tabular-nums",
+                                        overdue
+                                          ? "text-amber-700"
+                                          : "text-dark-primary",
+                                      ].join(" ")}
+                                    >
+                                      {dueDate &&
+                                      !Number.isNaN(dueDate.getTime())
+                                        ? format(dueDate, "dd MMM · h:mm a")
+                                        : "—"}
+                                    </p>
+                                    <p
+                                      className={[
+                                        "mt-0.5 text-[10px] font-medium uppercase tracking-wide",
+                                        overdue
+                                          ? "text-amber-700"
+                                          : "text-mid-green",
+                                      ].join(" ")}
+                                    >
+                                      {overdue ? "Overdue" : "Upcoming"}
+                                    </p>
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        ) : (
+                          <p className="text-xs text-mid-green">
+                            No upcoming reminders on this lead.
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="grid min-h-0 gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.95fr)]">
+                    <div className="min-w-0 space-y-3">
+                      <div className="flex flex-wrap gap-2">
+                        {(
+                          [
+                            ["1h", "In 1 hour"],
+                            ["tomorrow", "Tomorrow 10am"],
+                            ["3d", "In 3 days"],
+                            ["week", "Next week"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() => setRemindPreset(key)}
+                            className="rounded-full border border-dark-primary/10 bg-white px-3 py-1 text-xs font-medium text-dark-primary transition-colors hover:border-mid-green/40 hover:bg-mid-green/[0.08]"
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <DateTimePicker
+                        id="remind-when"
+                        value={remindForm.due}
+                        onChange={(due) => patchRemindForm({ due })}
+                      />
+
+                      <div className="grid gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_minmax(0,1.1fr)]">
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                            Type
+                          </span>
+                          <select
+                            value={remindForm.type}
+                            onChange={(e) =>
+                              patchRemindForm({ type: e.target.value })
+                            }
+                            className="h-9 w-full rounded-xl border border-dark-primary/10 bg-white px-2.5 text-sm text-dark-primary outline-none transition focus:border-mid-green/40 focus:ring-2 focus:ring-mid-green/15"
+                          >
+                            {REMIND_TYPES.map((t) => (
+                              <option key={t.value} value={t.value}>
+                                {t.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                            Title
+                          </span>
+                          <input
+                            value={remindForm.title}
+                            onChange={(e) =>
+                              patchRemindForm({ title: e.target.value })
+                            }
+                            placeholder="What should you remember?"
+                            className="h-9 w-full rounded-xl border border-dark-primary/10 bg-white px-3 text-sm text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40 focus:ring-2 focus:ring-mid-green/15"
+                          />
+                        </label>
+                        <label className="block space-y-1">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                            Comment
+                          </span>
+                          <input
+                            value={remindForm.comment}
+                            onChange={(e) =>
+                              patchRemindForm({ comment: e.target.value })
+                            }
+                            placeholder="Internal note"
+                            className="h-9 w-full rounded-xl border border-dark-primary/10 bg-white px-3 text-sm text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40 focus:ring-2 focus:ring-mid-green/15"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="flex min-h-0 flex-col gap-3">
+                      {(() => {
+                        const canEmail = Boolean(remindForm.customerEmail);
+                        const canWhatsapp = Boolean(remindForm.customerPhone);
+                        const showEmail =
+                          remindForm.notifyEmail && canEmail;
+                        const showWhatsapp =
+                          remindForm.notifyWhatsapp && canWhatsapp;
+                        const showBoth = showEmail && showWhatsapp;
+                        const bothActive =
+                          (canEmail ? remindForm.notifyEmail : true) &&
+                          (canWhatsapp ? remindForm.notifyWhatsapp : true) &&
+                          (canEmail || canWhatsapp);
+
+                        return (
+                          <>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          disabled={!canEmail}
+                          aria-pressed={remindForm.notifyEmail}
+                          onClick={() =>
+                            patchRemindForm({
+                              notifyEmail: true,
+                              notifyWhatsapp: false,
+                            })
+                          }
+                          className={[
+                            "flex flex-col items-start gap-0.5 rounded-xl border px-2.5 py-2 text-left transition",
+                            !canEmail
+                              ? "cursor-not-allowed border-dark-primary/8 bg-dark-secondary/[0.03] opacity-60"
+                              : showEmail && !showWhatsapp
+                                ? "border-mid-green/40 bg-mid-green/[0.08]"
+                                : "border-dark-primary/10 bg-white hover:border-mid-green/30",
+                          ].join(" ")}
+                        >
+                          <span className="flex items-center gap-1.5 text-sm font-medium text-dark-primary">
+                            <Mail
+                              className="h-3.5 w-3.5 text-mid-green"
+                              strokeWidth={1.75}
+                            />
+                            Email
+                          </span>
+                          <span className="w-full truncate text-[11px] text-mid-green">
+                            {remindForm.customerEmail || "No email"}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={!canWhatsapp}
+                          aria-pressed={remindForm.notifyWhatsapp}
+                          onClick={() =>
+                            patchRemindForm({
+                              notifyEmail: false,
+                              notifyWhatsapp: true,
+                            })
+                          }
+                          className={[
+                            "flex flex-col items-start gap-0.5 rounded-xl border px-2.5 py-2 text-left transition",
+                            !canWhatsapp
+                              ? "cursor-not-allowed border-dark-primary/8 bg-dark-secondary/[0.03] opacity-60"
+                              : showWhatsapp && !showEmail
+                                ? "border-mid-green/40 bg-mid-green/[0.08]"
+                                : "border-dark-primary/10 bg-white hover:border-mid-green/30",
+                          ].join(" ")}
+                        >
+                          <span className="flex items-center gap-1.5 text-sm font-medium text-dark-primary">
+                            <MessageCircle
+                              className="h-3.5 w-3.5 text-mid-green"
+                              strokeWidth={1.75}
+                            />
+                            WhatsApp
+                          </span>
+                          <span className="w-full truncate text-[11px] text-mid-green">
+                            {remindForm.customerPhone || "No phone"}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={!canEmail && !canWhatsapp}
+                          aria-pressed={bothActive}
+                          onClick={() =>
+                            patchRemindForm({
+                              notifyEmail: canEmail,
+                              notifyWhatsapp: canWhatsapp,
+                            })
+                          }
+                          className={[
+                            "flex flex-col items-start gap-0.5 rounded-xl border px-2.5 py-2 text-left transition",
+                            !canEmail && !canWhatsapp
+                              ? "cursor-not-allowed border-dark-primary/8 bg-dark-secondary/[0.03] opacity-60"
+                              : bothActive
+                                ? "border-mid-green/40 bg-mid-green/[0.08]"
+                                : "border-dark-primary/10 bg-white hover:border-mid-green/30",
+                          ].join(" ")}
+                        >
+                          <span className="flex items-center gap-1.5 text-sm font-medium text-dark-primary">
+                            <Columns3
+                              className="h-3.5 w-3.5 text-mid-green"
+                              strokeWidth={1.75}
+                            />
+                            Both
+                          </span>
+                          <span className="w-full truncate text-[11px] text-mid-green">
+                            Side-by-side board
+                          </span>
+                        </button>
+                      </div>
+
+                      {!showEmail && !showWhatsapp ? (
+                        <div className="flex min-h-[16rem] flex-1 items-center justify-center rounded-xl border border-dashed border-dark-primary/15 bg-dark-secondary/[0.02] px-4 text-center">
+                          <p className="text-sm text-mid-green">
+                            Choose Email, WhatsApp, or Both to edit the message
+                            template.
+                          </p>
+                        </div>
+                      ) : (
+                        <div
+                          className={[
+                            "grid min-h-0 flex-1 gap-3",
+                            showBoth ? "lg:grid-cols-2" : "grid-cols-1",
+                          ].join(" ")}
+                        >
+                          {showEmail ? (
+                            <div className="flex min-h-0 flex-col rounded-xl border border-mid-green/30 bg-mid-green/[0.04] p-3">
+                              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                                Email template
+                              </p>
+                              <input
+                                value={remindForm.emailSubject}
+                                onChange={(e) =>
+                                  setRemindForm((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          emailSubject: e.target.value,
+                                          emailEdited: true,
+                                        }
+                                      : prev
+                                  )
+                                }
+                                placeholder="Subject"
+                                className="mb-2 h-8 w-full rounded-lg border border-dark-primary/10 bg-white px-2.5 text-sm text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40"
+                              />
+                              <textarea
+                                value={remindForm.emailBody}
+                                onChange={(e) =>
+                                  setRemindForm((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          emailBody: e.target.value,
+                                          emailEdited: true,
+                                        }
+                                      : prev
+                                  )
+                                }
+                                placeholder="Email body"
+                                className="min-h-[12rem] flex-1 resize-none rounded-lg border border-dark-primary/10 bg-white px-2.5 py-2 text-sm leading-relaxed text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40"
+                              />
+                            </div>
+                          ) : null}
+
+                          {showWhatsapp ? (
+                            <div className="flex min-h-0 flex-col rounded-xl border border-mid-green/30 bg-mid-green/[0.04] p-3">
+                              <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+                                WhatsApp template
+                              </p>
+                              <textarea
+                                value={remindForm.whatsappBody}
+                                onChange={(e) =>
+                                  setRemindForm((prev) =>
+                                    prev
+                                      ? {
+                                          ...prev,
+                                          whatsappBody: e.target.value,
+                                          whatsappEdited: true,
+                                        }
+                                      : prev
+                                  )
+                                }
+                                placeholder="WhatsApp message"
+                                className="min-h-[12rem] flex-1 resize-none rounded-lg border border-dark-primary/10 bg-white px-2.5 py-2 text-sm leading-relaxed text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40"
+                              />
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                          </>
+                        );
+                      })()}
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-5 flex justify-end gap-2">
+                <div className="flex shrink-0 items-center justify-end gap-2 border-t border-dark-primary/8 bg-dark-secondary/[0.02] px-5 py-3">
                   <button
                     type="button"
                     onClick={() => setRemindForm(null)}
-                    className="h-9 rounded-full px-3 text-sm text-mid-green hover:bg-dark-secondary/8"
+                    className="h-9 rounded-full px-4 text-sm font-medium text-mid-green transition-colors hover:bg-dark-secondary/8 hover:text-dark-primary"
                   >
                     Cancel
                   </button>
@@ -1962,10 +2493,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     type="button"
                     disabled={remindForm.saving}
                     onClick={() => void submitRemind()}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-full bg-dark-primary px-4 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-4 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(45,106,79,0.28)] transition hover:bg-dark-secondary disabled:opacity-60"
                   >
                     <Bell className="h-3.5 w-3.5" strokeWidth={1.75} />
-                    {remindForm.saving ? "Saving…" : "Set reminder"}
+                    {remindForm.saving ? "Saving…" : "Confirm"}
                   </button>
                 </div>
               </div>
@@ -1974,9 +2505,57 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           )
         : null}
 
+      {actionToast
+        ? createPortal(
+            <div
+              role="status"
+              aria-live="polite"
+              className="pointer-events-none fixed right-4 top-4 z-[11000] w-[min(22rem,calc(100vw-2rem))]"
+            >
+              <div
+                className={[
+                  "pointer-events-auto flex items-start gap-2.5 rounded-xl border bg-white px-3.5 py-3 shadow-[0_12px_30px_rgba(11,43,38,0.16)]",
+                  actionToast.tone === "success"
+                    ? "border-mid-green/25"
+                    : "border-amber-300/60",
+                ].join(" ")}
+              >
+                <CheckCircle2
+                  className={[
+                    "mt-0.5 h-4 w-4 shrink-0",
+                    actionToast.tone === "success"
+                      ? "text-mid-green"
+                      : "text-amber-600",
+                  ].join(" ")}
+                  strokeWidth={1.75}
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-dark-primary">
+                    {actionToast.title}
+                  </p>
+                  {actionToast.detail ? (
+                    <p className="mt-0.5 text-xs leading-relaxed text-mid-green">
+                      {actionToast.detail}
+                    </p>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActionToast(null)}
+                  className="rounded-full p-0.5 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
+                  aria-label="Dismiss"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
+
       {callLogForm
         ? createPortal(
-            <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[10000] flex items-center justify-center p-3 sm:p-4">
               <button
                 type="button"
                 className="absolute inset-0 bg-dark-primary/40"
@@ -1987,9 +2566,9 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="log-call-title"
-                className="relative z-10 w-full max-w-md rounded-2xl border border-dark-primary/10 bg-white p-5 shadow-[0_20px_50px_rgba(11,43,38,0.22)]"
+                className="relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_20px_50px_rgba(11,43,38,0.22)] sm:max-h-[calc(100dvh-2rem)]"
               >
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex shrink-0 items-start justify-between gap-3 px-5 pt-5">
                   <div>
                     <p
                       id="log-call-title"
@@ -2012,7 +2591,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                 </div>
 
-                <div className="mt-4 space-y-3">
+                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 py-4">
                   <label className="block space-y-1">
                     <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
                       Call outcome*
@@ -2071,7 +2650,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </div>
                 </div>
 
-                <div className="mt-5 flex justify-end gap-2">
+                <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 px-5 py-3">
                   <button
                     type="button"
                     onClick={() => setCallLogForm(null)}

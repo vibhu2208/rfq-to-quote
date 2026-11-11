@@ -13,6 +13,7 @@ export async function GET(req: NextRequest) {
   const warehouseIdParam = url.searchParams.get("warehouseId");
   const productId = url.searchParams.get("productId");
   const sync = url.searchParams.get("sync") !== "false";
+  const mapOnly = url.searchParams.get("map") === "1";
 
   const ctx = await getDefaultOrgContext();
   const warehouseId = warehouseIdParam || ctx.warehouseId;
@@ -23,6 +24,22 @@ export async function GET(req: NextRequest) {
       warehouseId,
       organisationId: ctx.organisationId,
     });
+  }
+
+  // Compact payload for RFQ stock badges — skip joins / decimal-heavy rows.
+  if (mapOnly && !productId) {
+    const balances = await prisma.stockBalance.findMany({
+      where: {
+        warehouseId,
+        product: { active: true, productType: "GOODS" },
+      },
+      select: { productId: true, quantityOnHand: true },
+    });
+    const map: Record<string, number> = {};
+    for (const row of balances) {
+      map[row.productId] = decimalToNumber(row.quantityOnHand);
+    }
+    return NextResponse.json({ synced: syncResult, map });
   }
 
   const balances = await prisma.stockBalance.findMany({

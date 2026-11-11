@@ -37,6 +37,7 @@ export async function POST(req: NextRequest) {
       .map((p) => ({
         id: p.id,
         code: p.code,
+        sourceProductId: p.sourceProductId ?? null,
         name: p.name,
         unit: p.unit,
         description: p.description,

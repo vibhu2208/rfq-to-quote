@@ -1,20 +1,22 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addMonths,
   eachDayOfInterval,
   endOfMonth,
   endOfWeek,
   format,
+  isBefore,
   isSameDay,
   isSameMonth,
   isToday,
   parse,
+  startOfDay,
   startOfMonth,
   startOfWeek,
 } from "date-fns";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock } from "lucide-react";
+import { ChevronLeft, ChevronRight, Globe } from "lucide-react";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -31,17 +33,26 @@ export function parseLocalDateTimeValue(value: string): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
-const MINUTES = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
+/** Business-day style slots: 07:00–21:00 every 15 minutes. */
+const TIME_SLOTS = (() => {
+  const slots: { h: number; m: number; key: string; label: string }[] = [];
+  for (let h = 7; h <= 21; h++) {
+    for (const m of [0, 15, 30, 45]) {
+      if (h === 21 && m > 0) continue;
+      const d = new Date();
+      d.setHours(h, m, 0, 0);
+      slots.push({
+        h,
+        m,
+        key: `${pad2(h)}:${pad2(m)}`,
+        label: format(d, "h:mm a"),
+      });
+    }
+  }
+  return slots;
+})();
 
-const TIME_PRESETS = [
-  ["09:00", 9, 0],
-  ["10:00", 10, 0],
-  ["12:00", 12, 0],
-  ["14:00", 14, 0],
-  ["15:00", 15, 0],
-  ["17:00", 17, 0],
-] as const;
+const WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
 type Props = {
   value: string;
@@ -50,59 +61,12 @@ type Props = {
   id?: string;
 };
 
-function TimeColumn({
-  label,
-  values,
-  selected,
-  onSelect,
-  formatValue = pad2,
-}: {
-  label: string;
-  values: number[];
-  selected: number;
-  onSelect: (value: number) => void;
-  formatValue?: (n: number) => string;
-}) {
-  const selectedRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    selectedRef.current?.scrollIntoView({ block: "center" });
-  }, [selected]);
-
-  return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <p className="mb-1.5 text-center text-[10px] font-medium uppercase tracking-wide text-mid-green/80">
-        {label}
-      </p>
-      <div
-        className="h-[13.5rem] overflow-y-auto rounded-xl bg-white py-1 ring-1 ring-dark-primary/10 [scrollbar-width:thin]"
-        role="listbox"
-        aria-label={label}
-      >
-        {values.map((v) => {
-          const active = v === selected;
-          return (
-            <button
-              key={v}
-              ref={active ? selectedRef : undefined}
-              type="button"
-              role="option"
-              aria-selected={active}
-              onClick={() => onSelect(v)}
-              className={[
-                "flex h-9 w-full items-center justify-center text-sm tabular-nums transition-colors",
-                active
-                  ? "bg-mid-green font-semibold text-background"
-                  : "text-dark-primary hover:bg-dark-secondary/8",
-              ].join(" ")}
-            >
-              {formatValue(v)}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+function timezoneLabel() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone.replace(/_/g, " ");
+  } catch {
+    return "Local time";
+  }
 }
 
 export function DateTimePicker({ value, onChange, optional = false, id }: Props) {
@@ -110,6 +74,11 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
   const [viewMonth, setViewMonth] = useState(
     () => startOfMonth(selected || new Date())
   );
+  const [panelHeight, setPanelHeight] = useState<number | null>(null);
+  const [sideBySide, setSideBySide] = useState(false);
+  const calendarRef = useRef<HTMLDivElement>(null);
+  const selectedSlotRef = useRef<HTMLButtonElement>(null);
+  const today = startOfDay(new Date());
 
   const days = useMemo(() => {
     const start = startOfWeek(startOfMonth(viewMonth), { weekStartsOn: 1 });
@@ -117,12 +86,37 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
     return eachDayOfInterval({ start, end });
   }, [viewMonth]);
 
-  const hour = selected?.getHours() ?? 10;
-  const minute = selected
-    ? MINUTES.includes(selected.getMinutes())
-      ? selected.getMinutes()
-      : (Math.round(selected.getMinutes() / 5) * 5) % 60
-    : 0;
+  const selectedKey =
+    selected && [0, 15, 30, 45].includes(selected.getMinutes())
+      ? `${pad2(selected.getHours())}:${pad2(selected.getMinutes())}`
+      : null;
+  const hasDate = Boolean(selected);
+  const tz = useMemo(() => timezoneLabel(), []);
+
+  useLayoutEffect(() => {
+    const node = calendarRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+
+    const sync = () => {
+      const next = Math.round(node.getBoundingClientRect().height);
+      setPanelHeight((prev) => (prev === next ? prev : next));
+      setSideBySide(window.matchMedia("(min-width: 640px)").matches);
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(node);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [viewMonth, optional, value]);
+
+  useEffect(() => {
+    if (!selectedKey) return;
+    selectedSlotRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedKey, selected?.toDateString()]);
 
   function commit(date: Date) {
     onChange(toLocalDateTimeValue(date));
@@ -141,156 +135,182 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
     commit(next);
   }
 
-  function setHour(h: number) {
-    const next = ensureBase();
-    next.setHours(h);
-    commit(next);
-  }
-
-  function setMinute(m: number) {
-    const next = ensureBase();
-    next.setMinutes(m, 0, 0);
-    commit(next);
-  }
-
-  function setTimePreset(h: number, m: number) {
+  function pickSlot(h: number, m: number) {
     const next = ensureBase();
     next.setHours(h, m, 0, 0);
     commit(next);
   }
 
-  const summary = selected
-    ? format(selected, "EEE, d MMM yyyy · HH:mm")
-    : optional
-      ? "No follow-up scheduled"
-      : "Pick a date and time";
-
   return (
     <div
       id={id}
-      className="overflow-hidden rounded-2xl border border-dark-primary/10 bg-dark-secondary/[0.03]"
+      className="overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_1px_2px_rgba(11,43,38,0.04)]"
     >
-      <div className="flex items-center gap-2.5 border-b border-dark-primary/8 px-4 py-3">
-        <CalendarDays className="h-4 w-4 shrink-0 text-mid-green" strokeWidth={1.75} />
-        <p className="min-w-0 flex-1 truncate text-sm font-medium text-dark-primary">
-          {summary}
-        </p>
-        {optional && value ? (
-          <button
-            type="button"
-            onClick={() => onChange("")}
-            className="shrink-0 text-xs font-medium text-mid-green hover:text-dark-primary"
-          >
-            Clear
-          </button>
-        ) : null}
-      </div>
-
-      <div className="grid gap-0 lg:grid-cols-[minmax(0,1fr)_13.5rem]">
-        <div className="border-b border-dark-primary/8 p-4 lg:border-b-0 lg:border-r">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <button
-              type="button"
-              onClick={() => setViewMonth((m) => addMonths(m, -1))}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-xl text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-              aria-label="Previous month"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
+      <div className="grid sm:grid-cols-[minmax(0,1.15fr)_minmax(10.5rem,12.5rem)]">
+        {/* Calendar — Calendly-style */}
+        <div
+          ref={calendarRef}
+          className="border-b border-dark-primary/8 p-4 sm:border-b-0 sm:border-r"
+        >
+          <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold tracking-tight text-dark-primary">
               {format(viewMonth, "MMMM yyyy")}
             </p>
-            <button
-              type="button"
-              onClick={() => setViewMonth((m) => addMonths(m, 1))}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-xl text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-              aria-label="Next month"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setViewMonth((m) => addMonths(m, -1))}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-mid-green transition-colors hover:bg-mid-green/10 hover:text-dark-primary"
+                aria-label="Previous month"
+              >
+                <ChevronLeft className="h-4 w-4" strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMonth((m) => addMonths(m, 1))}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full text-mid-green transition-colors hover:bg-mid-green/10 hover:text-dark-primary"
+                aria-label="Next month"
+              >
+                <ChevronRight className="h-4 w-4" strokeWidth={2} />
+              </button>
+            </div>
           </div>
 
-          <div className="mb-1.5 grid grid-cols-7 gap-1">
-            {["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map((d) => (
+          <div className="mb-1 grid grid-cols-7">
+            {WEEKDAYS.map((d) => (
               <span
                 key={d}
-                className="py-1 text-center text-[11px] font-medium uppercase tracking-wide text-mid-green/70"
+                className="py-1.5 text-center text-[10px] font-semibold tracking-[0.06em] text-mid-green/65"
               >
                 {d}
               </span>
             ))}
           </div>
-          <div className="grid grid-cols-7 gap-1">
+
+          <div className="grid grid-cols-7">
             {days.map((day) => {
               const inMonth = isSameMonth(day, viewMonth);
               const active = selected ? isSameDay(day, selected) : false;
-              const today = isToday(day);
+              const todayMark = isToday(day);
+              const past = isBefore(startOfDay(day), today);
+
+              if (!inMonth) {
+                return (
+                  <div
+                    key={day.toISOString()}
+                    className="flex h-9 items-center justify-center"
+                  />
+                );
+              }
+
+              return (
+                <div
+                  key={day.toISOString()}
+                  className="flex h-9 items-center justify-center"
+                >
+                  <button
+                    type="button"
+                    onClick={() => pickDay(day)}
+                    aria-pressed={active}
+                    aria-label={format(day, "EEEE, MMMM d, yyyy")}
+                    className={[
+                      "relative flex h-8 w-8 items-center justify-center rounded-full text-[13px] tabular-nums transition-all duration-150",
+                      active
+                        ? "bg-mid-green font-semibold text-white shadow-[0_6px_14px_rgba(45,106,79,0.28)]"
+                        : past
+                          ? "text-mid-green/40 hover:bg-dark-secondary/8 hover:text-dark-primary"
+                          : "font-medium text-dark-primary hover:bg-mid-green/12",
+                      !active && todayMark
+                        ? "ring-2 ring-inset ring-mid-green/35"
+                        : "",
+                    ].join(" ")}
+                  >
+                    {format(day, "d")}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 flex items-center justify-between gap-3 border-t border-dark-primary/8 pt-3">
+            <p className="inline-flex min-w-0 items-center gap-1.5 text-[11px] text-mid-green">
+              <Globe className="h-3.5 w-3.5 shrink-0" strokeWidth={1.75} />
+              <span className="truncate">{tz}</span>
+            </p>
+            {optional && value ? (
+              <button
+                type="button"
+                onClick={() => onChange("")}
+                className="shrink-0 text-[11px] font-medium text-mid-green transition-colors hover:text-dark-primary"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Time slots — height locked to calendar, then scrolls */}
+        <div
+          className="flex flex-col overflow-hidden bg-dark-secondary/[0.02] p-3 sm:p-4"
+          style={
+            sideBySide && panelHeight
+              ? { height: panelHeight }
+              : undefined
+          }
+        >
+          <div className="mb-2.5 shrink-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
+              {hasDate ? format(selected!, "EEEE") : "Select a date"}
+            </p>
+            <p className="mt-0.5 text-sm font-semibold tracking-tight text-dark-primary">
+              {hasDate ? format(selected!, "MMMM d") : "Then pick a time"}
+            </p>
+          </div>
+
+          <div
+            className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain pr-0.5 [scrollbar-width:thin]"
+            style={!sideBySide ? { maxHeight: "13rem" } : undefined}
+            role="listbox"
+            aria-label="Available times"
+          >
+            {TIME_SLOTS.map((slot) => {
+              const active = selectedKey === slot.key;
               return (
                 <button
-                  key={day.toISOString()}
+                  key={slot.key}
+                  ref={active ? selectedSlotRef : undefined}
                   type="button"
-                  onClick={() => pickDay(day)}
+                  role="option"
+                  aria-selected={active}
+                  onClick={() => pickSlot(slot.h, slot.m)}
                   className={[
-                    "relative flex h-10 items-center justify-center rounded-xl text-sm tabular-nums transition-colors",
-                    inMonth ? "text-dark-primary" : "text-mid-green/35",
+                    "flex h-9 w-full shrink-0 items-center justify-center rounded-lg border text-[13px] font-semibold tabular-nums transition-all duration-150",
                     active
-                      ? "bg-mid-green font-semibold text-background hover:bg-dark-secondary"
-                      : "hover:bg-dark-secondary/10",
-                    !active && today
-                      ? "font-semibold ring-1 ring-inset ring-mid-green/40"
-                      : "",
+                      ? "border-mid-green bg-mid-green text-white shadow-[0_6px_14px_rgba(45,106,79,0.22)]"
+                      : "border-mid-green/35 bg-white text-mid-green hover:border-mid-green hover:bg-mid-green/[0.06]",
                   ].join(" ")}
                 >
-                  {format(day, "d")}
+                  {slot.label}
                 </button>
               );
             })}
           </div>
         </div>
-
-        <div className="flex flex-col gap-3 p-4">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-mid-green">
-            <Clock className="h-3.5 w-3.5" strokeWidth={1.75} />
-            Time
-            <span className="ml-auto font-semibold normal-case tracking-normal tabular-nums text-dark-primary">
-              {pad2(hour)}:{pad2(minute)}
-            </span>
-          </div>
-
-          <div className="flex gap-2">
-            <TimeColumn
-              label="Hour"
-              values={HOURS}
-              selected={hour}
-              onSelect={setHour}
-            />
-            <TimeColumn
-              label="Min"
-              values={MINUTES}
-              selected={minute}
-              onSelect={setMinute}
-            />
-          </div>
-
-          <div className="grid grid-cols-3 gap-1.5">
-            {TIME_PRESETS.map(([label, h, m]) => (
-              <button
-                key={label}
-                type="button"
-                onClick={() => setTimePreset(h, m)}
-                className={[
-                  "rounded-lg px-1.5 py-1.5 text-center text-[11px] font-medium tabular-nums",
-                  hour === h && minute === m
-                    ? "bg-mid-green/15 text-dark-primary ring-1 ring-mid-green/25"
-                    : "bg-white text-mid-green ring-1 ring-dark-primary/8 hover:bg-dark-secondary/8",
-                ].join(" ")}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
       </div>
+
+      {selected ? (
+        <div className="flex items-center justify-between gap-3 border-t border-dark-primary/8 bg-white px-4 py-2.5">
+          <p className="text-[13px] text-mid-green">
+            <span className="font-medium text-dark-primary">
+              {format(selected, "EEE, MMM d")}
+            </span>
+            <span className="mx-1.5 text-mid-green/40">·</span>
+            <span className="font-semibold tabular-nums text-dark-primary">
+              {format(selected, "h:mm a")}
+            </span>
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }

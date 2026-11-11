@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { PRODUCT_CATEGORIES } from "@/lib/categories";
 import { useToast } from "@/components/app-toast";
+import { AppPageSkeleton } from "@/components/page-skeleton";
 
 type TaxonomyContact = {
   id: string;
@@ -1634,7 +1635,7 @@ function AdminVendorsPageInner() {
       </div>
 
       {loading && tab === "category" ? (
-        <MappingEmptyState>Loading taxonomy…</MappingEmptyState>
+        <AppPageSkeleton variant="table" />
       ) : tab === "category" ? (
         <div className="grid animate-[login-fade-up_0.35s_ease-out] gap-4 lg:grid-cols-[260px_minmax(0,1fr)]">
           <MappingPanel className="sticky top-4 self-start p-3">
@@ -3266,11 +3267,7 @@ function AdminVendorsPageInner() {
 
 export default function AdminVendorsPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="p-6 text-sm text-mid-green">Loading admin mapping…</div>
-      }
-    >
+    <Suspense fallback={<AppPageSkeleton variant="table" />}>
       <AdminVendorsPageInner />
     </Suspense>
   );

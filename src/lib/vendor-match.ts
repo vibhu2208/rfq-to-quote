@@ -627,46 +627,69 @@ export async function matchVendorsToRfq(
     "General / Uncategorized",
   ];
 
-  const vendors = await prisma.vendor.findMany({
-    where: {
-      active: true,
-      ...(categoryFilterValues.length > 0
-        ? {
-            OR: [
-              {
+  // Avoid OR'ing dozens of JSON array_contains predicates (very slow on
+  // Postgres). Load category + loose-bucket vendors, then keyword-filter in JS.
+  const vendorInclude = {
+    categories: true,
+    contacts: { orderBy: [{ isPrimary: "desc" as const }, { name: "asc" as const }] },
+    productHistory: {
+      where: { productKey: { in: productKeys } },
+      orderBy: { lastQuotedAt: "desc" as const },
+    },
+  };
+
+  const vendors =
+    categoryFilterValues.length === 0
+      ? await prisma.vendor.findMany({
+          where: { active: true },
+          include: vendorInclude,
+          orderBy: { name: "asc" },
+        })
+      : await (async () => {
+          const [categoryVendors, looseVendors] = await Promise.all([
+            prisma.vendor.findMany({
+              where: {
+                active: true,
                 categories: {
                   some: { category: { in: categoryFilterValues } },
                 },
               },
-              // Most imported vendors sit under Misc with product keywords only.
-              ...(keywordHints.length > 0
-                ? [
-                    {
-                      categories: {
-                        some: {
-                          category: { in: looseCategoryValues },
-                          OR: keywordHints.map((keyword) => ({
-                            keywords: { array_contains: [keyword] },
-                          })),
-                        },
-                      },
+              include: vendorInclude,
+              orderBy: { name: "asc" },
+            }),
+            keywordHints.length > 0
+              ? prisma.vendor.findMany({
+                  where: {
+                    active: true,
+                    categories: {
+                      some: { category: { in: looseCategoryValues } },
                     },
-                  ]
-                : []),
-            ],
+                  },
+                  include: vendorInclude,
+                  orderBy: { name: "asc" },
+                })
+              : Promise.resolve([]),
+          ]);
+
+          const byId = new Map(categoryVendors.map((vendor) => [vendor.id, vendor]));
+          const hintSet = new Set(keywordHints);
+          for (const vendor of looseVendors) {
+            if (byId.has(vendor.id)) continue;
+            const hitsKeyword = vendor.categories.some((category) => {
+              if (
+                !looseCategoryValues.some(
+                  (value) => value.toLowerCase() === category.category.toLowerCase()
+                )
+              ) {
+                return false;
+              }
+              const words = normalizeKeywords(category.keywords);
+              return words.some((word) => hintSet.has(word));
+            });
+            if (hitsKeyword) byId.set(vendor.id, vendor);
           }
-        : {}),
-    },
-    include: {
-      categories: true,
-      contacts: { orderBy: [{ isPrimary: "desc" }, { name: "asc" }] },
-      productHistory: {
-        where: { productKey: { in: productKeys } },
-        orderBy: { lastQuotedAt: "desc" },
-      },
-    },
-    orderBy: { name: "asc" },
-  });
+          return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+        })();
 
   type Acc = {
     vendor: VendorMatch["vendor"];

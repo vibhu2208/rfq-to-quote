@@ -29,6 +29,11 @@ const createSchema = z.object({
   title: z.string().optional(),
   notes: z.string().optional(),
   assignedToId: z.string().nullable().optional(),
+  notifyEmail: z.boolean().optional(),
+  notifyWhatsapp: z.boolean().optional(),
+  emailSubject: z.string().optional(),
+  emailBody: z.string().optional(),
+  whatsappBody: z.string().optional(),
 });
 
 export async function POST(req: NextRequest, { params }: Params) {
@@ -42,7 +47,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const followUp = await createFollowUp({
+  const result = await createFollowUp({
     rfqId: id,
     type: parsed.data.type,
     dueAt: new Date(parsed.data.dueAt),
@@ -50,9 +55,14 @@ export async function POST(req: NextRequest, { params }: Params) {
     notes: parsed.data.notes,
     assignedToId: parsed.data.assignedToId,
     createdById: session?.user?.id,
+    notifyEmail: parsed.data.notifyEmail,
+    notifyWhatsapp: parsed.data.notifyWhatsapp,
+    emailSubject: parsed.data.emailSubject,
+    emailBody: parsed.data.emailBody,
+    whatsappBody: parsed.data.whatsappBody,
   });
 
-  return NextResponse.json(followUp, { status: 201 });
+  return NextResponse.json(result, { status: 201 });
 }
 
 const completeSchema = z.object({

@@ -2392,7 +2392,9 @@ export default function RfqDetailPage() {
     Record<number, string>
   >({});
   const [extraMatchesByLine, setExtraMatchesByLine] = useState<Record<number, ProductMatch[]>>({});
-  const { inventoryMap } = useInventoryMap();
+  // Defer stock map until core RFQ is on screen so balances don't contend
+  // with the RFQ / matches / vendors boot path.
+  const { inventoryMap } = useInventoryMap(!loading && !!rfq);
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [vendorsLoading, setVendorsLoading] = useState(false);
@@ -3072,43 +3074,73 @@ export default function RfqDetailPage() {
     [id]
   );
 
-  // Parallel boot: RFQ + catalog matches + vendors open together (no waterfall).
+  // Progressive boot: paint core RFQ as soon as it returns; matches/vendors
+  // fill section skeletons independently (do not gate Re-parse on them).
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
     const bootSeq = ++loadSeqRef.current;
-    ++vendorLoadSeqRef.current;
+    const vendorSeq = ++vendorLoadSeqRef.current;
 
-    async function boot() {
-      setLoading(true);
-      setMatchesLoading(true);
-      setVendorsLoading(true);
-      setError("");
-      setVendorError("");
-      setRfq(null);
-      setMatches([]);
-      setItemMatches([]);
-      setRequirements([]);
-      setKeywords([]);
-      setSelected(new Set());
-      setLineSelection({});
-      setLineVendorSelection({});
-      setExtraMatchesByLine({});
-      setVendorMatches([]);
-      setVendorProductKey("");
-      manualVendorIdsRef.current = new Set();
-      setMarketplace(null);
-      setMarketplaceFetched(false);
-      setMarketplaceError("");
-      selectionsHydrated.current = false;
-      skipNextSave.current = true;
+    setLoading(true);
+    setMatchesLoading(true);
+    setVendorsLoading(true);
+    setError("");
+    setVendorError("");
+    setRfq(null);
+    setMatches([]);
+    setItemMatches([]);
+    setRequirements([]);
+    setKeywords([]);
+    setSelected(new Set());
+    setLineSelection({});
+    setLineVendorSelection({});
+    setExtraMatchesByLine({});
+    setVendorMatches([]);
+    setVendorProductKey("");
+    manualVendorIdsRef.current = new Set();
+    setMarketplace(null);
+    setMarketplaceFetched(false);
+    setMarketplaceError("");
+    selectionsHydrated.current = false;
+    skipNextSave.current = true;
 
+    const rfqPromise = fetch(`/api/rfqs/${id}`, { signal: controller.signal });
+    // Weighted-only first so the Products pane can populate before AI re-rank.
+    const matchesFastPromise = fetch(`/api/rfqs/${id}/matches?skipAi=1`, {
+      signal: controller.signal,
+    });
+    const vendorsPromise = fetch(`/api/rfqs/${id}/vendors`, {
+      signal: controller.signal,
+    });
+
+    function applyMatchPayload(
+      matchData: {
+        keywords?: string[];
+        matches?: ProductMatch[];
+        itemMatches?: RequirementMatch[];
+        requirements?: RfqRequirementItem[];
+      },
+      selections: ProductSelections | null | undefined,
+      opts?: { hydrateSelections?: boolean }
+    ) {
+      const list: ProductMatch[] = matchData.matches || [];
+      const perItem: RequirementMatch[] = matchData.itemMatches || [];
+      const reqs: RfqRequirementItem[] = matchData.requirements || [];
+      setKeywords(matchData.keywords || []);
+      setMatches(list);
+      setItemMatches(perItem);
+      setRequirements(reqs);
+      if (opts?.hydrateSelections !== false) {
+        applySavedSelections(selections ?? null, list, perItem);
+        setExpandedSearchLine(null);
+        selectionsHydrated.current = true;
+      }
+    }
+
+    async function bootRfq() {
       try {
-        const [rfqRes, matchesRes, vendorsRes] = await Promise.all([
-          fetch(`/api/rfqs/${id}`, { signal: controller.signal }),
-          fetch(`/api/rfqs/${id}/matches`, { signal: controller.signal }),
-          fetch(`/api/rfqs/${id}/vendors`, { signal: controller.signal }),
-        ]);
+        const rfqRes = await rfqPromise;
         if (cancelled || bootSeq !== loadSeqRef.current) return;
 
         if (!rfqRes.ok) {
@@ -3128,6 +3160,7 @@ export default function RfqDetailPage() {
           setLoading(false);
           setMatchesLoading(false);
           setVendorsLoading(false);
+          controller.abort();
           return;
         }
 
@@ -3135,71 +3168,7 @@ export default function RfqDetailPage() {
         if (cancelled || bootSeq !== loadSeqRef.current) return;
         setRfq(rfqData);
         setLoading(false);
-
-        try {
-          const matchData = await parseApiJson<{
-            keywords?: string[];
-            matches?: ProductMatch[];
-            itemMatches?: RequirementMatch[];
-            requirements?: RfqRequirementItem[];
-            error?: string;
-          }>(matchesRes, "Could not match catalog products");
-          if (cancelled || bootSeq !== loadSeqRef.current) return;
-          if (matchesRes.ok) {
-            const list: ProductMatch[] = matchData.matches || [];
-            const perItem: RequirementMatch[] = matchData.itemMatches || [];
-            const reqs: RfqRequirementItem[] = matchData.requirements || [];
-            setKeywords(matchData.keywords || []);
-            setMatches(list);
-            setItemMatches(perItem);
-            setRequirements(reqs);
-            applySavedSelections(rfqData.productSelections, list, perItem);
-            setExpandedSearchLine(null);
-            selectionsHydrated.current = true;
-          } else {
-            setError(
-              typeof matchData.error === "string"
-                ? matchData.error
-                : "Could not match catalog products"
-            );
-          }
-        } catch (err) {
-          if (!cancelled && bootSeq === loadSeqRef.current) {
-            setError(userFacingFetchError(err, "Could not match catalog products"));
-          }
-        } finally {
-          if (!cancelled && bootSeq === loadSeqRef.current) {
-            setMatchesLoading(false);
-          }
-        }
-
-        try {
-          const vendorData = await parseApiJson<{
-            matches?: VendorMatch[];
-            productKey?: string;
-            error?: string;
-          }>(vendorsRes, "Could not match vendors");
-          if (cancelled || bootSeq !== loadSeqRef.current) return;
-          if (vendorsRes.ok) {
-            setVendorMatches(vendorData.matches || []);
-            setVendorProductKey(vendorData.productKey || "");
-            setVendorError("");
-          } else {
-            setVendorError(
-              typeof vendorData.error === "string" && vendorData.error.trim()
-                ? vendorData.error
-                : "Could not match vendors"
-            );
-          }
-        } catch (err) {
-          if (!cancelled && bootSeq === loadSeqRef.current) {
-            setVendorError(userFacingFetchError(err, "Could not match vendors"));
-          }
-        } finally {
-          if (!cancelled && bootSeq === loadSeqRef.current) {
-            setVendorsLoading(false);
-          }
-        }
+        return rfqData;
       } catch (err) {
         if (cancelled || bootSeq !== loadSeqRef.current) return;
         if (err instanceof DOMException && err.name === "AbortError") return;
@@ -3210,7 +3179,105 @@ export default function RfqDetailPage() {
       }
     }
 
-    void boot();
+    async function bootMatches(rfqData: RfqDetail) {
+      const selections = rfqData.productSelections;
+      try {
+        const fastRes = await matchesFastPromise;
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        const fastData = await parseApiJson<{
+          keywords?: string[];
+          matches?: ProductMatch[];
+          itemMatches?: RequirementMatch[];
+          requirements?: RfqRequirementItem[];
+          error?: string;
+          aiEligible?: boolean;
+        }>(fastRes, "Could not match catalog products");
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        if (fastRes.ok) {
+          applyMatchPayload(fastData, selections);
+          setMatchesLoading(false);
+          if (!fastData.aiEligible) return;
+        } else {
+          setError(
+            typeof fastData.error === "string"
+              ? fastData.error
+              : "Could not match catalog products"
+          );
+          setMatchesLoading(false);
+          return;
+        }
+      } catch (err) {
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(userFacingFetchError(err, "Could not match catalog products"));
+        setMatchesLoading(false);
+        return;
+      }
+
+      // Background AI re-rank — upgrades ordering without blocking the pane.
+      try {
+        const fullRes = await fetch(`/api/rfqs/${id}/matches`, {
+          signal: controller.signal,
+        });
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        const fullData = await parseApiJson<{
+          keywords?: string[];
+          matches?: ProductMatch[];
+          itemMatches?: RequirementMatch[];
+          requirements?: RfqRequirementItem[];
+          error?: string;
+          reranked?: boolean;
+        }>(fullRes, "Could not match catalog products");
+        if (cancelled || bootSeq !== loadSeqRef.current) return;
+        if (fullRes.ok && fullData.reranked) {
+          // Keep any selections the user already made on weighted results.
+          applyMatchPayload(fullData, selections, { hydrateSelections: false });
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        // Keep weighted matches if re-rank fails.
+      }
+    }
+
+    async function bootVendors() {
+      try {
+        const vendorsRes = await vendorsPromise;
+        if (cancelled || vendorSeq !== vendorLoadSeqRef.current) return;
+        const vendorData = await parseApiJson<{
+          matches?: VendorMatch[];
+          productKey?: string;
+          error?: string;
+        }>(vendorsRes, "Could not match vendors");
+        if (cancelled || vendorSeq !== vendorLoadSeqRef.current) return;
+        if (vendorsRes.ok) {
+          setVendorMatches(vendorData.matches || []);
+          setVendorProductKey(vendorData.productKey || "");
+          setVendorError("");
+        } else {
+          setVendorError(
+            typeof vendorData.error === "string" && vendorData.error.trim()
+              ? vendorData.error
+              : "Could not match vendors"
+          );
+        }
+      } catch (err) {
+        if (cancelled || vendorSeq !== vendorLoadSeqRef.current) return;
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setVendorError(userFacingFetchError(err, "Could not match vendors"));
+      } finally {
+        if (!cancelled && vendorSeq === vendorLoadSeqRef.current) {
+          setVendorsLoading(false);
+        }
+      }
+    }
+
+    void bootVendors();
+    void (async () => {
+      const rfqData = await bootRfq();
+      if (cancelled || bootSeq !== loadSeqRef.current || !rfqData) return;
+      void bootMatches(rfqData);
+    })();
+
     return () => {
       cancelled = true;
       controller.abort();
@@ -4174,7 +4241,15 @@ export default function RfqDetailPage() {
 
           <div className="max-h-[34rem] overflow-y-auto">
             {matchesLoading ? (
-              <p className="px-3 py-8 text-center text-sm text-mid-green">Matching catalog…</p>
+              <div className="space-y-3 px-3 py-4 animate-pulse" aria-busy="true">
+                <p className="text-center text-sm text-mid-green">Matching catalog…</p>
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="h-16 rounded-xl border border-light-green/20 bg-dark-secondary/[0.04]"
+                  />
+                ))}
+              </div>
             ) : itemMatches.length > 0 ? (
               <ul className="divide-y divide-light-green/15">
                 {itemMatches.map((item) => {
@@ -4628,7 +4703,15 @@ export default function RfqDetailPage() {
 
           <div className="max-h-[34rem] overflow-y-auto">
             {vendorsLoading ? (
-              <p className="px-3 py-8 text-center text-sm text-mid-green">Matching vendors…</p>
+              <div className="space-y-3 px-3 py-4 animate-pulse" aria-busy="true">
+                <p className="text-center text-sm text-mid-green">Matching vendors…</p>
+                {Array.from({ length: 3 }).map((_, index) => (
+                  <div
+                    key={index}
+                    className="h-16 rounded-xl border border-light-green/20 bg-dark-secondary/[0.04]"
+                  />
+                ))}
+              </div>
             ) : vendorError ? (
               <div className="space-y-3 px-3 py-8 text-center">
                 <p className="text-sm text-red-700">{vendorError}</p>

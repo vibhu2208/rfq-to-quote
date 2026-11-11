@@ -81,23 +81,37 @@ function StockBadge({
   );
 }
 
-export function useInventoryMap() {
+export function useInventoryMap(enabled = true) {
   const [inventoryMap, setInventoryMap] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(Boolean(enabled));
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const res = await fetch("/api/inventory/balances?sync=false");
+      // map=1 returns { productId: qty } only — avoids shipping full balance rows.
+      const res = await fetch("/api/inventory/balances?sync=false&map=1");
       if (!res.ok) {
         if (!cancelled) setLoading(false);
         return;
       }
       const data = await res.json();
       const map: Record<string, number> = {};
-      for (const row of (data.balances || []) as InventoryBalance[]) {
-        map[row.productId] = row.quantityOnHand;
+      if (data.map && typeof data.map === "object") {
+        for (const [productId, qty] of Object.entries(
+          data.map as Record<string, unknown>
+        )) {
+          const n = Number(qty);
+          if (Number.isFinite(n)) map[productId] = n;
+        }
+      } else {
+        for (const row of (data.balances || []) as InventoryBalance[]) {
+          map[row.productId] = row.quantityOnHand;
+        }
       }
       if (!cancelled) {
         setInventoryMap(map);
@@ -107,7 +121,7 @@ export function useInventoryMap() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   return { inventoryMap, inventoryLoading: loading };
 }

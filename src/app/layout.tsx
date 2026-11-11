@@ -8,6 +8,7 @@ import "./globals.css";
 const manrope = Manrope({
   variable: "--font-manrope",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -23,7 +24,7 @@ export default async function RootLayout({
   const session = await getServerSession(authOptions);
   return (
     <html lang="en" className={`${manrope.variable} h-full overflow-hidden antialiased`}>
-      <body className="h-full overflow-hidden font-sans text-dark-primary">
+      <body className={`${manrope.className} h-full overflow-hidden font-sans text-dark-primary`}>
         <Providers session={session}>{children}</Providers>
       </body>
     </html>
