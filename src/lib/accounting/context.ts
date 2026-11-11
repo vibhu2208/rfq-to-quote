@@ -12,6 +12,7 @@ export type OrgContext = {
 };
 
 let cachedOrgId: { id: string; at: number } | null = null;
+let cachedOrgContext: { value: OrgContext; at: number } | null = null;
 
 /** Fast org id lookup for autocomplete and other hot paths. */
 export async function getDefaultOrganisationId(): Promise<string> {
@@ -29,6 +30,10 @@ export async function getDefaultOrganisationId(): Promise<string> {
 
 /** Loads the seeded DEFAULT organisation and primary GST / warehouse. */
 export async function getDefaultOrgContext(): Promise<OrgContext> {
+  if (cachedOrgContext && Date.now() - cachedOrgContext.at < 60_000) {
+    return cachedOrgContext.value;
+  }
+
   const organisation = await prisma.organisation.findUnique({
     where: { code: "DEFAULT" },
     include: {
@@ -62,7 +67,7 @@ export async function getDefaultOrgContext(): Promise<OrgContext> {
     throw new Error("DEFAULT org is missing legal entity, GST registration, or warehouse");
   }
 
-  return {
+  const value: OrgContext = {
     organisationId: organisation.id,
     legalEntityId: legalEntity.id,
     gstRegistrationId: gst.id,
@@ -72,6 +77,9 @@ export async function getDefaultOrgContext(): Promise<OrgContext> {
     warehouseId: warehouse.id,
     organisationName: organisation.name,
   };
+  cachedOrgContext = { value, at: Date.now() };
+  cachedOrgId = { id: organisation.id, at: Date.now() };
+  return value;
 }
 
 export async function getMembershipForUser(userId: string) {

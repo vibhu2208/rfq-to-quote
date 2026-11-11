@@ -7,6 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { usePathname } from "next/navigation";
 import { AppPageSkeleton } from "@/components/page-skeleton";
 
@@ -15,6 +16,11 @@ type SkeletonVariant = "default" | "dashboard" | "table" | "detail";
 type RouteTransitionContextValue = {
   pendingHref: string | null;
   isPending: boolean;
+};
+
+type RouteTransitionStartDetail = {
+  href: string;
+  navigationType?: string;
 };
 
 const RouteTransitionContext = createContext<RouteTransitionContextValue>({
@@ -47,7 +53,16 @@ function skeletonVariantFor(href: string): SkeletonVariant {
   ) {
     return "table";
   }
-  if (path.includes("/[") || /\/[^/]+\/[a-z0-9-]{8,}/i.test(path)) {
+  if (
+    path === "/quotes/new" ||
+    path === "/quotes/generate" ||
+    path.startsWith("/quotes/") ||
+    path.startsWith("/rfq/") ||
+    path.startsWith("/proformas/") ||
+    path.startsWith("/invoices/") ||
+    path.includes("/[") ||
+    /\/[^/]+\/[a-z0-9-]{8,}/i.test(path)
+  ) {
     return "detail";
   }
   return "default";
@@ -90,10 +105,21 @@ function isInternalNavClick(e: MouseEvent): string | null {
   return `${url.pathname}${url.search}`;
 }
 
+function paintPendingHref(href: string, setPendingHref: (href: string) => void) {
+  // Soft nav runs inside startTransition. A normal setState in the same click
+  // can be deferred with that transition and never paint until the destination
+  // is ready — leaving the previous page on screen. flushSync forces the
+  // skeleton into the DOM before Next continues the navigation.
+  flushSync(() => {
+    setPendingHref(href);
+  });
+}
+
 /**
  * Shows a destination-page skeleton + top progress bar immediately on in-app
- * link clicks — before the RSC payload arrives. Needed because (app)/layout is
- * force-dynamic and can keep the previous page painted until the server responds.
+ * navigation — before the RSC payload arrives. Needed because (app)/layout is
+ * force-dynamic and React transitions keep the previous page painted until the
+ * next route commits.
  */
 export function RouteTransitionProvider({
   children,
@@ -111,11 +137,21 @@ export function RouteTransitionProvider({
     function onClick(e: MouseEvent) {
       const href = isInternalNavClick(e);
       if (!href) return;
-      setPendingHref(href);
+      paintPendingHref(href, setPendingHref);
+    }
+
+    function onRouterStart(e: Event) {
+      const href = (e as CustomEvent<RouteTransitionStartDetail>).detail?.href;
+      if (!href) return;
+      paintPendingHref(href, setPendingHref);
     }
 
     document.addEventListener("click", onClick, true);
-    return () => document.removeEventListener("click", onClick, true);
+    window.addEventListener("qf:route-transition-start", onRouterStart);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("qf:route-transition-start", onRouterStart);
+    };
   }, []);
 
   // Safety: clear if navigation stalls (e.g. aborted soft nav).

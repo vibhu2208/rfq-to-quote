@@ -22,6 +22,8 @@ export type HybridCatalogMatchResult = {
   itemMatches: RequirementMatch[];
   matches: ProductMatch[];
   reranked: boolean;
+  /** True when a follow-up AI re-rank pass could improve ordering. */
+  aiEligible: boolean;
 };
 
 /**
@@ -59,23 +61,19 @@ export async function matchRfqCatalogHybrid(
         )
       : [];
 
+  const rerankPayload = buildRerankPayload(retrieved);
+  const aiEligible = rerankPayload.some(
+    (line) => !line.exact && line.candidates.length > 0
+  );
+
   let itemMatches = retrieved;
   let reranked = false;
 
-  if (!options?.skipAi && retrieved.some((r) => r.matches.length > 0)) {
+  if (!options?.skipAi && aiEligible) {
     try {
-      const payload = buildRerankPayload(retrieved);
-      const needsAi = payload.some((l) => !l.exact && l.candidates.length > 0);
-      if (needsAi) {
-        const ranked = await rerankCatalogMatches(payload);
-        itemMatches = applyRerankToItemMatches(retrieved, ranked, suggestionLimit);
-        reranked = Object.keys(ranked).length > 0;
-      } else {
-        itemMatches = retrieved.map((item) => ({
-          ...item,
-          matches: item.matches.slice(0, suggestionLimit),
-        }));
-      }
+      const ranked = await rerankCatalogMatches(rerankPayload);
+      itemMatches = applyRerankToItemMatches(retrieved, ranked, suggestionLimit);
+      reranked = Object.keys(ranked).length > 0;
     } catch {
       itemMatches = retrieved.map((item) => ({
         ...item,
@@ -100,5 +98,6 @@ export async function matchRfqCatalogHybrid(
     itemMatches,
     matches,
     reranked,
+    aiEligible,
   };
 }

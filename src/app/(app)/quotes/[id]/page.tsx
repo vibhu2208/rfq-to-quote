@@ -25,6 +25,8 @@ export default async function EditQuotePage({ params }: Props) {
         include: {
           product: {
             select: {
+              code: true,
+              sourceProductId: true,
               hsnCode: true,
               name: true,
               description: true,
@@ -86,6 +88,8 @@ export default async function EditQuotePage({ params }: Props) {
         "",
       aliasName: li.aliasName || li.product?.name || "",
       catalogName: li.product?.name || "",
+      catalogCode: li.product?.code || "",
+      catalogSourceId: li.product?.sourceProductId || null,
       qty: decimalToNumber(li.qty),
       unit: li.unit,
       unitPrice: decimalToNumber(li.unitPrice),

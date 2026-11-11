@@ -82,6 +82,8 @@ import {
   catalogPricesFromProduct,
   type CatalogPriceStackValue,
 } from "@/components/catalog-price-stack";
+import { ProductDetailDialog } from "@/components/product-detail-dialog";
+import { catalogProductRefLabel } from "@/lib/master-data";
 import { marketplaceQueryFromText } from "@/lib/marketplace/summary";
 import {
   applyPercentToLineDiscounts,
@@ -113,6 +115,7 @@ import type { VendorPriceMatch } from "@/lib/vendor-line-price";
 type ProductHit = {
   id: string;
   code: string;
+  sourceProductId?: string | null;
   name: string;
   unit: string;
   offerPrice: number;
@@ -129,6 +132,10 @@ type LineItem = {
   key: string;
   productId: string | null;
   catalogName?: string;
+  /** Internal catalog SKU code (editor-only; not on preview/PDF/email). */
+  catalogCode?: string;
+  /** Excel ProductID when present (editor-only). */
+  catalogSourceId?: string | null;
   description: string;
   aliasName: string;
   qty: number;
@@ -493,6 +500,7 @@ export function QuoteBuilder({
   const [searchAiLoading, setSearchAiLoading] = useState(false);
   const [searchAiDone, setSearchAiDone] = useState(false);
   const [searchAiError, setSearchAiError] = useState("");
+  const [productDetailKey, setProductDetailKey] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
   const [sendOpen, setSendOpen] = useState(false);
   const [sendChannel, setSendChannel] = useState<QuoteSendChannel>("EMAIL");
@@ -823,6 +831,9 @@ export function QuoteBuilder({
         try {
           const res = await fetch(`/api/products/${productId}`);
           const data = (await res.json().catch(() => ({}))) as {
+            code?: string;
+            sourceProductId?: string | null;
+            name?: string;
             lastPrice?: number | null;
             offerPrice?: number | null;
             mrp?: number | null;
@@ -844,6 +855,32 @@ export function QuoteBuilder({
             ...prev,
             [productId]: { loading: false, prices: catalogPricesFromProduct(data) },
           }));
+          // Keep internal catalog reference fields fresh for the editor-only chip.
+          setForm((f) => {
+            let changed = false;
+            const lineItems = f.lineItems.map((line) => {
+              if (line.productId !== productId) return line;
+              const next = {
+                ...line,
+                catalogCode: line.catalogCode || data.code || "",
+                catalogSourceId:
+                  line.catalogSourceId ?? data.sourceProductId ?? null,
+                catalogName: line.catalogName || data.name || "",
+                catalogLastPrice: data.lastPrice ?? line.catalogLastPrice ?? null,
+                catalogOfferPrice: data.offerPrice ?? line.catalogOfferPrice ?? null,
+                catalogMrp: data.mrp ?? line.catalogMrp ?? null,
+              };
+              if (
+                next.catalogCode !== line.catalogCode ||
+                next.catalogSourceId !== line.catalogSourceId ||
+                next.catalogName !== line.catalogName
+              ) {
+                changed = true;
+              }
+              return next;
+            });
+            return changed ? { ...f, lineItems } : f;
+          });
         } catch {
           catalogFetchedRef.current.delete(productId);
           if (!cancelled) {
@@ -985,10 +1022,12 @@ export function QuoteBuilder({
   const lastSavedJsonRef = useRef<string | null>(null);
   const baselineJsonRef = useRef<string | null>(null);
   const saveChainRef = useRef(Promise.resolve(true));
+  const savingRef = useRef(false);
   calcRef.current = calc;
 
   const saveQuote = useCallback((status?: "DRAFT" | "SENT") => {
     const run = async () => {
+      savingRef.current = true;
       setSaving(true);
       try {
         for (;;) {
@@ -1062,6 +1101,7 @@ export function QuoteBuilder({
         setMsg("Save failed");
         return false;
       } finally {
+        savingRef.current = false;
         setSaving(false);
       }
     };
@@ -1074,37 +1114,60 @@ export function QuoteBuilder({
     return next;
   }, []);
 
+  const savePayloadJson = useMemo(
+    () => JSON.stringify(quoteSavePayload(form, calc)),
+    [form, calc]
+  );
+  const hasPendingSave =
+    baselineJsonRef.current !== null &&
+    savePayloadJson !== baselineJsonRef.current &&
+    savePayloadJson !== lastSavedJsonRef.current;
+
   useEffect(() => {
-    const json = JSON.stringify(quoteSavePayload(form, calc));
     if (baselineJsonRef.current === null) {
-      baselineJsonRef.current = json;
+      baselineJsonRef.current = savePayloadJson;
       return;
     }
-    if (json === baselineJsonRef.current || json === lastSavedJsonRef.current) {
+    if (
+      savePayloadJson === baselineJsonRef.current ||
+      savePayloadJson === lastSavedJsonRef.current
+    ) {
       return;
     }
     const timer = window.setTimeout(() => {
       void saveQuote();
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [form, calc, saveQuote]);
+  }, [savePayloadJson, saveQuote]);
 
   useEffect(() => {
-    const flush = () => {
+    const isDirty = () => {
       const json = JSON.stringify(
         quoteSavePayload(formRef.current, calcRef.current)
       );
-      if (json === baselineJsonRef.current || json === lastSavedJsonRef.current) return;
+      return (
+        json !== baselineJsonRef.current && json !== lastSavedJsonRef.current
+      );
+    };
+    const flush = () => {
+      if (!isDirty()) return;
       void saveQuote();
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") flush();
     };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isDirty() && !savingRef.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", onBeforeUnload);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, [saveQuote]);
 
@@ -1252,6 +1315,8 @@ export function QuoteBuilder({
     updateLine(idx, {
       productId: p.id,
       catalogName: p.name,
+      catalogCode: p.code || "",
+      catalogSourceId: p.sourceProductId ?? null,
       description: p.description || "",
       aliasName: p.name,
       unit: normalizeQuoteUnit(p.unit),
@@ -1275,6 +1340,20 @@ export function QuoteBuilder({
       [p.id]: { loading: false, prices: catalogPricesFromProduct(p) },
     }));
     resetCatalogSearch();
+    setProductDetailKey(null);
+  }
+
+  function openCatalogSearch(idx: number) {
+    resetCatalogSearch();
+    setProductDetailKey(null);
+    setSearchIdx(idx);
+  }
+
+  function openMappedProductDetail(idx: number) {
+    const line = form.lineItems[idx];
+    if (!line?.productId) return;
+    resetCatalogSearch();
+    setProductDetailKey(line.key);
   }
 
   function setOverride(field: keyof ManualOverrides, value: number) {
@@ -1760,13 +1839,22 @@ export function QuoteBuilder({
     );
   }
 
+  const productDetailIdx =
+    productDetailKey == null
+      ? -1
+      : form.lineItems.findIndex((l) => l.key === productDetailKey);
+  const productDetailLine =
+    productDetailIdx >= 0 ? form.lineItems[productDetailIdx] : null;
+
   const saveLabel = saving
     ? "Saving…"
     : msg
       ? "Save failed"
-      : form.id
-        ? "Saved"
-        : "Unsaved";
+      : hasPendingSave
+        ? "Saving…"
+        : form.id
+          ? "Saved"
+          : "Unsaved";
   const saveTone =
     saveLabel === "Save failed"
       ? "bg-dark-primary/10 text-dark-primary"
@@ -1878,6 +1966,36 @@ export function QuoteBuilder({
       {msg ? <p className="text-sm text-mid-green">{msg}</p> : null}
 
       {renderPreviewModal()}
+
+      {productDetailLine?.productId ? (
+        <ProductDetailDialog
+          productId={productDetailLine.productId}
+          seed={{
+            id: productDetailLine.productId,
+            code: productDetailLine.catalogCode || "",
+            name: productDetailLine.catalogName || "",
+            sourceProductId: productDetailLine.catalogSourceId,
+            description: productDetailLine.description,
+            hsnCode: productDetailLine.hsnCode,
+            unit: productDetailLine.unit,
+            taxRate: productDetailLine.taxRate,
+            lastPrice: productDetailLine.catalogLastPrice,
+            offerPrice: productDetailLine.catalogOfferPrice,
+            mrp: productDetailLine.catalogMrp,
+          }}
+          onClose={() => setProductDetailKey(null)}
+          actions={
+            <button
+              type="button"
+              onClick={() => openCatalogSearch(productDetailIdx)}
+              className="inline-flex items-center gap-1 rounded-lg border border-mid-green/40 px-3 py-1.5 text-sm text-mid-green hover:bg-mid-green/10"
+            >
+              <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
+              Change mapping
+            </button>
+          }
+        />
+      ) : null}
 
       {form.id ? (
         <QuoteAttachmentsDialog
@@ -2459,10 +2577,7 @@ export function QuoteBuilder({
                             <div className="flex items-center gap-1.5">
                               <button
                                 type="button"
-                                onClick={() => {
-                                  resetCatalogSearch();
-                                  setSearchIdx(idx);
-                                }}
+                                onClick={() => openCatalogSearch(idx)}
                                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-light-green/40 text-mid-green hover:bg-light-green/20"
                                 title="Search catalog"
                                 aria-label="Search catalog"
@@ -2483,6 +2598,25 @@ export function QuoteBuilder({
                                 }
                               />
                             </div>
+                            {line.productId ? (
+                              <button
+                                type="button"
+                                onClick={() => openMappedProductDetail(idx)}
+                                className="mt-1 block max-w-full truncate rounded px-1 py-0.5 text-left text-[11px] text-mid-green underline-offset-2 hover:bg-light-green/20 hover:underline"
+                                title="Open catalog product details (internal only — not on preview, PDF, or email)"
+                              >
+                                Catalog:{" "}
+                                {catalogProductRefLabel({
+                                  sourceProductId: line.catalogSourceId,
+                                  code: line.catalogCode,
+                                  name: line.catalogName,
+                                })}
+                              </button>
+                            ) : (
+                              <p className="mt-1 px-1 text-[11px] text-amber-800/90">
+                                Not mapped
+                              </p>
+                            )}
                             {line.productId &&
                             line.aliasName.trim() &&
                             catalogBindingLooksMismatched(
