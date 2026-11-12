@@ -54,7 +54,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     setItems((current) => [...current.slice(-4), { id, message, tone }]);
     window.setTimeout(() => {
       setItems((current) => current.filter((item) => item.id !== id));
-    }, 3200);
+    }, 2000);
   }, []);
 
   const value = useMemo(() => ({ toast }), [toast]);
@@ -63,7 +63,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     <ToastContext.Provider value={value}>
       {children}
       <div
-        className="pointer-events-none fixed bottom-5 right-5 z-[120] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
+        className="pointer-events-none fixed right-4 top-4 z-[120] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
         aria-live="polite"
       >
         {items.map((item) => {

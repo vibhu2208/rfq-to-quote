@@ -2,10 +2,12 @@ import { notFound } from "next/navigation";
 import { QuoteBuilder, type QuoteFormState } from "@/components/quote-builder";
 import { QuoteLifecyclePanel } from "@/components/quote-lifecycle-panel";
 import { QuoteAccountingActions } from "@/components/quote-accounting-actions";
+import type { QuoteRequirementContext } from "@/components/quote-requirement-sidebar";
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
 import { normalizeQuoteUnit, quoteLineDetails } from "@/lib/quote-format";
+import { extractRfqItems } from "@/lib/rfq-items";
 import type { ManualOverrides } from "@/lib/tax";
 import { formatQuoteInstant } from "@/lib/quote-format";
 
@@ -39,7 +41,15 @@ export default async function EditQuotePage({ params }: Props) {
       },
       rfq: {
         select: {
+          id: true,
+          leadNumber: true,
           channel: true,
+          subject: true,
+          rawText: true,
+          parsedCategory: true,
+          parsedSpecs: true,
+          customerName: true,
+          customerCompany: true,
           customerEmail: true,
           customerPhone: true,
         },
@@ -47,6 +57,29 @@ export default async function EditQuotePage({ params }: Props) {
     },
   });
   if (!quote) notFound();
+
+  const requirementContext: QuoteRequirementContext | null = quote.rfq
+    ? {
+        rfqId: quote.rfq.id,
+        leadNumber: quote.rfq.leadNumber,
+        subject: quote.rfq.subject,
+        category: quote.rfq.parsedCategory,
+        customerName: quote.rfq.customerName,
+        customerCompany: quote.rfq.customerCompany,
+        rawText: quote.rfq.rawText || "",
+        items: extractRfqItems(quote.rfq.parsedSpecs, quote.rfq.rawText).map(
+          (item) => ({
+            lineNumber: item.lineNumber,
+            description: item.description,
+            quantity: item.quantity,
+            unit: item.unit,
+            brand: item.brand,
+            model: item.model,
+            code: item.code,
+          })
+        ),
+      }
+    : null;
 
   const company = getCompanyConfig();
   const initial: QuoteFormState = {
@@ -130,6 +163,7 @@ export default async function EditQuotePage({ params }: Props) {
         quoteStatus={quote.status}
         lastReplyIntent={quote.lastReplyIntent}
         rfqId={quote.rfqId || undefined}
+        requirementContext={requirementContext}
         sendContext={{
           rfqChannel: quote.rfq?.channel ?? null,
           customerEmail: quote.rfq?.customerEmail,

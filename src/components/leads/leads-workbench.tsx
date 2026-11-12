@@ -17,6 +17,7 @@ import {
   ArrowUpDown,
   Bell,
   CalendarDays,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -51,6 +52,7 @@ import {
   COLUMN_CELL_CLASS,
   COLUMN_LABELS,
   fixedPopoverCoords,
+  isDatePresetFilterActive,
   money,
   recentActivityItems,
   relativeTime,
@@ -94,8 +96,7 @@ type HeaderFilterCol =
   | "requirement"
   | "stage"
   | "priority"
-  | "assignedTo"
-  | "nextFollowUp";
+  | "assignedTo";
 
 const HEADER_FILTER_COLS: HeaderFilterCol[] = [
   "leadId",
@@ -103,7 +104,6 @@ const HEADER_FILTER_COLS: HeaderFilterCol[] = [
   "stage",
   "priority",
   "assignedTo",
-  "nextFollowUp",
 ];
 
 function isHeaderFilterCol(col: LeadColumnId): col is HeaderFilterCol {
@@ -212,10 +212,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   } | null>(null);
   const [showImportExport, setShowImportExport] = useState(false);
   const [showCustomRange, setShowCustomRange] = useState(
-    initialUrl.datePreset === "custom"
+    initialUrl.datePreset === "custom" &&
+      Boolean(initialUrl.dateFrom || initialUrl.dateTo)
   );
+  const [draftDateFrom, setDraftDateFrom] = useState(initialUrl.dateFrom);
+  const [draftDateTo, setDraftDateTo] = useState(initialUrl.dateTo);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [promotingId, setPromotingId] = useState<string | null>(null);
+  const [creatingQuoteId, setCreatingQuoteId] = useState<string | null>(null);
   const [drawerLeadId, setDrawerLeadId] = useState<string | null>(
     initialUrl.leadId
   );
@@ -286,6 +290,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     followUpDue: string;
     saving: boolean;
   } | null>(null);
+  const [callOutcomeOpen, setCallOutcomeOpen] = useState(false);
   const [uploadForm, setUploadForm] = useState<{
     leadId: string;
     leadNumber: string;
@@ -720,6 +725,34 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     }
   }
 
+  async function createQuoteFromLead(id: string) {
+    setCreatingQuoteId(id);
+    try {
+      const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
+        method: "POST",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        error?: string;
+      };
+      if (!res.ok || !data.id) {
+        window.alert(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not create quote"
+        );
+        return;
+      }
+      setActionToast({
+        title: "Draft quote created from matching",
+        tone: "success",
+      });
+      router.push(`/quotes/${data.id}`);
+    } finally {
+      setCreatingQuoteId(null);
+    }
+  }
+
   function openRemind(row: LeadRow) {
     const email = (row.customerEmail || "").trim();
     const phone = (row.customerPhone || "").trim();
@@ -836,6 +869,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   }
 
   function openLogCall(row: LeadRow) {
+    setCallOutcomeOpen(false);
     setCallLogForm({
       leadId: row.id,
       leadNumber: row.leadNumber,
@@ -1283,15 +1317,18 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   useEffect(() => {
     if (!remindForm && !callLogForm && !uploadForm) return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") {
-        setRemindForm(null);
-        setCallLogForm(null);
-        setUploadForm(null);
+      if (e.key !== "Escape") return;
+      if (callOutcomeOpen) {
+        setCallOutcomeOpen(false);
+        return;
       }
+      setRemindForm(null);
+      setCallLogForm(null);
+      setUploadForm(null);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [remindForm, callLogForm, uploadForm]);
+  }, [remindForm, callLogForm, uploadForm, callOutcomeOpen]);
 
   useEffect(() => {
     if (!actionToast) return;
@@ -1379,8 +1416,13 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     setAssignee(String(f.assignee || ""));
     setCategory(String(f.category || ""));
     setDatePreset(String(f.datePreset || "all"));
-    setDateFrom(String(f.dateFrom || ""));
-    setDateTo(String(f.dateTo || ""));
+    const nextFrom = String(f.dateFrom || "");
+    const nextTo = String(f.dateTo || "");
+    setDateFrom(nextFrom);
+    setDateTo(nextTo);
+    setDraftDateFrom(nextFrom);
+    setDraftDateTo(nextTo);
+    setShowCustomRange(false);
     setSlaStatus(String(f.slaStatus || ""));
   }
 
@@ -1410,7 +1452,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     if (col === "stage") setStage("");
     if (col === "priority") setPriority("");
     if (col === "assignedTo") setAssignee("");
-    if (col === "nextFollowUp") setDatePreset("all");
     setHeaderFilter(null);
   }
 
@@ -1420,7 +1461,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     if (col === "stage") return Boolean(stage);
     if (col === "priority") return Boolean(priority);
     if (col === "assignedTo") return Boolean(assignee);
-    if (col === "nextFollowUp") return datePreset !== "all";
     return false;
   }
 
@@ -1457,7 +1497,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     stage,
     priority,
     assignee,
-    datePreset !== "all" ? datePreset : "",
+    isDatePresetFilterActive(datePreset, dateFrom, dateTo) ? datePreset : "",
     slaStatus,
   ].filter(Boolean).length;
 
@@ -1470,9 +1510,26 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     setDatePreset("all");
     setDateFrom("");
     setDateTo("");
+    setDraftDateFrom("");
+    setDraftDateTo("");
     setSlaStatus("");
     setShowCustomRange(false);
     setHeaderFilter(null);
+  }
+
+  function applyCustomDateRange() {
+    const from = draftDateFrom.trim();
+    const to = draftDateTo.trim();
+    if (from || to) {
+      setDateFrom(from);
+      setDateTo(to);
+      setDatePreset("custom");
+    } else {
+      setDateFrom("");
+      setDateTo("");
+      if (datePreset === "custom") setDatePreset("all");
+    }
+    setShowCustomRange(false);
   }
 
   const toolbarDatePresets = [
@@ -1698,7 +1755,21 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           data-custom-range=""
         >
           {toolbarDatePresets.map((preset, idx) => {
-            const active = datePreset === preset.value;
+            const customApplied = isDatePresetFilterActive(
+              "custom",
+              dateFrom,
+              dateTo
+            );
+            const active =
+              preset.value === "custom"
+                ? customApplied || showCustomRange
+                : datePreset === preset.value &&
+                  isDatePresetFilterActive(datePreset, dateFrom, dateTo);
+            const allActive =
+              preset.value === "all" &&
+              !isDatePresetFilterActive(datePreset, dateFrom, dateTo) &&
+              !showCustomRange;
+            const selected = preset.value === "all" ? allActive : active;
             return (
               <div key={preset.value} className="flex items-center">
                 {idx > 0 ? (
@@ -1710,7 +1781,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   type="button"
                   onClick={() => {
                     if (preset.value === "custom") {
-                      setDatePreset("custom");
+                      setDraftDateFrom(dateFrom);
+                      setDraftDateTo(dateTo);
                       setShowCustomRange((v) => !v);
                       return;
                     }
@@ -1718,7 +1790,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     setShowCustomRange(false);
                   }}
                   className={`rounded-full px-2.5 py-1.5 font-medium transition ${
-                    active
+                    selected
                       ? "bg-dark-secondary/[0.08] text-dark-primary"
                       : "text-mid-green hover:text-dark-primary"
                   }`}
@@ -1734,8 +1806,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 <span className="font-medium text-mid-green">From</span>
                 <input
                   type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
+                  value={draftDateFrom}
+                  onChange={(e) => setDraftDateFrom(e.target.value)}
                   className="h-8 w-full rounded-lg bg-dark-secondary/[0.05] px-2 text-sm"
                 />
               </label>
@@ -1743,14 +1815,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 <span className="font-medium text-mid-green">To</span>
                 <input
                   type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
+                  value={draftDateTo}
+                  onChange={(e) => setDraftDateTo(e.target.value)}
                   className="h-8 w-full rounded-lg bg-dark-secondary/[0.05] px-2 text-sm"
                 />
               </label>
               <button
                 type="button"
-                onClick={() => setShowCustomRange(false)}
+                onClick={applyCustomDateRange}
                 className="h-8 rounded-full bg-dark-primary text-xs font-medium text-background"
               >
                 Apply range
@@ -2145,6 +2217,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   contactExpanded={expandedContacts.has(row.id)}
                   quotesPopoverOpen={quotesPopover?.rowId === row.id}
                   promoting={promotingId === row.id}
+                  creatingQuote={creatingQuoteId === row.id}
                   onOpen={() => setDrawerLeadId(row.id)}
                   onToggleSelect={() => toggleOne(row.id)}
                   onToggleContact={() => {
@@ -2162,6 +2235,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     void changeRowPriority(row.id, priority, row.priority)
                   }
                   onPromote={() => void promoteRow(row.id)}
+                  onCreateQuote={() => void createQuoteFromLead(row.id)}
                   onRemind={() => openRemind(row)}
                   onLogCall={() => openLogCall(row)}
                   onUpload={() => openUploadDoc(row)}
@@ -2714,16 +2788,25 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 type="button"
                 className="absolute inset-0 bg-dark-primary/40"
                 aria-label="Close log call"
-                onClick={() => setCallLogForm(null)}
+                onClick={() => {
+                  setCallOutcomeOpen(false);
+                  setCallLogForm(null);
+                }}
               />
               <div
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="log-call-title"
-                className="relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_20px_50px_rgba(11,43,38,0.22)] sm:max-h-[calc(100dvh-2rem)]"
+                className="relative z-10 flex max-h-[calc(100dvh-1.5rem)] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-dark-primary/10 bg-white shadow-[0_20px_50px_rgba(11,43,38,0.22)] sm:max-h-[calc(100dvh-2rem)]"
+                onMouseDown={(e) => {
+                  if (!callOutcomeOpen) return;
+                  const target = e.target as HTMLElement | null;
+                  if (target?.closest("[data-call-outcome]")) return;
+                  setCallOutcomeOpen(false);
+                }}
               >
-                <div className="flex shrink-0 items-start justify-between gap-3 px-5 pt-5">
-                  <div>
+                <div className="flex shrink-0 items-start justify-between gap-3 border-b border-dark-primary/8 px-5 py-4 sm:px-6">
+                  <div className="min-w-0">
                     <p
                       id="log-call-title"
                       className="text-base font-semibold text-dark-primary"
@@ -2732,12 +2815,18 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     </p>
                     <p className="mt-0.5 text-xs text-mid-green">
                       Capture the outcome of your conversation with{" "}
-                      {callLogForm.contactLabel}.
+                      <span className="font-medium text-dark-primary">
+                        {callLogForm.contactLabel}
+                      </span>
+                      .
                     </p>
                   </div>
                   <button
                     type="button"
-                    onClick={() => setCallLogForm(null)}
+                    onClick={() => {
+                      setCallOutcomeOpen(false);
+                      setCallLogForm(null);
+                    }}
                     className="rounded-full p-1 text-mid-green hover:bg-dark-secondary/10"
                     aria-label="Close"
                   >
@@ -2745,30 +2834,81 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                 </div>
 
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain px-5 py-4">
-                  <label className="block space-y-1">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto overscroll-contain px-5 py-4 sm:px-6">
+                  <div className="space-y-1.5" data-call-outcome="">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
                       Call outcome*
                     </span>
-                    <select
-                      value={callLogForm.outcome}
-                      onChange={(e) =>
-                        setCallLogForm((prev) =>
-                          prev ? { ...prev, outcome: e.target.value } : prev
-                        )
-                      }
-                      className="h-10 w-full rounded-xl bg-dark-secondary/[0.05] px-3 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
+                    <button
+                      type="button"
+                      aria-haspopup="listbox"
+                      aria-expanded={callOutcomeOpen}
+                      onClick={() => setCallOutcomeOpen((open) => !open)}
+                      className={`flex h-11 w-full items-center gap-2 rounded-xl border bg-white px-3 text-left text-sm transition ${
+                        callOutcomeOpen
+                          ? "border-mid-green/45 ring-2 ring-mid-green/15"
+                          : "border-dark-primary/10 hover:border-mid-green/30"
+                      }`}
                     >
-                      {CALL_OUTCOMES.map((outcome) => (
-                        <option key={outcome} value={outcome}>
-                          {outcome}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-mid-green/12 text-mid-green">
+                        <Phone className="h-3.5 w-3.5" strokeWidth={1.8} />
+                      </span>
+                      <span className="min-w-0 flex-1 truncate font-medium text-dark-primary">
+                        {callLogForm.outcome}
+                      </span>
+                      <ChevronDown
+                        className={`h-4 w-4 shrink-0 text-mid-green transition-transform ${
+                          callOutcomeOpen ? "rotate-180" : ""
+                        }`}
+                        strokeWidth={1.75}
+                      />
+                    </button>
+                    {callOutcomeOpen ? (
+                      <div
+                        role="listbox"
+                        aria-label="Call outcomes"
+                        className="overflow-hidden rounded-xl border border-dark-primary/10 bg-[#f7faf9] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)]"
+                      >
+                        <div className="max-h-52 space-y-0.5 overflow-y-auto">
+                          {CALL_OUTCOMES.map((outcome) => {
+                            const selected = callLogForm.outcome === outcome;
+                            return (
+                              <button
+                                key={outcome}
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                onClick={() => {
+                                  setCallLogForm((prev) =>
+                                    prev ? { ...prev, outcome } : prev
+                                  );
+                                  setCallOutcomeOpen(false);
+                                }}
+                                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
+                                  selected
+                                    ? "bg-white font-medium text-dark-primary shadow-[0_1px_3px_rgba(11,43,38,0.08)] ring-1 ring-mid-green/20"
+                                    : "text-dark-primary/90 hover:bg-white/80"
+                                }`}
+                              >
+                                <span className="min-w-0 flex-1 truncate">
+                                  {outcome}
+                                </span>
+                                {selected ? (
+                                  <Check
+                                    className="h-3.5 w-3.5 shrink-0 text-mid-green"
+                                    strokeWidth={2.25}
+                                  />
+                                ) : null}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
 
-                  <label className="block space-y-1">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  <label className="block space-y-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
                       Call update
                     </span>
                     <textarea
@@ -2778,14 +2918,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                           prev ? { ...prev, notes: e.target.value } : prev
                         )
                       }
-                      rows={3}
+                      rows={4}
                       placeholder="What was discussed, next steps, objections…"
-                      className="w-full rounded-xl bg-dark-secondary/[0.05] px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-mid-green/30"
+                      className="w-full rounded-xl border border-dark-primary/10 bg-white px-3 py-2.5 text-sm text-dark-primary outline-none transition placeholder:text-mid-green/50 focus:border-mid-green/40 focus:ring-2 focus:ring-mid-green/15"
                     />
                   </label>
 
-                  <div className="space-y-1">
-                    <span className="text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  <div className="space-y-1.5">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-mid-green/80">
                       Next follow-up date
                     </span>
                     <DateTimePicker
@@ -2804,10 +2944,13 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </div>
                 </div>
 
-                <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 px-5 py-3">
+                <div className="flex shrink-0 justify-end gap-2 border-t border-dark-primary/8 px-5 py-3 sm:px-6">
                   <button
                     type="button"
-                    onClick={() => setCallLogForm(null)}
+                    onClick={() => {
+                      setCallOutcomeOpen(false);
+                      setCallLogForm(null);
+                    }}
                     className="h-9 rounded-full px-3 text-sm text-mid-green hover:bg-dark-secondary/8"
                   >
                     Cancel
@@ -3281,34 +3424,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 </div>
               ) : null}
 
-              {headerFilter.col === "nextFollowUp" ? (
-                <div className="max-h-56 space-y-0.5 overflow-y-auto">
-                  {(
-                    [
-                      ["all", "All time"],
-                      ["today", "Today"],
-                      ["yesterday", "Yesterday"],
-                      ["last7", "Last 7 days"],
-                      ["last30", "Last 30 days"],
-                      ["last4months", "Last 4 months"],
-                      ["thisMonth", "This month"],
-                      ["previousMonth", "Previous month"],
-                    ] as const
-                  ).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => {
-                        setDatePreset(value);
-                        setHeaderFilter(null);
-                      }}
-                      className={filterOptionClass(datePreset === value)}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
             </div>,
             document.body
           )

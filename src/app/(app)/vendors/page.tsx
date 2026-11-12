@@ -294,9 +294,14 @@ export default function VendorsPage() {
   const [message, setMessage] = useState("");
   const [, startTransition] = useTransition();
   const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
   const hasRowsRef = useRef(false);
 
   useEffect(() => {
+    // Invalidate as soon as the box changes — don't wait for debounce, or a
+    // late unfiltered response can repaint over newer search results.
+    requestIdRef.current += 1;
+    abortRef.current?.abort();
     setFiltering(true);
     const timeout = setTimeout(() => {
       setDebouncedQ(q.trim());
@@ -307,6 +312,9 @@ export default function VendorsPage() {
 
   const load = useCallback(async () => {
     const requestId = ++requestIdRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     if (!hasRowsRef.current) setLoading(true);
     setFiltering(true);
     const params = new URLSearchParams({
@@ -317,23 +325,32 @@ export default function VendorsPage() {
     if (debouncedQ) params.set("q", debouncedQ);
     if (activeFilter !== "all") params.set("active", activeFilter);
     try {
-      const response = await fetch(`/api/vendors?${params}`);
+      const response = await fetch(`/api/vendors?${params}`, {
+        signal: ac.signal,
+      });
       const data = (await response.json()) as VendorListResponse | Vendor[];
       if (requestId !== requestIdRef.current) return;
       if (Array.isArray(data)) {
-        hasRowsRef.current = data.length > 0;
+        const rows = data;
         startTransition(() => {
-          setVendors(data);
-          setTotal(data.length);
+          if (requestId !== requestIdRef.current) return;
+          hasRowsRef.current = rows.length > 0;
+          setVendors(rows);
+          setTotal(rows.length);
         });
       } else {
         const items = Array.isArray(data.items) ? data.items : [];
-        hasRowsRef.current = items.length > 0;
+        const totalCount = Number(data.total) || 0;
         startTransition(() => {
+          if (requestId !== requestIdRef.current) return;
+          hasRowsRef.current = items.length > 0;
           setVendors(items);
-          setTotal(Number(data.total) || 0);
+          setTotal(totalCount);
         });
       }
+    } catch (err) {
+      if (ac.signal.aborted) return;
+      if (err instanceof DOMException && err.name === "AbortError") return;
     } finally {
       if (requestId === requestIdRef.current) {
         setLoading(false);
