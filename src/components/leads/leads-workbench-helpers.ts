@@ -91,3 +91,20 @@ export function slaLabel(row: LeadRow) {
   if (row.slaBreachedAt || due < now) return "Overdue";
   return "Pending";
 }
+
+/**
+ * Date presets count as an active filter once they affect the list.
+ * "custom" only counts after at least one bound date is applied — opening the
+ * picker with blank fields must not badge Follow-up / inflate the toolbar count.
+ */
+export function isDatePresetFilterActive(
+  datePreset: string,
+  dateFrom = "",
+  dateTo = ""
+): boolean {
+  if (!datePreset || datePreset === "all") return false;
+  if (datePreset === "custom") {
+    return Boolean(dateFrom.trim() || dateTo.trim());
+  }
+  return true;
+}

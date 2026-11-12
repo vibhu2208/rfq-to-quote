@@ -9,6 +9,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -21,6 +22,15 @@ import {
   X,
 } from "lucide-react";
 import { PRODUCT_CATEGORIES } from "@/lib/categories";
+import {
+  countVendorMappingCategories,
+  countVendorMappingSubcategories,
+} from "@/lib/vendor-mapping-counts";
+import {
+  nextDistinctVendorCountAfterMap,
+  nextDistinctVendorCountAfterUnlink,
+  vendorHasCategoryMapping,
+} from "@/lib/vendor-taxonomy-counts";
 import { useToast } from "@/components/app-toast";
 import { AppPageSkeleton } from "@/components/page-skeleton";
 
@@ -304,6 +314,8 @@ function AdminVendorsPageInner() {
   const [selectedVendorLoading, setSelectedVendorLoading] = useState(
     Boolean(initialVendorId)
   );
+  /** Vendor ids whose detail payload (keywords + contacts) has been loaded. */
+  const vendorDetailReadyIdsRef = useRef<Set<string>>(new Set());
 
   const [mapOpen, setMapOpen] = useState(false);
   const [mapForm, setMapForm] = useState<MapForm>(emptyMapForm);
@@ -338,6 +350,7 @@ function AdminVendorsPageInner() {
   const [availablePocsLoading, setAvailablePocsLoading] = useState(false);
 
   const upsertVendorLocal = useCallback((vendor: VendorListItem) => {
+    vendorDetailReadyIdsRef.current.add(vendor.id);
     setVendors((current) => {
       const index = current.findIndex((row) => row.id === vendor.id);
       if (index < 0) return [vendor, ...current].slice(0, 80);
@@ -398,7 +411,6 @@ function AdminVendorsPageInner() {
         let subRow = categoryRow.subcategories.find(
           (sub) => sub.subcategory === subcategory
         );
-        const isNewSub = !subRow;
         if (!subRow) {
           subRow = {
             subcategory,
@@ -415,14 +427,26 @@ function AdminVendorsPageInner() {
         const existingIndex = subRow.vendors.findIndex(
           (row) => row.vendorId === mapping.vendorId
         );
-        const isNewVendor = existingIndex < 0;
+        const isNewToSubcategory = existingIndex < 0;
         if (existingIndex >= 0) subRow.vendors[existingIndex] = vendorEntry;
         else subRow.vendors.push(vendorEntry);
-        if (isNewVendor) subRow.vendorCount += 1;
+        if (isNewToSubcategory) subRow.vendorCount += 1;
         subRow.vendorCount = Math.max(subRow.vendorCount, subRow.vendors.length);
         categoryRow.subcategoryCount = categoryRow.subcategories.length;
-        if (isNewSub || isNewVendor) {
-          categoryRow.vendorCount += isNewVendor ? 1 : 0;
+        const alreadyInCategory =
+          categoryRow.subcategories.some(
+            (sub) =>
+              sub.subcategory !== subcategory &&
+              sub.vendors.some((row) => row.vendorId === mapping.vendorId)
+          ) ||
+          vendorHasCategoryMapping(vendor.categories, category, {
+            excludeSubcategory: subcategory,
+          });
+        if (isNewToSubcategory) {
+          categoryRow.vendorCount = nextDistinctVendorCountAfterMap(
+            categoryRow.vendorCount,
+            alreadyInCategory
+          );
         }
         return [...next];
       });
@@ -492,11 +516,14 @@ function AdminVendorsPageInner() {
       return;
     }
     const cached = vendors.find((vendor) => vendor.id === selectedVendorId);
-    // Use any cached row (including zero categories) so deep-links / switches
-    // never flash the empty "Select a vendor" pane while detail loads.
+    const cachedIsDetailReady =
+      Boolean(cached) && vendorDetailReadyIdsRef.current.has(selectedVendorId);
+    // Never paint the sidebar's light list stub (empty contacts/keywords) into
+    // the detail pane — that flashes "0 POCs" / "—" before the real payload.
     setSelectedVendor((current) => {
-      if (cached) return cached;
-      return current?.id === selectedVendorId ? current : null;
+      if (current?.id === selectedVendorId) return current;
+      if (cachedIsDetailReady && cached) return cached;
+      return null;
     });
     setSelectedVendorLoading(true);
     let cancelled = false;
@@ -581,7 +608,28 @@ function AdminVendorsPageInner() {
           if (q) params.set("q", q);
           const response = await fetch(`/api/vendors?${params}`);
           const data = await response.json();
-          setVendors(Array.isArray(data) ? data : []);
+          const lightRows = Array.isArray(data)
+            ? (data as VendorListItem[])
+            : [];
+          // Keep previously loaded detail (keywords/POCs) when the light list
+          // refresh would otherwise wipe them back to empty stubs.
+          setVendors((previous) => {
+            const previousById = new Map(
+              previous.map((vendor) => [vendor.id, vendor])
+            );
+            return lightRows.map((row) => {
+              if (!vendorDetailReadyIdsRef.current.has(row.id)) return row;
+              const ready = previousById.get(row.id);
+              if (!ready) return row;
+              return {
+                ...ready,
+                name: row.name,
+                phone: row.phone,
+                email: row.email,
+                active: row.active,
+              };
+            });
+          });
         } catch {
           toast("Vendor search failed", "error");
         } finally {
@@ -1123,35 +1171,55 @@ function AdminVendorsPageInner() {
           subcategoryKeywords: nextKeywords,
         };
       });
+      const vendorResponse = await fetch(
+        `/api/vendors/${selectedVendorId}?light=1`
+      );
+      const vendor = (await vendorResponse.json().catch(() => null)) as
+        | VendorListItem
+        | null;
+      const remainsInCategory = vendor?.id
+        ? vendorHasCategoryMapping(vendor.categories, category)
+        : vendorHasCategoryMapping(
+            selectedVendor?.id === selectedVendorId
+              ? selectedVendor.categories
+              : vendors.find((row) => row.id === selectedVendorId)?.categories,
+            category,
+            { excludeSubcategory: subcategory }
+          );
+      if (vendor?.id) {
+        setSelectedVendor(vendor);
+        upsertVendorLocal(vendor);
+      }
       setTaxonomy((current) =>
         current.map((row) => {
           if (row.category !== category) return row;
           const subcategories = row.subcategories.map((sub) => {
             if (sub.subcategory !== subcategory) return sub;
             const vendorsForSub = sub.vendors.filter(
-              (vendor) => vendor.vendorId !== selectedVendorId
+              (entry) => entry.vendorId !== selectedVendorId
             );
             return {
               ...sub,
               vendors: vendorsForSub,
-              vendorCount: Math.max(0, sub.vendorCount - 1),
+              vendorCount:
+                sub.vendors.length > 0
+                  ? vendorsForSub.length
+                  : Math.max(0, sub.vendorCount - 1),
             };
           });
+          const remainsInLoadedSubs = subcategories.some((sub) =>
+            sub.vendors.some((entry) => entry.vendorId === selectedVendorId)
+          );
           return {
             ...row,
             subcategories,
-            vendorCount: Math.max(0, row.vendorCount - 1),
+            vendorCount: nextDistinctVendorCountAfterUnlink(
+              row.vendorCount,
+              remainsInCategory || remainsInLoadedSubs
+            ),
           };
         })
       );
-      const vendorResponse = await fetch(
-        `/api/vendors/${selectedVendorId}?light=1`
-      );
-      const vendor = await vendorResponse.json().catch(() => null);
-      if (vendor?.id) {
-        setSelectedVendor(vendor);
-        upsertVendorLocal(vendor);
-      }
       toast(
         data.deleted
           ? `Unlinked vendor from ${label}`
@@ -1321,6 +1389,33 @@ function AdminVendorsPageInner() {
       toast(apiError(data.error), "error");
       return;
     }
+
+    // Distinct category counts need the vendor's remaining maps — don't
+    // decrement once per unlinked subcategory row.
+    let remainsInCategory = false;
+    try {
+      const vendorResponse = await fetch(`/api/vendors/${vendorId}?light=1`);
+      const vendor = (await vendorResponse.json()) as VendorListItem;
+      if (vendor?.id) {
+        remainsInCategory = vendorHasCategoryMapping(
+          vendor.categories,
+          category
+        );
+        upsertVendorLocal(vendor);
+        if (selectedVendorId === vendorId) setSelectedVendor(vendor);
+      }
+    } catch {
+      const cached =
+        (selectedVendor?.id === vendorId ? selectedVendor : null) ||
+        vendors.find((vendor) => vendor.id === vendorId) ||
+        null;
+      remainsInCategory = vendorHasCategoryMapping(
+        cached?.categories,
+        category,
+        { excludeSubcategory: subcategory }
+      );
+    }
+
     setTaxonomy((current) =>
       current.map((row) => {
         if (row.category !== category) return row;
@@ -1332,31 +1427,28 @@ function AdminVendorsPageInner() {
           return {
             ...sub,
             vendors: vendorsForSub,
-            vendorCount: Math.max(0, sub.vendorCount - 1),
+            vendorCount:
+              sub.vendors.length > 0
+                ? vendorsForSub.length
+                : Math.max(0, sub.vendorCount - 1),
           };
         });
+        const remainsInLoadedSubs = subcategories.some((sub) =>
+          sub.vendors.some((vendor) => vendor.vendorId === vendorId)
+        );
         return {
           ...row,
           subcategories,
-          vendorCount: Math.max(0, row.vendorCount - 1),
+          vendorCount: nextDistinctVendorCountAfterUnlink(
+            row.vendorCount,
+            remainsInCategory || remainsInLoadedSubs
+          ),
         };
       })
     );
     setSubcategoryVendors((current) =>
       current.filter((vendor) => vendor.vendorId !== vendorId)
     );
-    if (selectedVendorId === vendorId) {
-      setSelectedVendorId(vendorId);
-      void fetch(`/api/vendors/${vendorId}?light=1`)
-        .then((res) => res.json())
-        .then((vendor) => {
-          if (vendor?.id) {
-            setSelectedVendor(vendor);
-            upsertVendorLocal(vendor);
-          }
-        })
-        .catch(() => undefined);
-    }
     toast("Vendor unlinked");
   }
 
@@ -1960,6 +2052,9 @@ function AdminVendorsPageInner() {
                   ) : null}
                   {filteredVendors.map((vendor) => {
                     const active = selectedVendorId === vendor.id;
+                    const categoryCount = countVendorMappingCategories(
+                      vendor.categories
+                    );
                     return (
                       <button
                         key={vendor.id}
@@ -1985,10 +2080,8 @@ function AdminVendorsPageInner() {
                             active ? "text-background/80" : "text-mid-green"
                           }`}
                         >
-                          {vendor.categories?.length || 0} categor
-                          {(vendor.categories?.length || 0) === 1
-                            ? "y"
-                            : "ies"}
+                          {categoryCount} categor
+                          {categoryCount === 1 ? "y" : "ies"}
                         </span>
                       </button>
                     );
@@ -2004,7 +2097,23 @@ function AdminVendorsPageInner() {
                 Select a vendor to assign categories, subcategories, and POCs.
               </MappingEmptyState>
             ) : selectedVendorLoading && !selectedVendor ? (
-              <MappingEmptyState>Loading vendor…</MappingEmptyState>
+              <div className="space-y-4" aria-busy="true">
+                <div className="border-b border-light-green/20 pb-4">
+                  <h2 className="text-xl font-semibold tracking-tight text-dark-primary">
+                    {vendors.find((vendor) => vendor.id === selectedVendorId)
+                      ?.name || "Loading vendor…"}
+                  </h2>
+                  <p className="mt-1.5 text-xs text-mid-green">
+                    Loading mappings and POCs…
+                  </p>
+                </div>
+                <div className="space-y-2 rounded-xl border border-light-green/25 bg-white/70 p-4">
+                  <div className="h-3 w-1/3 animate-pulse rounded bg-light-green/35" />
+                  <div className="h-10 animate-pulse rounded-lg bg-light-green/25" />
+                  <div className="h-10 animate-pulse rounded-lg bg-light-green/20" />
+                  <div className="h-10 animate-pulse rounded-lg bg-light-green/25" />
+                </div>
+              </div>
             ) : !selectedVendor ? (
               <MappingEmptyState>
                 Could not load this vendor. Try selecting it again.
@@ -2047,6 +2156,12 @@ function AdminVendorsPageInner() {
                         ),
                     ] as const)
                     .sort(([a], [b]) => a.localeCompare(b));
+                  const categoryCount = countVendorMappingCategories(
+                    selectedVendor.categories
+                  );
+                  const subcategoryCount = countVendorMappingSubcategories(
+                    selectedVendor.categories
+                  );
 
                   return (
                     <div className="space-y-4">
@@ -2071,13 +2186,11 @@ function AdminVendorsPageInner() {
                               .filter(Boolean)
                               .join(" · ") || "No company contact"}
                             {" · "}
-                            {categoryGroups.length} categor
-                            {categoryGroups.length === 1 ? "y" : "ies"}
+                            {categoryCount} categor
+                            {categoryCount === 1 ? "y" : "ies"}
                             {" · "}
-                            {selectedVendor.categories.length} subcategor
-                            {selectedVendor.categories.length === 1
-                              ? "y"
-                              : "ies"}
+                            {subcategoryCount} subcategor
+                            {subcategoryCount === 1 ? "y" : "ies"}
                             {" · "}
                             {mappedPocCount} mapped POC
                             {mappedPocCount === 1 ? "" : "s"}
@@ -2158,6 +2271,8 @@ function AdminVendorsPageInner() {
                             ) : (
                               categoryGroups.flatMap(
                                 ([category, mappings]) => {
+                                  const namedSubcategoryCount =
+                                    countVendorMappingSubcategories(mappings);
                                   const headerRow = (
                                     <tr
                                       key={`cat-${category}`}
@@ -2169,8 +2284,10 @@ function AdminVendorsPageInner() {
                                       >
                                         {category}
                                         <span className="ml-2 text-xs font-normal text-mid-green">
-                                          {mappings.length} subcategor
-                                          {mappings.length === 1 ? "y" : "ies"}
+                                          {namedSubcategoryCount} subcategor
+                                          {namedSubcategoryCount === 1
+                                            ? "y"
+                                            : "ies"}
                                         </span>
                                       </td>
                                     </tr>
@@ -2880,12 +2997,12 @@ function AdminVendorsPageInner() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/45 p-4 backdrop-blur-[2px]">
           <form
             onSubmit={submitCategoryAssign}
-            className="flex w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-[0_24px_64px_rgba(11,43,38,0.22)] animate-[login-fade-up_0.3s_ease-out]"
+            className="flex h-[min(88vh,52rem)] w-full max-w-7xl flex-col overflow-hidden rounded-2xl border border-light-green/25 bg-background shadow-[0_24px_64px_rgba(11,43,38,0.22)] animate-[login-fade-up_0.3s_ease-out]"
             role="dialog"
             aria-modal="true"
             aria-labelledby="assign-category-title"
           >
-            <div className="flex items-center justify-between gap-4 border-b border-light-green/20 bg-white/70 px-5 py-3.5">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-light-green/20 bg-white/70 px-5 py-3.5">
               <div className="min-w-0">
                 <h2
                   id="assign-category-title"
@@ -2935,9 +3052,9 @@ function AdminVendorsPageInner() {
               </div>
             </div>
 
-            <div className="grid gap-4 p-5 lg:grid-cols-3">
-              <section className="min-w-0 space-y-3 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
-                <label className="block text-xs">
+            <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 lg:grid-cols-3 lg:grid-rows-1 lg:overflow-hidden">
+              <section className="flex min-h-0 min-w-0 flex-col gap-3 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)] lg:h-full lg:overflow-hidden">
+                <label className="block shrink-0 text-xs">
                   <span className="mb-1 block font-medium text-mid-green">
                     Category
                   </span>
@@ -2961,19 +3078,19 @@ function AdminVendorsPageInner() {
                   </select>
                 </label>
 
-                <div>
-                  <p className="mb-1.5 text-xs font-medium text-mid-green">
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <p className="mb-1.5 shrink-0 text-xs font-medium text-mid-green">
                     Subcategories
                     {assignForm.subcategories.length > 0
                       ? ` · ${assignForm.subcategories.length} selected`
                       : ""}
                   </p>
                   {subcategoryOptionsForAssign.length === 0 ? (
-                    <p className="rounded-lg border border-dashed border-light-green/40 px-3 py-2 text-xs text-mid-green">
+                    <p className="shrink-0 rounded-lg border border-dashed border-light-green/40 px-3 py-2 text-xs text-mid-green">
                       No subcategories yet — add one below.
                     </p>
                   ) : (
-                    <div className="space-y-2">
+                    <div className="max-h-[min(40vh,22rem)] space-y-2 overflow-y-auto overscroll-contain pr-0.5 lg:max-h-none lg:min-h-0 lg:flex-1">
                       {subcategoryOptionsForAssign.map((subcategory) => {
                         const checked =
                           assignForm.subcategories.includes(subcategory);
@@ -3041,7 +3158,7 @@ function AdminVendorsPageInner() {
                       })}
                     </div>
                   )}
-                  <div className="mt-2 space-y-1.5 rounded-lg border border-dashed border-light-green/40 p-2">
+                  <div className="mt-2 shrink-0 space-y-1.5 rounded-lg border border-dashed border-light-green/40 p-2">
                     <p className="text-[11px] font-medium text-mid-green">
                       Add & map subcategory
                     </p>
@@ -3093,8 +3210,8 @@ function AdminVendorsPageInner() {
                 </div>
               </section>
 
-              <section className="min-w-0 space-y-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
-                <p className="text-xs font-medium text-mid-green">
+              <section className="flex min-h-0 min-w-0 flex-col gap-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)] lg:h-full lg:overflow-hidden">
+                <p className="shrink-0 text-xs font-medium text-mid-green">
                   Available POCs
                   {availablePocs.length > 0
                     ? ` · ${availablePocs.length}`
@@ -3113,7 +3230,7 @@ function AdminVendorsPageInner() {
                     No existing POCs. Enter one in Mapping POCs.
                   </p>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
                     {availablePocs.map((contact) => {
                       const alreadyUsed = assignForm.contacts.some(
                         (row) =>
@@ -3181,8 +3298,8 @@ function AdminVendorsPageInner() {
                 )}
               </section>
 
-              <section className="min-w-0 space-y-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)]">
-                <div className="flex items-center justify-between gap-2">
+              <section className="flex min-h-0 min-w-0 flex-col gap-2 rounded-2xl border border-light-green/25 bg-white/80 p-4 shadow-[0_4px_16px_rgba(11,43,38,0.04)] lg:h-full lg:overflow-hidden">
+                <div className="flex shrink-0 items-center justify-between gap-2">
                   <p className="text-xs font-medium text-mid-green">
                     Mapping POCs
                   </p>
@@ -3200,7 +3317,7 @@ function AdminVendorsPageInner() {
                     Add
                   </button>
                 </div>
-                <div className="space-y-2">
+                <div className="min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-0.5">
                   {assignForm.contacts.map((contact, index) => (
                     <div
                       key={index}

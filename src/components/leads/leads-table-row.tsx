@@ -5,6 +5,7 @@ import { memo } from "react";
 import {
   Bell,
   Eye,
+  FilePlus2,
   FileText,
   Mail,
   Phone,
@@ -37,12 +38,14 @@ export type LeadsTableRowProps = {
   contactExpanded: boolean;
   quotesPopoverOpen: boolean;
   promoting: boolean;
+  creatingQuote: boolean;
   onOpen: () => void;
   onToggleSelect: () => void;
   onToggleContact: () => void;
   onStageChange: (toStage: string) => void;
   onPriorityChange: (priority: string) => void;
   onPromote: () => void;
+  onCreateQuote: () => void;
   onRemind: () => void;
   onLogCall: () => void;
   onUpload: () => void;
@@ -59,12 +62,14 @@ export const LeadsTableRow = memo(function LeadsTableRow({
   contactExpanded,
   quotesPopoverOpen,
   promoting,
+  creatingQuote,
   onOpen,
   onToggleSelect,
   onToggleContact,
   onStageChange,
   onPriorityChange,
   onPromote,
+  onCreateQuote,
   onRemind,
   onLogCall,
   onUpload,
@@ -502,14 +507,29 @@ export const LeadsTableRow = memo(function LeadsTableRow({
                   <Zap className="h-3.5 w-3.5" strokeWidth={1.75} />
                 </button>
               ) : (
-                <Link
-                  href={`/rfq/${row.id}`}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                  aria-label="Open RFQ"
-                  title="RFQ"
-                >
-                  <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </Link>
+                <>
+                  <button
+                    type="button"
+                    disabled={creatingQuote}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onCreateQuote();
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary disabled:opacity-60"
+                    aria-label="Create quote"
+                    title="Create quote"
+                  >
+                    <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  </button>
+                  <Link
+                    href={`/rfq/${row.id}`}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
+                    aria-label="Open RFQ"
+                    title="Match / vendors"
+                  >
+                    <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
+                  </Link>
+                </>
               )}
             </div>
           ) : null}

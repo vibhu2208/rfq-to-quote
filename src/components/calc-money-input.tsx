@@ -7,11 +7,15 @@ import {
   formatCalcNumber,
   looksLikeMoneyExpression,
 } from "@/lib/quote-calculator";
+import {
+  formatMoneyCommitRangeError,
+  resolveMoneyCommit,
+} from "@/lib/calc-money-commit";
 
 type Props = {
   value: number;
   onCommit: (value: number) => void;
-  /** Called when the typed value exceeds `max` (after clamping). */
+  /** Called when the typed value is below `min` or exceeds `max`. */
   onRangeError?: (message: string) => void;
   className?: string;
   title?: string;
@@ -43,18 +47,17 @@ export function CalcMoneyInput({
   }, [value, focused]);
 
   function commitNumber(next: number) {
-    let clamped = round2(Math.max(min, next));
-    if (typeof max === "number" && Number.isFinite(max) && clamped > max) {
-      clamped = round2(max);
-      onRangeError?.(
-        `Max value is ${max.toLocaleString("en-IN", {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })}`
-      );
+    const result = resolveMoneyCommit(next, { min, max, prior: value });
+    if (!result.ok) {
+      onRangeError?.(formatMoneyCommitRangeError(result.reason, { min, max }));
+      setText(displayValue(value));
+      return;
     }
-    onCommit(clamped);
-    setText(displayValue(clamped));
+    if (result.clampedToMax) {
+      onRangeError?.(formatMoneyCommitRangeError("above_max", { min, max }));
+    }
+    onCommit(result.value);
+    setText(displayValue(result.value));
   }
 
   function tryEvaluate(raw: string): boolean {

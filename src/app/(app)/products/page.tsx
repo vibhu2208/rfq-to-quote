@@ -83,9 +83,14 @@ export default function ProductsPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [, startTransition] = useTransition();
   const requestIdRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
   const hasRowsRef = useRef(false);
 
   useEffect(() => {
+    // Invalidate as soon as the box changes — don't wait for debounce, or a
+    // late initial/unfiltered response can repaint over newer search results.
+    requestIdRef.current += 1;
+    abortRef.current?.abort();
     setFiltering(true);
     const timeout = setTimeout(() => {
       setDebouncedQ(q.trim());
@@ -96,6 +101,9 @@ export default function ProductsPage() {
 
   const load = useCallback(async () => {
     const requestId = ++requestIdRef.current;
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     if (!hasRowsRef.current) setLoading(true);
     setFiltering(true);
     const params = new URLSearchParams({
@@ -105,24 +113,31 @@ export default function ProductsPage() {
     if (debouncedQ) params.set("q", debouncedQ);
     if (activeFilter !== "all") params.set("active", activeFilter);
     try {
-      const res = await fetch(`/api/products?${params}`);
+      const res = await fetch(`/api/products?${params}`, { signal: ac.signal });
       const data = (await res.json()) as ProductListResponse | Product[];
       // Drop stale responses so a slow initial load cannot overwrite newer search results (KAN-20).
       if (requestId !== requestIdRef.current) return;
       if (Array.isArray(data)) {
-        hasRowsRef.current = data.length > 0;
+        const rows = data;
         startTransition(() => {
-          setProducts(data);
-          setTotal(data.length);
+          if (requestId !== requestIdRef.current) return;
+          hasRowsRef.current = rows.length > 0;
+          setProducts(rows);
+          setTotal(rows.length);
         });
       } else {
         const items = Array.isArray(data.items) ? data.items : [];
-        hasRowsRef.current = items.length > 0;
+        const totalCount = Number(data.total) || 0;
         startTransition(() => {
+          if (requestId !== requestIdRef.current) return;
+          hasRowsRef.current = items.length > 0;
           setProducts(items);
-          setTotal(Number(data.total) || 0);
+          setTotal(totalCount);
         });
       }
+    } catch (err) {
+      if (ac.signal.aborted) return;
+      if (err instanceof DOMException && err.name === "AbortError") return;
     } finally {
       if (requestId === requestIdRef.current) {
         setLoading(false);

@@ -72,8 +72,13 @@ import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
 import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 import { QuoteCalculator } from "@/components/quote-calculator";
 import { CalcMoneyInput } from "@/components/calc-money-input";
+import { useToast } from "@/components/app-toast";
 import { QuoteDiscountDialog } from "@/components/quote-discount-dialog";
 import { QuoteMarkupDialog } from "@/components/quote-markup-dialog";
+import {
+  QuoteRequirementSidebar,
+  type QuoteRequirementContext,
+} from "@/components/quote-requirement-sidebar";
 import {
   MarketplacePriceStack,
   type MarketplacePriceStackValue,
@@ -291,6 +296,7 @@ type Props = {
   quoteStatus?: string;
   lastReplyIntent?: string | null;
   rfqId?: string;
+  requirementContext?: QuoteRequirementContext | null;
 };
 
 function newKey() {
@@ -474,8 +480,10 @@ export function QuoteBuilder({
   sendContext,
   quoteStatus,
   rfqId,
+  requirementContext,
 }: Props) {
   const router = useRouter();
+  const { toast } = useToast();
   const [aliasSnapshot, setAliasSnapshot] = useState<Record<string, string> | null>(null);
   const [form, setForm] = useState<QuoteFormState>(() =>
     withDocumentDefaults(initial || emptyQuote(), company)
@@ -1174,8 +1182,13 @@ export function QuoteBuilder({
         if (i !== idx) return l;
         const next = { ...l, ...patch };
         if (patch.unitPrice != null) {
-          next.unitPrice = clampQuoteUnitPrice(patch.unitPrice);
-          linePriceBasisRef.current[next.key] = next.unitPrice;
+          // Reject negatives instead of clampQuoteUnitPrice → 0 (free item).
+          if (!Number.isFinite(patch.unitPrice) || patch.unitPrice < 0) {
+            next.unitPrice = l.unitPrice;
+          } else {
+            next.unitPrice = clampQuoteUnitPrice(patch.unitPrice);
+            linePriceBasisRef.current[next.key] = next.unitPrice;
+          }
         }
         if (patch.costPrice != null && patch.costPrice > 0) {
           next.costPrice = clampQuoteUnitPrice(patch.costPrice);
@@ -1309,14 +1322,19 @@ export function QuoteBuilder({
   }
 
   function pickProduct(idx: number, p: ProductHit) {
+    const current = formRef.current.lineItems[idx];
+    const clientName = current?.aliasName?.trim() || "";
     updateLine(idx, {
       productId: p.id,
       catalogName: p.name,
       catalogCode: p.code || "",
       catalogSourceId: p.sourceProductId ?? null,
-      description: p.description || "",
-      aliasName: p.name,
-      unit: normalizeQuoteUnit(p.unit),
+      description: p.description || current?.description || "",
+      // Keep the client requirement name on the quote; catalog name is internal only.
+      aliasName: clientName || p.name,
+      unit: current?.unit?.trim()
+        ? normalizeQuoteUnit(current.unit)
+        : normalizeQuoteUnit(p.unit),
       unitPrice:
         (p.sellPrice && p.sellPrice > 0
           ? p.sellPrice
@@ -1870,8 +1888,8 @@ export function QuoteBuilder({
   const chargeInput =
     `${field} text-right tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
 
-  return (
-    <form onSubmit={(e) => onSave(e)} className="space-y-3 pb-8">
+  const formBody = (
+    <form onSubmit={(e) => onSave(e)} className="min-w-0 flex-1 space-y-3 pb-8">
       <header className="flex flex-wrap items-center gap-2 rounded-xl bg-white/80 px-3 py-2 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
         <h1 className="shrink-0 text-lg font-semibold tracking-tight text-dark-primary">
           {form.id ? form.quoteNumber || "Edit quote" : "New quote"}
@@ -2453,7 +2471,7 @@ export function QuoteBuilder({
 
               <table className="w-full table-fixed text-left text-sm">
                   <colgroup>
-                    <col />
+                    <col className="w-[30%]" />
                     <col />
                     {form.showHsn ? <col className="w-[6.75rem]" /> : null}
                     <col className="w-[4.25rem]" />
@@ -2463,7 +2481,7 @@ export function QuoteBuilder({
                     {showCatalog ? <col className="w-[8.5rem]" /> : null}
                     <col className="w-[8.75rem]" />
                     <col className="w-[4.25rem]" />
-                    <col className="w-[11rem]" />
+                    <col className="w-[6.5rem]" />
                     <col className="w-[3.75rem]" />
                     <col className="w-[9.5rem]" />
                     <col className="w-8" />
@@ -2571,7 +2589,7 @@ export function QuoteBuilder({
                       >
                         <td className="px-2 py-1.5 align-top">
                           <div className="relative">
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-start gap-1.5">
                               <button
                                 type="button"
                                 onClick={() => openCatalogSearch(idx)}
@@ -2581,12 +2599,20 @@ export function QuoteBuilder({
                               >
                                 <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
                               </button>
-                              <input
+                              <textarea
                                 value={line.aliasName}
                                 onChange={(e) =>
                                   updateLine(idx, { aliasName: e.target.value })
                                 }
-                                className={cellInput}
+                                rows={Math.min(
+                                  8,
+                                  Math.max(
+                                    2,
+                                    line.aliasName.split(/\n/).length,
+                                    Math.ceil(line.aliasName.length / 28)
+                                  )
+                                )}
+                                className={`${field} min-h-[2.5rem] w-full resize-y px-2 py-1.5 leading-snug whitespace-pre-wrap break-words`}
                                 placeholder="Name on quote"
                                 title={
                                   line.catalogName
@@ -2824,7 +2850,7 @@ export function QuoteBuilder({
                             value={line.unitPrice}
                             max={MAX_QUOTE_UNIT_PRICE}
                             onCommit={(unitPrice) => updateLine(idx, { unitPrice })}
-                            onRangeError={setMsg}
+                            onRangeError={(message) => toast(message, "error")}
                             className={moneyInput}
                             title="Sell price on the quotation"
                             aria-label="Sell price"
@@ -2859,9 +2885,9 @@ export function QuoteBuilder({
                             title="Per-product discount %"
                           />
                         </td>
-                        <td className="px-1.5 py-1.5 align-top">
-                          <div className="flex flex-col gap-1">
-                            <div className="flex items-center gap-1">
+                        <td className="w-[6.5rem] px-1 py-1.5 align-top">
+                          <div className="flex w-full max-w-[6.25rem] flex-col gap-1">
+                            <div className="flex items-center gap-0.5">
                               <input
                                 type="number"
                                 min={0}
@@ -2875,7 +2901,7 @@ export function QuoteBuilder({
                                     ),
                                   })
                                 }
-                                className={`${numInput} w-[3.25rem]`}
+                                className={`${numInput} w-[2.35rem] px-0.5`}
                                 title="Warranty duration"
                                 aria-label="Warranty duration"
                               />
@@ -2886,7 +2912,7 @@ export function QuoteBuilder({
                                     warrantyUnit: e.target.value as WarrantyUnit,
                                   })
                                 }
-                                className={`${cellInput} px-1 text-[11px]`}
+                                className={`${cellInput} min-w-0 flex-1 px-0.5 text-[10px]`}
                                 title="Warranty unit"
                                 aria-label="Warranty unit"
                               >
@@ -2905,7 +2931,7 @@ export function QuoteBuilder({
                                     .value as WarrantyService,
                                 })
                               }
-                              className={`${cellInput} px-1 text-[11px]`}
+                              className={`${cellInput} w-full px-0.5 text-[10px]`}
                               title="Warranty service type"
                               aria-label="Warranty service type"
                             >
@@ -3154,5 +3180,16 @@ export function QuoteBuilder({
             </section>
       </div>
     </form>
+  );
+
+  if (!requirementContext) return formBody;
+
+  return (
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+      {formBody}
+      <div className="lg:sticky lg:top-3 lg:self-start lg:max-h-[calc(100vh-5rem)]">
+        <QuoteRequirementSidebar context={requirementContext} />
+      </div>
+    </div>
   );
 }
