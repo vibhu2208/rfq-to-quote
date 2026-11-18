@@ -11,6 +11,9 @@ import {
   formatQuoteAmount,
   formatQuoteHsn,
   formatQuoteQty,
+  formatQuoteRateLabel,
+  quoteBuyerContactParts,
+  quoteGstSplitFromAmounts,
   quoteLineDetails,
   formatTaxAnalysis,
   quoteBankDetailsLines,
@@ -354,6 +357,7 @@ export type QuotePdfData = {
     qty: number;
     unit: string;
     unitPrice: number;
+    discountPercent?: number;
     taxRate: number;
     lineTotal: number;
     taxAmount: number;
@@ -388,6 +392,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
 
   const signPhone = contactPhone ? contactPhone.replace(/^\+91\s*/, "").trim() : "";
   const words = amountInWords(data.grandTotal, "").replace(/\s+/g, " ").trim();
+  const gstSplit = quoteGstSplitFromAmounts(data);
   const taxAnalysis = formatTaxAnalysis({
     taxable: taxableAmount,
     withGst,
@@ -398,6 +403,12 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
     deliveryCharge: data.deliveryCharge,
     otherTaxAmount: data.otherTaxAmount,
     otherTaxLabel: data.otherTaxLabel,
+    gstSplit,
+  });
+  const buyerContact = quoteBuyerContactParts({
+    state: data.buyerState,
+    phone: data.buyerPhone,
+    gstin: data.buyerGstin,
   });
 
   const descCol = showHsn
@@ -424,12 +435,15 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
               <Text style={styles.buyerText}>{data.buyerName}</Text>
             ) : null}
             {data.buyerAddress ? <Text style={styles.buyerText}>{data.buyerAddress}</Text> : null}
-            <Text style={styles.buyerText}>
-              {[data.buyerState, data.buyerPhone ? `M: ${data.buyerPhone}` : "M: ."]
-                .filter(Boolean)
-                .join("  ")}{" "}
-              <Text style={styles.gstinInline}>GSTIN: {data.buyerGstin || ""}</Text>
-            </Text>
+            {buyerContact.lead || buyerContact.gstin ? (
+              <Text style={styles.buyerText}>
+                {buyerContact.lead}
+                {buyerContact.lead && buyerContact.gstin ? "  " : ""}
+                {buyerContact.gstin ? (
+                  <Text style={styles.gstinInline}>GSTIN: {buyerContact.gstin}</Text>
+                ) : null}
+              </Text>
+            ) : null}
             {data.buyerEmail ? <Text style={styles.buyerText}>Email: {data.buyerEmail}</Text> : null}
           </View>
           <Text style={styles.quoteTitle}>Quotation</Text>
@@ -471,7 +485,9 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                 <Text style={[styles.th, styles.colTax, styles.right]}>Tax</Text>
               </>
             ) : null}
-            <Text style={[styles.th, amtCol, styles.right, styles.lastCell]}>Amount</Text>
+            <Text style={[styles.th, amtCol, styles.right, styles.lastCell]}>
+              {withGst ? "Amount\nincl. GST" : "Amount"}
+            </Text>
           </View>
 
           {data.lineItems.map((line, i) => {
@@ -483,6 +499,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
             const detailBlock = [details, warranty ? `Warranty: ${warranty}` : ""]
               .filter(Boolean)
               .join("\n");
+            const rate = formatQuoteRateLabel(line.unitPrice, line.discountPercent);
             return (
               <View key={i} style={styles.tableRow} wrap={false}>
                 <Text style={[styles.td, styles.colSn, styles.center]}>{i + 1}</Text>
@@ -498,10 +515,11 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                   </Text>
                 ) : null}
                 <Text style={[styles.td, styles.colQty, styles.center]}>
-                  {formatQuoteQty(line.qty, line.unit)}
+                  {formatQuoteQty(line.qty, line.unit, data.showUnit)}
                 </Text>
                 <Text style={[styles.td, styles.colRate, styles.right]}>
-                  {formatQuoteAmount(line.unitPrice)}
+                  {rate.amount}
+                  {rate.discountLabel ? `\n${rate.discountLabel}` : ""}
                 </Text>
                 {withGst ? (
                   <>
@@ -513,6 +531,7 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
                 ) : null}
                 <Text style={[styles.tdBold, amtCol, styles.right, styles.lastCell]}>
                   {formatQuoteAmount(line.amount)}
+                  {withGst ? "\nincl. GST" : ""}
                 </Text>
               </View>
             );
@@ -543,7 +562,9 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
 
           <View style={styles.wordsRow}>
             <Text style={styles.wordsCell}>Amount in Words: {words}</Text>
-            <Text style={styles.grandLabel}>Grand Total</Text>
+            <Text style={styles.grandLabel}>
+              {withGst ? "Grand total\nincl. GST" : "Grand total"}
+            </Text>
             <Text style={styles.grandValue}>{formatQuoteAmount(data.grandTotal)}</Text>
           </View>
           <View>

@@ -3,9 +3,12 @@ import {
   formatQuoteDateDisplay,
   formatQuoteInstant,
   formatQuoteQty,
+  formatQuoteRateLabel,
   formatQuoteUnit,
   formatTaxAnalysis,
   parseQuoteDate,
+  quoteBuyerContactLine,
+  quoteGstSplitFromAmounts,
   quoteBankDetailsLines,
   quoteContactFooterLines,
   quoteShowHsn,
@@ -61,6 +64,93 @@ describe("formatTaxAnalysis", () => {
         discountPercent: 10,
       })
     ).toContain("Discount (10%): -100.00");
+  });
+
+  it("names IGST on an interstate sale instead of generic GST", () => {
+    const text = formatTaxAnalysis({
+      taxable: 89850,
+      withGst: true,
+      gstBuckets: [[18, 16173]],
+      gstAmount: 16173,
+      gstSplit: "IGST",
+    });
+    expect(text).toContain("IGST@18% 16,173.00");
+    expect(text).not.toMatch(/(^|\s)GST@18%/);
+  });
+
+  it("splits an intra-state bucket into CGST and SGST", () => {
+    const text = formatTaxAnalysis({
+      taxable: 1000,
+      withGst: true,
+      gstBuckets: [[18, 180]],
+      gstAmount: 180,
+      gstSplit: "CGST_SGST",
+    });
+    expect(text).toContain("CGST@9% 90.00");
+    expect(text).toContain("SGST@9% 90.00");
+  });
+
+  it("keeps a generic GST label when the split is unknown", () => {
+    expect(
+      formatTaxAnalysis({
+        taxable: 1000,
+        withGst: true,
+        gstBuckets: [[18, 180]],
+        gstAmount: 180,
+      })
+    ).toContain("GST@18% 180.00");
+  });
+});
+
+describe("formatQuoteRateLabel", () => {
+  it("shows the list rate and the line discount", () => {
+    expect(formatQuoteRateLabel(15000, 5)).toEqual({
+      amount: "15,000.00",
+      discountLabel: "less 5%",
+    });
+  });
+
+  it("omits the discount note when the line is not discounted", () => {
+    expect(formatQuoteRateLabel(14250, 0).discountLabel).toBeNull();
+  });
+});
+
+describe("quoteBuyerContactLine", () => {
+  it("drops blank phone and GSTIN instead of printing dangling labels", () => {
+    expect(
+      quoteBuyerContactLine({
+        state: "Madhya Pradesh",
+        phone: "  ",
+        gstin: "",
+      })
+    ).toBe("Madhya Pradesh");
+  });
+
+  it("keeps phone and GSTIN when they are filled", () => {
+    expect(
+      quoteBuyerContactLine({
+        state: "Madhya Pradesh",
+        phone: "9999900000",
+        gstin: "23AAAAA0000A1Z5",
+      })
+    ).toBe("Madhya Pradesh  M: 9999900000  GSTIN: 23AAAAA0000A1Z5");
+  });
+
+  it("returns nothing when state, phone, and GSTIN are all blank", () => {
+    expect(quoteBuyerContactLine({ state: "", phone: null, gstin: undefined })).toBe("");
+  });
+});
+
+describe("quoteGstSplitFromAmounts", () => {
+  it("reads IGST from the stored tax amounts", () => {
+    expect(
+      quoteGstSplitFromAmounts({
+        withGst: true,
+        igstAmount: 16173,
+        cgstAmount: 0,
+        sgstAmount: 0,
+      })
+    ).toBe("IGST");
   });
 });
 

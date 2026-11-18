@@ -1,6 +1,14 @@
 import type { Prisma, QuoteStatus } from "@prisma/client";
 
-export const QUOTE_LIST_PAGE_SIZE = 100;
+/** Small enough that a few dozen quotes paginate instead of rendering the full set. */
+export const QUOTE_LIST_PAGE_SIZE = 25;
+
+/** CSV export cap. The file says so when the match set is larger. */
+export const QUOTE_LIST_EXPORT_LIMIT = 5000;
+
+export const QUOTE_LIST_SORTS = ["updated", "number", "buyer", "status", "total"] as const;
+
+export type QuoteListSort = (typeof QUOTE_LIST_SORTS)[number];
 
 export const QUOTE_LIST_STATUSES = [
   "DRAFT",
@@ -44,6 +52,10 @@ export type QuoteListFilters = {
   status: string;
   gst: string;
   assist: string;
+  min: string;
+  max: string;
+  sort: string;
+  dir: "asc" | "desc";
   /** Inclusive lower bound on quote.updatedAt (YYYY-MM-DD). */
   updatedFrom: string;
   page: number;
@@ -58,6 +70,8 @@ export function parseQuoteListFilters(
   sp: Record<string, string | string[] | undefined>
 ): QuoteListFilters {
   const page = Math.max(1, Number(one(sp.page)) || 1);
+  const sortRaw = one(sp.sort);
+  const sort = (QUOTE_LIST_SORTS as readonly string[]).includes(sortRaw) ? sortRaw : "";
   return {
     q: one(sp.q),
     client: one(sp.client),
@@ -67,6 +81,10 @@ export function parseQuoteListFilters(
     status: one(sp.status),
     gst: one(sp.gst),
     assist: one(sp.assist),
+    min: one(sp.min),
+    max: one(sp.max),
+    sort,
+    dir: one(sp.dir) === "asc" ? "asc" : "desc",
     updatedFrom: one(sp.updatedFrom),
     page,
   };
@@ -74,7 +92,17 @@ export function parseQuoteListFilters(
 
 export function quoteListHasFilters(f: QuoteListFilters): boolean {
   return Boolean(
-    f.q || f.client || f.product || f.from || f.to || f.status || f.gst || f.assist || f.updatedFrom
+    f.q ||
+      f.client ||
+      f.product ||
+      f.from ||
+      f.to ||
+      f.status ||
+      f.gst ||
+      f.assist ||
+      f.min ||
+      f.max ||
+      f.updatedFrom
   );
 }
 
@@ -92,11 +120,112 @@ export function quoteListQuery(f: Partial<QuoteListFilters>, page?: number): str
   set("status", f.status);
   set("gst", f.gst);
   set("assist", f.assist);
+  set("min", f.min);
+  set("max", f.max);
+  set("sort", f.sort);
+  if (f.sort) set("dir", f.dir);
   set("updatedFrom", f.updatedFrom);
   const p = page ?? f.page ?? 1;
   if (p > 1) params.set("page", String(p));
   const qs = params.toString();
   return qs ? `/quotes?${qs}` : "/quotes";
+}
+
+function moneyBound(raw: string): number | null {
+  if (!raw.trim()) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function withStableId(
+  order: Prisma.QuoteOrderByWithRelationInput[]
+): Prisma.QuoteOrderByWithRelationInput[] {
+  return [...order, { id: "asc" }];
+}
+
+export function quoteListOrderBy(
+  f: Pick<QuoteListFilters, "sort" | "dir">
+): Prisma.QuoteOrderByWithRelationInput[] {
+  const dir = f.dir === "asc" ? "asc" : "desc";
+  switch (f.sort) {
+    case "number":
+      return withStableId([{ quoteNumber: dir }]);
+    case "buyer":
+      return withStableId([{ buyerCompany: dir }, { buyerName: dir }]);
+    case "status":
+      return withStableId([{ status: dir }, { updatedAt: "desc" }]);
+    case "total":
+      return withStableId([{ grandTotal: dir }, { updatedAt: "desc" }]);
+    case "updated":
+      // Rows show issuedAt when set, otherwise updatedAt. Null issue dates sort last
+      // so a filled quotation date is not ordered by a later edit timestamp.
+      // id breaks ties so offset pages do not repeat or skip a row.
+      return withStableId([
+        { issuedAt: { sort: dir, nulls: "last" } },
+        { updatedAt: dir },
+      ]);
+    default:
+      return withStableId([{ needsAssistance: "desc" }, { updatedAt: "desc" }]);
+  }
+}
+
+/** Next sort link for a column header. Text columns start ascending; amounts and dates start descending. */
+export function quoteListSortQuery(
+  f: QuoteListFilters,
+  column: QuoteListSort
+): string {
+  const active = f.sort === column;
+  const dir: "asc" | "desc" = !active
+    ? column === "buyer" || column === "number" || column === "status"
+      ? "asc"
+      : "desc"
+    : f.dir === "asc"
+      ? "desc"
+      : "asc";
+  return quoteListQuery({ ...f, sort: column, dir, page: 1 });
+}
+
+export function quoteListExportHref(f: Partial<QuoteListFilters>): string {
+  const path = quoteListQuery({ ...f, page: 1 });
+  const qs = path.startsWith("/quotes?") ? path.slice("/quotes".length) : "";
+  return `/api/quotes/export${qs}`;
+}
+
+function csvCell(value: unknown, neutralize = false): string {
+  let s = value == null ? "" : String(value);
+  if (neutralize && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+export type QuoteListCsvRow = {
+  quoteNumber: string;
+  quoteName: string;
+  buyer: string;
+  status: string;
+  updated: string;
+  grandTotal: number;
+  withGst: boolean;
+};
+
+export function quoteListCsv(rows: QuoteListCsvRow[]): string {
+  const header = ["Quote", "Name", "Buyer", "Status", "Updated", "Total", "GST"];
+  const lines = [
+    header.join(","),
+    ...rows.map((row) =>
+      [
+        csvCell(row.quoteNumber, true),
+        csvCell(row.quoteName, true),
+        csvCell(row.buyer, true),
+        csvCell(row.status, true),
+        csvCell(row.updated, true),
+        csvCell(row.grandTotal),
+        csvCell(row.withGst ? "Yes" : "No", true),
+      ].join(",")
+    ),
+  ];
+  return lines.join("\n");
 }
 
 function dayStart(iso: string): Date | null {
@@ -191,6 +320,15 @@ export function quoteListWhere(f: QuoteListFilters): Prisma.QuoteWhereInput {
   if (f.gst === "yes") and.push({ withGst: true });
   if (f.gst === "no") and.push({ withGst: false });
   if (f.assist === "1") and.push({ needsAssistance: true });
+
+  const min = moneyBound(f.min);
+  const max = moneyBound(f.max);
+  if (min != null || max != null) {
+    const range: Prisma.DecimalFilter = {};
+    if (min != null) range.gte = min;
+    if (max != null) range.lte = max;
+    and.push({ grandTotal: range });
+  }
 
   return and.length > 0 ? { AND: and } : {};
 }

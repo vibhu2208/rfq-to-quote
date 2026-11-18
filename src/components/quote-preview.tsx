@@ -12,6 +12,8 @@ import {
   formatQuoteDateDisplay,
   formatQuoteHsn,
   formatQuoteQty,
+  formatQuoteRateLabel,
+  quoteBuyerContactParts,
   quoteLineDetails,
   formatTaxAnalysis,
   quoteBankDetailsLines,
@@ -138,10 +140,6 @@ function lineTaxable(line: QuotePreviewLine) {
   return Math.round(line.qty * unit * 100) / 100;
 }
 
-function lineDisplayUnitPrice(line: QuotePreviewLine) {
-  return effectiveUnitPrice(line.unitPrice, line.discountPercent);
-}
-
 function lineTax(line: QuotePreviewLine, withGst: boolean) {
   if (!withGst) return 0;
   return Math.round(((lineTaxable(line) * line.taxRate) / 100) * 100) / 100;
@@ -213,6 +211,12 @@ export function QuotePreviewModal({
     deliveryCharge: calc.deliveryCharge,
     otherTaxAmount: calc.otherTaxAmount,
     otherTaxLabel,
+    gstSplit: calc.gstSplit,
+  });
+  const buyerContact = quoteBuyerContactParts({
+    state: buyer.state,
+    phone: buyer.phone,
+    gstin: buyer.gstin,
   });
   const includeHsn = quoteShowHsn(showHsn);
   const includeUnit = quoteShowUnit(showUnit);
@@ -285,10 +289,15 @@ export function QuotePreviewModal({
               ) : (
                 <p className="italic text-slate-400">Add buyer details…</p>
               )}
-              <p className="text-[#0000FF]">
-                {[buyer.state, `M: ${buyer.phone || "."}`].filter(Boolean).join("  ")}{" "}
-                <span className="font-bold">GSTIN: {buyer.gstin || ""}</span>
-              </p>
+              {buyerContact.lead || buyerContact.gstin ? (
+                <p className="text-[#0000FF]">
+                  {buyerContact.lead}
+                  {buyerContact.lead && buyerContact.gstin ? "  " : ""}
+                  {buyerContact.gstin ? (
+                    <span className="font-bold">GSTIN: {buyerContact.gstin}</span>
+                  ) : null}
+                </p>
+              ) : null}
               {buyer.email ? <p className="text-[#0000FF]">Email: {buyer.email}</p> : null}
             </EditableBlock>
             <p className="pt-1 text-center text-[15px] font-bold leading-5 underline">Quotation</p>
@@ -388,8 +397,13 @@ export function QuotePreviewModal({
                       </th>
                     </>
                   ) : null}
-                  <th className="border border-black px-1.5 py-1 text-right text-[11px] font-bold">
+                  <th className="border border-black px-1.5 py-1 text-right text-[11px] font-bold leading-tight">
                     Amount
+                    {withGst ? (
+                      <span className="mt-0.5 block text-[9px] font-semibold normal-case">
+                        incl. GST
+                      </span>
+                    ) : null}
                   </th>
                 </tr>
               </thead>
@@ -406,6 +420,7 @@ export function QuotePreviewModal({
                   const detailBlock = [details, warranty ? `Warranty: ${warranty}` : ""]
                     .filter(Boolean)
                     .join("\n");
+                  const rate = formatQuoteRateLabel(line.unitPrice, line.discountPercent);
                   return (
                     <tr key={line.key}>
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
@@ -432,7 +447,12 @@ export function QuotePreviewModal({
                         {formatQuoteQty(line.qty, line.unit, includeUnit)}
                       </td>
                       <td className="border border-black px-1.5 py-1.5 text-right align-top tabular-nums">
-                        {formatQuoteAmount(lineDisplayUnitPrice(line))}
+                        {rate.amount}
+                        {rate.discountLabel ? (
+                          <span className="mt-0.5 block text-[10px] font-normal">
+                            {rate.discountLabel}
+                          </span>
+                        ) : null}
                       </td>
                       {withGst ? (
                         <>
@@ -446,6 +466,9 @@ export function QuotePreviewModal({
                       ) : null}
                       <td className="border border-black px-1.5 py-1.5 text-right align-top font-bold tabular-nums">
                         {formatQuoteAmount(amount)}
+                        {withGst ? (
+                          <span className="mt-0.5 block text-[9px] font-normal">incl. GST</span>
+                        ) : null}
                       </td>
                     </tr>
                   );
@@ -485,7 +508,7 @@ export function QuotePreviewModal({
                     colSpan={withGst ? 2 : 1}
                     className="border border-black px-1.5 py-1.5 text-center font-bold"
                   >
-                    Grand Total
+                    {withGst ? "Grand total incl. GST" : "Grand total"}
                   </td>
                   <td className="border border-black px-1.5 py-1.5 text-right font-bold tabular-nums">
                     {formatQuoteAmount(calc.grandTotal)}
