@@ -189,6 +189,8 @@ export type CatalogTypeFamily =
   | "hdd"
   | null;
 
+export type ResolutionClass = "fhd" | "qhd" | "uhd" | null;
+
 export type MatchConstraints = {
   screenInches: number | null;
   cableMeters: number | null;
@@ -197,6 +199,10 @@ export type MatchConstraints = {
   portCount: number | null;
   wantsPoe: boolean | null;
   typeFamily: CatalogTypeFamily;
+  /** FHD / QHD / 4K when the text states a resolution. */
+  resolution: ResolutionClass;
+  /** Video ports the text actually names (hdmi, displayport, vga, …). */
+  videoPorts: string[];
 };
 
 const WORD_PORT_COUNTS: Record<string, number> = {
@@ -296,6 +302,15 @@ export function extractMatchConstraints(text: string): MatchConstraints {
 
   const wantsPoe = /\bpoe\b/.test(t) ? true : null;
 
+  const resolution: ResolutionClass = (() => {
+    if (/\b(?:4k|uhd|2160p|ultra\s*hd)\b/.test(t)) return "uhd";
+    if (/\b(?:qhd|1440p|wqhd)\b/.test(t)) return "qhd";
+    if (/\b(?:fhd|1080p|full\s*hd)\b/.test(t)) return "fhd";
+    return null;
+  })();
+
+  const videoPorts = [...extractVideoPorts(tokenize(text))];
+
   const typeFamily: CatalogTypeFamily = (() => {
     if (/\bpatch\s*panels?\b|\bpatch\s*penals?\b/.test(t)) return "patch_panel";
     if (
@@ -341,6 +356,8 @@ export function extractMatchConstraints(text: string): MatchConstraints {
     portCount,
     wantsPoe,
     typeFamily,
+    resolution,
+    videoPorts,
   };
 }
 
@@ -433,6 +450,17 @@ export function constraintsConflict(
     return true;
   }
 
+  if (req.resolution && product.resolution && req.resolution !== product.resolution) {
+    return true;
+  }
+
+  // HDMI+VGA must not satisfy HDMI+DisplayPort. A product that names no
+  // video ports is not treated as a contradiction — only a stated mismatch is.
+  if (req.videoPorts.length > 0 && product.videoPorts.length > 0) {
+    const missing = req.videoPorts.some((port) => !product.videoPorts.includes(port));
+    if (missing) return true;
+  }
+
   return false;
 }
 
@@ -445,6 +473,13 @@ function constraintScoreBonus(req: MatchConstraints, product: MatchConstraints):
   if (req.capacityGb != null && req.capacityGb === product.capacityGb) bonus += 12;
   if (req.portCount != null && req.portCount === product.portCount) bonus += 8;
   if (req.wantsPoe === true && product.wantsPoe === true) bonus += 6;
+  if (req.resolution && req.resolution === product.resolution) bonus += 8;
+  if (
+    req.videoPorts.length > 0 &&
+    req.videoPorts.every((port) => product.videoPorts.includes(port))
+  ) {
+    bonus += req.videoPorts.length * 8;
+  }
   return bonus;
 }
 
@@ -793,17 +828,6 @@ function scoreIndexedProduct(
     score += 10;
   }
 
-  // Hard constraint: required ports on the RFQ must appear on the product.
-  // VGA must never satisfy a DisplayPort requirement (and vice versa).
-  const requiredPorts = extractVideoPorts(keywords);
-  if (requiredPorts.size > 0) {
-    const productPorts = extractVideoPorts(indexed.tokens);
-    for (const port of requiredPorts) {
-      if (!productPorts.has(port)) return null;
-    }
-    score += requiredPorts.size * 8;
-  }
-
   const reqText =
     constraintText ||
     [parsedBrand, parsedCategory, ...keywords].filter(Boolean).join(" ");
@@ -1080,5 +1104,8 @@ export function applyRerankOrder(
       byId.delete(id);
     }
   }
+  // AI may return a lower keyword score first. The number shown in the
+  // workspace is this score, so the visible order has to follow it (KAN-46).
+  out.sort((a, b) => b.score - a.score || a.product.name.localeCompare(b.product.name));
   return out.slice(0, limit);
 }

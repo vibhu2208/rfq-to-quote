@@ -6,6 +6,7 @@ import { getArAgeing, getStockBalances, getTrialBalance } from "@/lib/accounting
 import { getDefaultOrgContext } from "@/lib/accounting/context";
 import { sendQuoteFollowUpEmail, makeQuoteThreadRef } from "@/lib/quote-thread";
 import { getCompanyConfig } from "@/lib/company";
+import { rankProductsByQuery, searchTokens } from "@/lib/product-search";
 
 export type AdminToolResult = {
   source: string;
@@ -111,8 +112,25 @@ export const ADMIN_TOOL_DEFINITIONS = [
   {
     type: "function" as const,
     function: {
+      name: "catalog_search",
+      description:
+        "Search the product catalog (what we sell) by name, code, or description. Use for questions like 'which 16 port switches do we have'. This is not stock on hand — do not use stock_balances to answer catalog questions.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Product words, e.g. 16 port switch" },
+          take: { type: "number", description: "Max products to return (default 8, max 15)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "stock_balances",
-      description: "On-hand stock by product and warehouse. Optionally filter by product code or name.",
+      description:
+        "On-hand warehouse stock by product. Use only for quantity in stock, not for 'what is in the catalog'. Empty rows do not mean the catalog has no such product — call catalog_search for that.",
       parameters: {
         type: "object",
         properties: {
@@ -549,6 +567,49 @@ async function gstSummary(period: string): Promise<AdminToolResult> {
   };
 }
 
+async function catalogSearch(query: string, take: number): Promise<AdminToolResult> {
+  const q = query.trim();
+  if (q.length < 2) {
+    return { source: "Product catalog", data: { error: "query is required" } };
+  }
+  const tokens = searchTokens(q).slice(0, 6);
+  const or = tokens.flatMap((token) => [
+    { name: { contains: token, mode: "insensitive" as const } },
+    { code: { contains: token, mode: "insensitive" as const } },
+    { description: { contains: token, mode: "insensitive" as const } },
+  ]);
+  const products = await prisma.product.findMany({
+    where: {
+      active: true,
+      OR: or.length > 0 ? or : [{ name: { contains: q, mode: "insensitive" } }],
+    },
+    select: {
+      code: true,
+      name: true,
+      description: true,
+      category: true,
+      brand: true,
+      unit: true,
+    },
+  });
+  const ranked = rankProductsByQuery(products, q).slice(0, take);
+  return {
+    source: "Product catalog",
+    data: {
+      query: q,
+      count: ranked.length,
+      products: ranked.map((product) => ({
+        code: product.code,
+        name: product.name,
+        brand: product.brand,
+        category: product.category,
+        unit: product.unit,
+        description: (product.description || "").slice(0, 160),
+      })),
+    },
+  };
+}
+
 export async function executeAdminTool(
   name: string,
   rawArgs: string,
@@ -589,6 +650,11 @@ export async function executeAdminTool(
           source: "AR ageing",
           data: { count: rows.length, totalDue: Math.round(totalDue * 100) / 100, rows },
         };
+      }
+      case "catalog_search": {
+        const query = typeof args.query === "string" ? args.query : "";
+        const take = Math.min(15, Math.max(1, Number(args.take) || 8));
+        return await catalogSearch(query, take);
       }
       case "stock_balances": {
         const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";

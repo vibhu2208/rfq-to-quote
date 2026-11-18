@@ -44,7 +44,6 @@ export async function GET(req: NextRequest, { params }: Params) {
     prisma.rfq.findUnique({ where: { id } }),
     prisma.product.findMany({
       where: { active: true },
-      orderBy: { name: "asc" },
       select: CATALOG_MATCH_SELECT,
     }),
   ]);

@@ -11,7 +11,8 @@ function getApiKey(): string | null {
 }
 
 async function serpApiFetch(
-  params: Record<string, string>
+  params: Record<string, string>,
+  signal?: AbortSignal
 ): Promise<SerpApiResult<Record<string, unknown> | null>> {
   const apiKey = getApiKey();
   if (!apiKey) {
@@ -25,7 +26,7 @@ async function serpApiFetch(
   url.searchParams.set("api_key", apiKey);
 
   try {
-    const res = await fetch(url.toString(), { next: { revalidate: 0 } });
+    const res = await fetch(url.toString(), { next: { revalidate: 0 }, signal });
     if (!res.ok) {
       const body = await res.text();
       return { data: null, error: `SerpAPI error ${res.status}: ${body.slice(0, 200)}` };
@@ -64,12 +65,18 @@ function toAmazonListing(top: AmazonOrganicResult): MarketplaceListing | null {
   };
 }
 
-export async function searchAmazonIndia(query: string): Promise<SerpApiResult<MarketplaceListing[]>> {
-  const { data, error } = await serpApiFetch({
-    engine: "amazon",
-    amazon_domain: "amazon.in",
-    k: query,
-  });
+export async function searchAmazonIndia(
+  query: string,
+  signal?: AbortSignal
+): Promise<SerpApiResult<MarketplaceListing[]>> {
+  const { data, error } = await serpApiFetch(
+    {
+      engine: "amazon",
+      amazon_domain: "amazon.in",
+      k: query,
+    },
+    signal
+  );
 
   if (error || !data) return { data: [], error };
 
