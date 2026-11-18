@@ -15,7 +15,23 @@ export type ManualOverrides = {
   deliveryCharge?: boolean;
   discountAmount?: boolean;
   grandTotal?: boolean;
+  /** Last markup % applied in the quote editor. Not a tax override. */
+  markupPercent?: number;
 };
+
+const MONEY_OVERRIDE_KEYS = [
+  "subtotal",
+  "gstAmount",
+  "otherTaxAmount",
+  "deliveryCharge",
+  "discountAmount",
+  "grandTotal",
+] as const;
+
+export function hasManualMoneyOverride(overrides: ManualOverrides | null | undefined): boolean {
+  if (!overrides) return false;
+  return MONEY_OVERRIDE_KEYS.some((key) => Boolean(overrides[key]));
+}
 
 export type LineInput = {
   qty: number;
@@ -84,6 +100,20 @@ export function resolveGstSplit(
     normalizeState(getStateName(sellerCode) || "");
   if (!buyer || !seller) return "CGST_SGST";
   return buyer === seller ? "CGST_SGST" : "IGST";
+}
+
+/** Short explanation for the GST auto option, including the no-buyer fallback. */
+export function describeGstAuto(
+  buyerState: string,
+  sellerState: string
+): string {
+  const split = resolveGstSplit(true, buyerState, sellerState, "AUTO");
+  if (!buyerState.trim()) {
+    return "Auto: intra-state (CGST + SGST) — no buyer state set";
+  }
+  return split === "IGST"
+    ? "Auto: inter-state (IGST)"
+    : "Auto: intra-state (CGST + SGST)";
 }
 
 /**

@@ -9,9 +9,16 @@ import {
 import { lineSubtotal } from "@/lib/quote-discount";
 
 describe("markupBasePrice", () => {
-  it("prefers vendor cost when present", () => {
+  it("prefers vendor cost and does not treat missing cost as sell", () => {
     expect(markupBasePrice({ qty: 1, unitPrice: 120, costPrice: 100 })).toBe(100);
-    expect(markupBasePrice({ qty: 1, unitPrice: 120, costPrice: null })).toBe(120);
+    expect(markupBasePrice({ qty: 1, unitPrice: 120, costPrice: null })).toBeNull();
+    expect(markupBasePrice({ qty: 1, unitPrice: 120, costPrice: 0 })).toBe(0);
+    expect(
+      markupBasePrice(
+        { qty: 1, unitPrice: 120, costPrice: null },
+        { allowSellFallback: true }
+      )
+    ).toBe(120);
   });
 });
 
@@ -30,11 +37,37 @@ describe("applyMarkupPercentToLines", () => {
     expect(next[0].costPrice).toBe(100);
   });
 
-  it("falls back to current unit price when cost is missing", () => {
+  it("does not claw an uncosted sell price back from a costed line", () => {
+    const lines = [
+      { qty: 1, unitPrice: 100, costPrice: 100 },
+      { qty: 1, unitPrice: 50, costPrice: null },
+    ];
+    const next = applyMarkupPercentToLines(lines, 10);
+    expect(next[0].unitPrice).toBe(110);
+    expect(next[1].unitPrice).toBe(50);
+  });
+
+  it("leaves sell unchanged when cost is missing", () => {
     const lines = [{ key: "x", qty: 2, unitPrice: 50, costPrice: null }];
     const next = applyMarkupPercentToLines(lines, 20);
+    expect(next[0].unitPrice).toBe(50);
+    expect(costSubtotal(lines)).toBe(0);
+  });
+
+  it("uses sell as the base only when the caller explicitly allows it", () => {
+    const lines = [{ key: "x", qty: 2, unitPrice: 50, costPrice: null }];
+    const next = applyMarkupPercentToLines(lines, 20, { allowSellFallback: true });
     expect(next[0].unitPrice).toBe(60);
     expect(lineSubtotal(next)).toBe(120);
+  });
+
+  it("does not change lines that already have a discount percent field", () => {
+    const lines = [
+      { qty: 1, unitPrice: 100, costPrice: 80, discountPercent: 5 },
+    ];
+    const next = applyMarkupPercentToLines(lines, 10);
+    expect(next[0].discountPercent).toBe(5);
+    expect(next[0].unitPrice).toBe(88);
   });
 
   it("0% restores sell prices to the cost base", () => {

@@ -6,7 +6,7 @@ import type { QuoteRequirementContext } from "@/components/quote-requirement-sid
 import { getCompanyConfig } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
 import { decimalToNumber } from "@/lib/quotes";
-import { normalizeQuoteUnit, quoteLineDetails } from "@/lib/quote-format";
+import { quoteLineDetails } from "@/lib/quote-format";
 import { extractRfqItems } from "@/lib/rfq-items";
 import type { ManualOverrides } from "@/lib/tax";
 import { formatQuoteInstant } from "@/lib/quote-format";
@@ -108,6 +108,7 @@ export default async function EditQuotePage({ params }: Props) {
     termsText: quote.termsText || "",
     closingText: quote.closingText || "",
     status: quote.status === "DRAFT" ? "DRAFT" : "SENT",
+    version: quote.version,
     manualOverrides: (quote.manualOverrides as ManualOverrides) || {},
     subtotal: decimalToNumber(quote.subtotal),
     gstAmount: decimalToNumber(quote.gstAmount),
@@ -145,7 +146,8 @@ export default async function EditQuotePage({ params }: Props) {
         li.product?.offerPrice != null ? decimalToNumber(li.product.offerPrice) : null,
       catalogMrp: li.product?.mrp != null ? decimalToNumber(li.product.mrp) : null,
       taxRate: decimalToNumber(li.taxRate),
-      hsnCode: li.product?.hsnCode || "",
+      hsnCode: li.hsnCode || li.product?.hsnCode || "",
+      customItem: li.customItem,
     })),
   };
 

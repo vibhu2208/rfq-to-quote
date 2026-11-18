@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { round2 } from "@/lib/accounting/money";
 import {
   evaluateMoneyFieldExpression,
@@ -41,10 +41,11 @@ export function CalcMoneyInput({
 }: Props) {
   const [focused, setFocused] = useState(false);
   const [text, setText] = useState(displayValue(value));
-
-  useEffect(() => {
-    if (!focused) setText(displayValue(value));
-  }, [value, focused]);
+  const [seenValue, setSeenValue] = useState(value);
+  if (!focused && value !== seenValue) {
+    setSeenValue(value);
+    setText(displayValue(value));
+  }
 
   function commitNumber(next: number) {
     const result = resolveMoneyCommit(next, { min, max, prior: value });
@@ -52,9 +53,6 @@ export function CalcMoneyInput({
       onRangeError?.(formatMoneyCommitRangeError(result.reason, { min, max }));
       setText(displayValue(value));
       return;
-    }
-    if (result.clampedToMax) {
-      onRangeError?.(formatMoneyCommitRangeError("above_max", { min, max }));
     }
     onCommit(result.value);
     setText(displayValue(result.value));
@@ -108,7 +106,14 @@ export function CalcMoneyInput({
         setFocused(false);
         finishEdit(text);
       }}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        const raw = e.target.value;
+        if (/[a-z]/i.test(raw)) {
+          onRangeError?.("Sell price must be a number");
+          return;
+        }
+        setText(raw.replace(/[^0-9.,+\-*/%()\s=]/g, ""));
+      }}
       onKeyDown={onKeyDown}
       className={className}
       title={

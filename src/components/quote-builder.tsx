@@ -3,7 +3,10 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  AlertTriangle,
   Building2,
+  ChevronDown,
+  ChevronUp,
   Copy,
   Download,
   Eye,
@@ -21,18 +24,20 @@ import {
   Tag,
   Trash2,
   TrendingUp,
+  Undo2,
   Upload,
   Wallet,
   X,
 } from "lucide-react";
 import {
   calculateQuoteTotals,
+  describeGstAuto,
   formatMoney,
+  hasManualMoneyOverride,
   type ManualOverrides,
 } from "@/lib/tax";
 import {
   clampQuoteUnitPrice,
-  isQuoteUnitPriceInRange,
   MAX_QUOTE_UNIT_PRICE,
 } from "@/lib/accounting/money";
 import { catalogBindingLooksMismatched } from "@/lib/product-match";
@@ -101,7 +106,27 @@ import {
   validateDiscountApplication,
   type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
-import { applyMarkupPercentToLines } from "@/lib/quote-markup";
+import { applyMarkupPercentToLines, lineMargin } from "@/lib/quote-markup";
+import { quoteAmountBlockReason } from "@/lib/quote-amount-limits";
+import {
+  BUYER_FIELD_FOCUS_ORDER,
+  sanitizePhoneInput,
+  validateBuyerDetails,
+  type BuyerFieldErrors,
+} from "@/lib/quote-buyer-fields";
+import { hsnFieldError, sanitizeHsnInput } from "@/lib/hsn";
+import { collectReadinessGaps } from "@/lib/quote-readiness";
+import {
+  composeCommercialTerms,
+  extractIndianState,
+  extractWarrantyAsk,
+  parseCommercialTerms,
+  rfqMentionsWarranty,
+} from "@/lib/quote-commercial";
+import {
+  grossLineSubtotal,
+  validateFixedDiscountAmount,
+} from "@/lib/quote-discount";
 import {
   clampWarrantyQty,
   normalizeWarrantyService,
@@ -162,6 +187,8 @@ type LineItem = {
   catalogMrp?: number | null;
   taxRate: number;
   hsnCode?: string;
+  /** True when the user marked this row as a custom, non-catalog line. */
+  customItem?: boolean;
 };
 
 function catalogPricesFromLine(line: LineItem): CatalogPriceStackValue | null {
@@ -277,6 +304,8 @@ export type QuoteFormState = {
   termsText: string;
   closingText: string;
   status: "DRAFT" | "SENT";
+  /** Server version used to detect a save from another tab. */
+  version?: number;
   manualOverrides: ManualOverrides;
   lineItems: LineItem[];
   // override values
@@ -378,6 +407,7 @@ const emptyQuote = (): QuoteFormState => ({
       warrantyService: "",
       taxRate: 18,
       hsnCode: "",
+      customItem: false,
     },
   ],
 });
@@ -452,6 +482,8 @@ function quoteSavePayload(
           : null,
       costVendorName: l.costVendorName || "",
       discountPercent: clampDiscountPercent(l.discountPercent ?? 0),
+      hsnCode: sanitizeHsnInput(l.hsnCode || ""),
+      customItem: Boolean(l.customItem),
       warrantyQty: clampWarrantyQty(l.warrantyQty ?? 0),
       warrantyUnit: normalizeWarrantyUnit(l.warrantyUnit),
       warrantyService: normalizeWarrantyService(l.warrantyService),
@@ -493,6 +525,7 @@ export function QuoteBuilder({
   );
   const formRef = useRef(form);
   formRef.current = form;
+  const versionRef = useRef<number | undefined>(initial?.version);
   const linePriceBasisRef = useRef<Record<string, number>>(
     Object.fromEntries(
       (initial || emptyQuote()).lineItems.map((line) => [line.key, line.unitPrice])
@@ -510,6 +543,18 @@ export function QuoteBuilder({
   const [searchAiError, setSearchAiError] = useState("");
   const [productDetailKey, setProductDetailKey] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
+  const [saveError, setSaveError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [conflict, setConflict] = useState(false);
+  const conflictHoldRef = useRef(false);
+  const forceSaveRef = useRef(false);
+  const [buyerFieldErrors, setBuyerFieldErrors] = useState<BuyerFieldErrors>({});
+  const [waivedForKey, setWaivedForKey] = useState<string | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  const undoStack = useRef<LineItem[][]>([]);
+  const buyerDialogRef = useRef<HTMLDivElement>(null);
+  const [stockByProductId, setStockByProductId] = useState<Record<string, number>>({});
+  const [gstinTone, setGstinTone] = useState<"" | "ok" | "error">("");
   const [sendOpen, setSendOpen] = useState(false);
   const [sendChannel, setSendChannel] = useState<QuoteSendChannel>("EMAIL");
   const [sendTo, setSendTo] = useState("");
@@ -529,6 +574,8 @@ export function QuoteBuilder({
   const [unitConfirmOpen, setUnitConfirmOpen] = useState(false);
   const [discountDialog, setDiscountDialog] = useState<{
     percent: number;
+    amount: number;
+    amountMode: boolean;
     methods: QuoteDiscountMethods;
     hasExistingDiscount: boolean;
   } | null>(null);
@@ -536,7 +583,10 @@ export function QuoteBuilder({
     null
   );
   const [appliedMarkupPercent, setAppliedMarkupPercent] = useState<number | null>(
-    null
+    () => {
+      const stored = (initial || emptyQuote()).manualOverrides.markupPercent;
+      return typeof stored === "number" && stored > 0 ? stored : null;
+    }
   );
   const [buyerContacts, setBuyerContacts] = useState<ClientContactHit[]>([]);
   const [selectedContactId, setSelectedContactId] = useState("");
@@ -631,6 +681,7 @@ export function QuoteBuilder({
   }
 
   function requestPdf() {
+    if (exportBlockedByReadiness()) return;
     void (async () => {
       const ok = await saveQuote();
       if (!ok || !formRef.current.id) {
@@ -646,6 +697,7 @@ export function QuoteBuilder({
   }
 
   function requestPrint() {
+    if (exportBlockedByReadiness()) return;
     void (async () => {
       const ok = await saveQuote();
       if (!ok || !formRef.current.id) {
@@ -665,6 +717,7 @@ export function QuoteBuilder({
   }
 
   function requestSend() {
+    if (exportBlockedByReadiness()) return;
     void (async () => {
       const ok = await saveQuote();
       if (!ok || !formRef.current.id) {
@@ -680,11 +733,18 @@ export function QuoteBuilder({
   }
 
   async function confirmBuyer() {
-    const gaps = buyerGaps(form);
-    if (buyerIntent !== "edit" && gaps.length > 0) {
-      setBuyerError(`Fill ${gaps.join(", ")} before continuing.`);
+    const errors = validateBuyerDetails(form);
+    const first = BUYER_FIELD_FOCUS_ORDER.find((key) => errors[key]);
+    if (first) {
+      setBuyerFieldErrors(errors);
+      setBuyerError("Fill the highlighted fields before continuing.");
+      const el = buyerDialogRef.current?.querySelector(
+        `[data-buyer-field="${first}"]`
+      );
+      if (el instanceof HTMLElement) el.focus();
       return;
     }
+    setBuyerFieldErrors({});
     const intent = buyerIntent;
     closeBuyerPanel();
     if (intent === "pdf") {
@@ -952,6 +1012,32 @@ export function QuoteBuilder({
     };
   }, [searchQ, searchIdx]);
 
+  const stockProductKey = useMemo(
+    () =>
+      [...new Set(form.lineItems.map((line) => line.productId).filter(Boolean))].join(
+        "\n"
+      ),
+    [form.lineItems]
+  );
+
+  useEffect(() => {
+    if (!stockProductKey) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/inventory/balances?map=1&sync=false");
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { map?: Record<string, number> };
+        if (!cancelled && data.map) setStockByProductId(data.map);
+      } catch {
+        // Stock badges stay hidden when inventory cannot be read.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stockProductKey]);
+
   async function searchCatalogWithAi() {
     const query = searchQ.trim();
     if (query.length < 2 || searchAiLoading) return;
@@ -1041,20 +1127,18 @@ export function QuoteBuilder({
       try {
         for (;;) {
           const snapshot = formRef.current;
-          const oversized = snapshot.lineItems.find(
-            (line) =>
-              !isQuoteUnitPriceInRange(line.unitPrice) ||
-              (line.costPrice != null &&
-                line.costPrice > 0 &&
-                !isQuoteUnitPriceInRange(line.costPrice))
-          );
-          if (oversized) {
-            setMsg(
-              `Sell/cost price too large (max ${MAX_QUOTE_UNIT_PRICE.toLocaleString("en-IN", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })})`
-            );
+          const block = quoteAmountBlockReason({
+            lines: snapshot.lineItems.map((line) => ({
+              name: line.aliasName,
+              qty: line.qty,
+              unitPrice: line.unitPrice,
+              discountPercent: line.discountPercent,
+            })),
+            grandTotal: calcRef.current.grandTotal,
+          });
+          if (block) {
+            setNotice(block);
+            setSaveError("");
             return false;
           }
 
@@ -1062,32 +1146,63 @@ export function QuoteBuilder({
           const json = JSON.stringify(payload);
           if (snapshot.id && json === lastSavedJsonRef.current && !status) {
             setMsg("");
+            setSaveError("");
+            setNotice("");
             return true;
           }
 
           const isEdit = Boolean(snapshot.id);
+          const sendVersion =
+            isEdit &&
+            !forceSaveRef.current &&
+            typeof versionRef.current === "number";
           const res = await fetch(isEdit ? `/api/quotes/${snapshot.id}` : "/api/quotes", {
             method: isEdit ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
-            body: json,
+            body: JSON.stringify({
+              ...payload,
+              ...(sendVersion ? { expectedVersion: versionRef.current } : {}),
+            }),
           });
+          forceSaveRef.current = false;
+
+          if (res.status === 409) {
+            conflictHoldRef.current = true;
+            setConflict(true);
+            const err = await res.json().catch(() => ({}));
+            setSaveError(
+              typeof err.error === "string"
+                ? err.error
+                : "This quote was saved in another tab. Reload before saving."
+            );
+            return false;
+          }
 
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            setMsg(quoteMoneyErrorMessage(err.error));
+            setSaveError(quoteMoneyErrorMessage(err.error));
+            setMsg("");
             return false;
           }
 
           const saved = await res.json();
           lastSavedJsonRef.current = json;
           setMsg("");
+          setSaveError("");
+          setNotice("");
+          setConflict(false);
+          conflictHoldRef.current = false;
           const nextStatus: QuoteFormState["status"] =
             saved.status === "SENT" ? "SENT" : snapshot.status;
+          const nextVersion =
+            typeof saved.version === "number" ? saved.version : versionRef.current;
+          if (typeof nextVersion === "number") versionRef.current = nextVersion;
           const next: QuoteFormState = {
             ...formRef.current,
             id: saved.id || snapshot.id,
             quoteNumber: saved.quoteNumber || snapshot.quoteNumber,
             status: nextStatus,
+            version: nextVersion,
           };
           formRef.current = next;
           if (
@@ -1107,7 +1222,7 @@ export function QuoteBuilder({
           if (latest === json) return true;
         }
       } catch {
-        setMsg("Save failed");
+        setSaveError("Save failed");
         return false;
       } finally {
         savingRef.current = false;
@@ -1142,6 +1257,7 @@ export function QuoteBuilder({
       hydratedSaveRef.current = true;
       return;
     }
+    if (conflictHoldRef.current) return;
     if (savePayloadJson === lastSavedJsonRef.current) {
       return;
     }
@@ -1180,14 +1296,36 @@ export function QuoteBuilder({
     };
   }, [saveQuote]);
 
+  function rememberLines() {
+    const snap = formRef.current.lineItems.map((line) => ({ ...line }));
+    const stack = undoStack.current;
+    const last = stack[stack.length - 1];
+    if (last && JSON.stringify(last) === JSON.stringify(snap)) return;
+    stack.push(snap);
+    if (stack.length > 40) stack.shift();
+    setCanUndo(true);
+  }
+
+  function undoLines() {
+    const prev = undoStack.current.pop();
+    setCanUndo(undoStack.current.length > 0);
+    if (!prev) return;
+    setForm((f) => ({ ...f, lineItems: prev }));
+  }
+
   function updateLine(idx: number, patch: Partial<LineItem>) {
+    rememberLines();
     setForm((f) => {
       const lineItems = f.lineItems.map((l, i) => {
         if (i !== idx) return l;
         const next = { ...l, ...patch };
         if (patch.unitPrice != null) {
-          // Reject negatives instead of clampQuoteUnitPrice → 0 (free item).
-          if (!Number.isFinite(patch.unitPrice) || patch.unitPrice < 0) {
+          // Keep the previous price when the edit is negative or above the column max.
+          if (
+            !Number.isFinite(patch.unitPrice) ||
+            patch.unitPrice < 0 ||
+            patch.unitPrice > MAX_QUOTE_UNIT_PRICE
+          ) {
             next.unitPrice = l.unitPrice;
           } else {
             next.unitPrice = clampQuoteUnitPrice(patch.unitPrice);
@@ -1222,13 +1360,33 @@ export function QuoteBuilder({
 
   function applyDiscountSelection(
     percent: number,
-    methods: QuoteDiscountMethods
+    methods: QuoteDiscountMethods,
+    fixedAmount = 0
   ) {
+    rememberLines();
     const pricedLines = formRef.current.lineItems.map((line) => ({
       qty: line.qty,
       unitPrice: line.unitPrice,
       discountPercent: line.discountPercent ?? 0,
     }));
+    if (fixedAmount > 0 && methods.method === "header") {
+      const validation = validateFixedDiscountAmount(
+        fixedAmount,
+        grossLineSubtotal(pricedLines)
+      );
+      if (!validation.ok) {
+        toast(validation.reason || "Discount is not allowed.", "error");
+        return;
+      }
+      setForm((f) => ({
+        ...f,
+        discountPercent: 0,
+        discountAmount: fixedAmount,
+        manualOverrides: { ...f.manualOverrides, discountAmount: false },
+        lineItems: applyPercentToLineDiscounts(f.lineItems, 0),
+      }));
+      return;
+    }
     const validation = validateDiscountApplication({
       percent,
       methods,
@@ -1266,13 +1424,22 @@ export function QuoteBuilder({
       headerPercent: headerPct,
       hasLineDiscount: hasAnyLineDiscount,
     });
-    const hasExistingDiscount = headerPct > 0 || hasAnyLineDiscount;
+    const fixedAmount = form.discountAmount ?? 0;
+    const amountMode = headerPct <= 0 && fixedAmount > 0;
+    const hasExistingDiscount =
+      headerPct > 0 || hasAnyLineDiscount || fixedAmount > 0;
     const percent = hasExistingDiscount
       ? methods.method === "lines"
         ? linePct || headerPct
         : headerPct || linePct
       : 0;
-    setDiscountDialog({ percent, methods, hasExistingDiscount });
+    setDiscountDialog({
+      percent: amountMode ? 0 : percent,
+      amount: amountMode ? fixedAmount : 0,
+      amountMode,
+      methods,
+      hasExistingDiscount,
+    });
   }
 
   function openMarkupDialog() {
@@ -1283,23 +1450,24 @@ export function QuoteBuilder({
     setMarkupDialog(null);
   }
 
-  function applyMarkup(percent: number) {
+  function applyMarkup(
+    percent: number,
+    opts?: { allowSellFallback?: boolean }
+  ) {
     const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
+    rememberLines();
     setAppliedMarkupPercent(nextPercent > 0 ? nextPercent : null);
     setForm((f) => {
-      const marked = applyMarkupPercentToLines(f.lineItems, nextPercent);
-      const lineItems = marked.map((line) => ({
-        ...line,
-        discountPercent: 0,
-      }));
+      const lineItems = applyMarkupPercentToLines(f.lineItems, nextPercent, opts);
       for (const line of lineItems) {
         linePriceBasisRef.current[line.key] = line.unitPrice;
       }
+      const manualOverrides = { ...f.manualOverrides };
+      if (nextPercent > 0) manualOverrides.markupPercent = nextPercent;
+      else delete manualOverrides.markupPercent;
       return {
         ...f,
-        discountPercent: 0,
-        discountAmount: 0,
-        manualOverrides: { ...f.manualOverrides, discountAmount: false },
+        manualOverrides,
         lineItems,
       };
     });
@@ -1313,6 +1481,7 @@ export function QuoteBuilder({
     appliedMarkupPercent != null && appliedMarkupPercent > 0;
 
   function addLine() {
+    rememberLines();
     const key = newKey();
     linePriceBasisRef.current[key] = 0;
     setForm((f) => ({
@@ -1335,9 +1504,35 @@ export function QuoteBuilder({
           warrantyService: "",
           taxRate: 18,
           hsnCode: "",
+          customItem: false,
         },
       ],
     }));
+  }
+
+  function duplicateLine(idx: number) {
+    rememberLines();
+    const key = newKey();
+    setForm((f) => {
+      const source = f.lineItems[idx];
+      if (!source) return f;
+      const copy: LineItem = { ...source, key, productId: source.productId };
+      const lineItems = [...f.lineItems];
+      lineItems.splice(idx + 1, 0, copy);
+      return { ...f, lineItems };
+    });
+  }
+
+  function moveLine(idx: number, dir: -1 | 1) {
+    rememberLines();
+    setForm((f) => {
+      const next = idx + dir;
+      if (next < 0 || next >= f.lineItems.length) return f;
+      const lineItems = [...f.lineItems];
+      const [row] = lineItems.splice(idx, 1);
+      lineItems.splice(next, 0, row);
+      return { ...f, lineItems };
+    });
   }
 
   function copyProductNamesToAliases() {
@@ -1355,6 +1550,7 @@ export function QuoteBuilder({
   }
 
   function removeLine(idx: number) {
+    rememberLines();
     setForm((f) => ({
       ...f,
       lineItems: f.lineItems.filter((_, i) => i !== idx),
@@ -1432,10 +1628,12 @@ export function QuoteBuilder({
   async function fetchBuyerFromGstin() {
     const value = form.buyerGstin.trim().toUpperCase();
     if (value.length !== 15) {
-      setGstinMsg("Enter a valid 15-character GSTIN");
+      setGstinTone("error");
+      setGstinMsg("Invalid GSTIN");
       return;
     }
     setGstinFetching(true);
+    setGstinTone("");
     setGstinMsg("");
     try {
       const res = await fetch("/api/parties", {
@@ -1467,14 +1665,13 @@ export function QuoteBuilder({
         buyerState: state || f.buyerState,
         withGst: true,
       }));
-      setGstinMsg(
-        v.message ||
-          (companyName
-            ? `Filled from GST portal: ${companyName}`
-            : "Details fetched from GST portal")
-      );
+      setGstinTone("ok");
+      setGstinMsg(companyName ? `Verified · ${companyName}` : "Verified");
     } catch (e) {
-      setGstinMsg(e instanceof Error ? e.message : "GSTIN lookup failed");
+      setGstinTone("error");
+      setGstinMsg(
+        e instanceof Error && e.message ? e.message : "Invalid GSTIN"
+      );
     } finally {
       setGstinFetching(false);
     }
@@ -1628,13 +1825,91 @@ export function QuoteBuilder({
     router.refresh();
   }
 
-  const hasOverrides = Object.values(form.manualOverrides).some(Boolean);
+  const hasOverrides = hasManualMoneyOverride(form.manualOverrides);
+  const requirementText = [
+    requirementContext?.subject,
+    requirementContext?.rawText,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const warrantyAsk = useMemo(
+    () => extractWarrantyAsk(requirementText),
+    [requirementText]
+  );
+  const suggestedState = useMemo(
+    () => (form.buyerState.trim() ? null : extractIndianState(requirementText)),
+    [form.buyerState, requirementText]
+  );
+  const commercial = useMemo(
+    () => parseCommercialTerms(form.termsText, company.paymentTerms),
+    [form.termsText, company.paymentTerms]
+  );
+  const readinessGaps = useMemo(
+    () =>
+      collectReadinessGaps({
+        buyerCompany: form.buyerCompany,
+        buyerAddress: form.buyerAddress,
+        buyerState: form.buyerState,
+        warrantyAsked: rfqMentionsWarranty(requirementText),
+        stockByProductId,
+        termsMissing:
+          /\bdeliver/i.test(requirementText) && !commercial.delivery.trim(),
+        lines: form.lineItems.map((line) => ({
+          name: line.aliasName,
+          unitPrice: line.unitPrice,
+          hsnCode: line.hsnCode,
+          warrantyQty: line.warrantyQty,
+          productId: line.productId,
+          customItem: line.customItem,
+        })),
+      }),
+    [
+      form.buyerCompany,
+      form.buyerAddress,
+      form.buyerState,
+      form.lineItems,
+      requirementText,
+      stockByProductId,
+      commercial.delivery,
+    ]
+  );
+  const readinessKey = readinessGaps.map((gap) => gap.id).join("|");
+  const readinessWaived = waivedForKey === readinessKey && readinessKey.length > 0;
+
+  function exportBlockedByReadiness() {
+    const blocking = readinessGaps.filter((gap) => gap.fix !== "buyer");
+    if (blocking.length === 0 || readinessWaived) return false;
+    document.getElementById("quote-readiness")?.scrollIntoView({ block: "center" });
+    setNotice("Resolve the ready-to-send checklist, or acknowledge the gaps. Buyer company, address, and state are still required for the PDF.");
+    return true;
+  }
+
+  function focusLineField(index: number, field: "price" | "hsn" | "qty") {
+    const el = document.querySelector(`[data-line-field="${field}-${index}"]`);
+    const target =
+      el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
+        ? el
+        : el?.querySelector("input, textarea");
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ block: "center" });
+      target.focus();
+    }
+  }
+
+  function updateCommercial(patch: Partial<typeof commercial>) {
+    const next = { ...commercial, ...patch };
+    setForm((f) => ({ ...f, termsText: composeCommercialTerms(next) }));
+  }
   const destinationLabel =
     sendChannel === "EMAIL" ? "Email address" : "WhatsApp number";
   const destinationPlaceholder =
     sendChannel === "EMAIL" ? "buyer@company.com" : "+919876543210";
 
   function renderBuyerFields() {
+    const border = (invalid?: string) =>
+      `w-full rounded-lg border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-mid-green ${
+        invalid ? "border-[1.5px] border-red-600" : "border-light-green/40"
+      }`;
     return (
       <div className="space-y-3">
         <label className="block text-xs">
@@ -1642,12 +1917,14 @@ export function QuoteBuilder({
           <div className="flex gap-1.5">
             <input
               value={form.buyerGstin}
-              onChange={(e) =>
+              onChange={(e) => {
+                setGstinTone("");
+                setGstinMsg("");
                 setForm((f) => ({
                   ...f,
                   buyerGstin: e.target.value.toUpperCase(),
-                }))
-              }
+                }));
+              }}
               maxLength={15}
               placeholder="15-character GSTIN"
               className="min-w-0 flex-1 rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 font-mono text-sm outline-none focus:border-mid-green"
@@ -1656,30 +1933,53 @@ export function QuoteBuilder({
               type="button"
               onClick={fetchBuyerFromGstin}
               disabled={gstinFetching || form.buyerGstin.trim().length !== 15}
-              className="shrink-0 rounded-lg border border-mid-green/40 px-2.5 py-1.5 text-xs hover:bg-mid-green/10 disabled:opacity-50"
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-mid-green/40 px-2.5 py-1.5 text-xs hover:bg-mid-green/10 disabled:opacity-50"
             >
-              {gstinFetching ? "…" : "Fetch"}
+              {gstinFetching ? "Fetching…" : "Fetch"}
             </button>
           </div>
           {gstinMsg ? (
-            <p className="mt-1 text-xs text-dark-primary">{gstinMsg}</p>
-          ) : null}
+            <p
+              className={`mt-1 text-xs ${
+                gstinTone === "error"
+                  ? "text-red-700"
+                  : gstinTone === "ok"
+                    ? "text-mid-green"
+                    : "text-dark-primary"
+              }`}
+            >
+              {gstinMsg}
+            </p>
+          ) : (
+            <p className="mt-1 text-[11px] text-mid-green/80">
+              Fetch stays off until the GSTIN is 15 characters.
+            </p>
+          )}
         </label>
         <label className="block text-xs">
           <span className="mb-0.5 block text-mid-green">
-            Company (official name)
+            Company (official name) <span className="text-red-600">*</span>
           </span>
           <ClientCompanyField
             name="buyerCompany"
+            fieldId="buyerCompany"
+            invalid={Boolean(buyerFieldErrors.buyerCompany)}
+            inputClassName={border(buyerFieldErrors.buyerCompany)}
             value={form.buyerCompany}
             email={form.buyerEmail}
             phone={form.buyerPhone}
             placeholder="Type client name or initials"
-            onChange={(next) =>
-              setForm((f) => ({ ...f, buyerCompany: next }))
-            }
+            onChange={(next) => {
+              setBuyerFieldErrors((prev) => ({ ...prev, buyerCompany: undefined }));
+              setForm((f) => ({ ...f, buyerCompany: next }));
+            }}
             onSelectClient={(client) => void applySelectedClient(client)}
           />
+          {buyerFieldErrors.buyerCompany ? (
+            <span className="mt-1 block text-xs text-red-700">
+              {buyerFieldErrors.buyerCompany}
+            </span>
+          ) : null}
         </label>
         {buyerContacts.length > 0 ? (
           <label className="block text-xs">
@@ -1709,26 +2009,50 @@ export function QuoteBuilder({
             ["buyerEmail", "Email"],
             ["buyerPhone", "Phone"],
           ] as const
-        ).map(([key, label]) => (
+        ).map(([key, label]) => {
+          const fieldError =
+            key === "buyerEmail" || key === "buyerPhone"
+              ? buyerFieldErrors[key]
+              : undefined;
+          return (
           <label key={key} className="block text-xs">
             <span className="mb-0.5 block text-mid-green">{label}</span>
             <input
+              data-buyer-field={key}
               value={form[key]}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, [key]: e.target.value }))
-              }
-              className="w-full rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
+              inputMode={key === "buyerPhone" ? "tel" : undefined}
+              aria-invalid={Boolean(fieldError) || undefined}
+              onChange={(e) => {
+                const value =
+                  key === "buyerPhone"
+                    ? sanitizePhoneInput(e.target.value)
+                    : e.target.value;
+                if (key === "buyerEmail" || key === "buyerPhone") {
+                  setBuyerFieldErrors((prev) => ({ ...prev, [key]: undefined }));
+                }
+                setForm((f) => ({ ...f, [key]: value }));
+              }}
+              className={border(fieldError)}
             />
+            {fieldError ? (
+              <span className="mt-1 block text-xs text-red-700">{fieldError}</span>
+            ) : null}
           </label>
-        ))}
+          );
+        })}
         <label className="block text-xs">
-          <span className="mb-0.5 block text-mid-green">State (for GST)</span>
+          <span className="mb-0.5 block text-mid-green">
+            State (for GST) <span className="text-red-600">*</span>
+          </span>
           <select
+            data-buyer-field="buyerState"
             value={form.buyerState}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, buyerState: e.target.value }))
-            }
-            className="w-full rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
+            aria-invalid={Boolean(buyerFieldErrors.buyerState) || undefined}
+            onChange={(e) => {
+              setBuyerFieldErrors((prev) => ({ ...prev, buyerState: undefined }));
+              setForm((f) => ({ ...f, buyerState: e.target.value }));
+            }}
+            className={border(buyerFieldErrors.buyerState)}
           >
             <option value="">Select state</option>
             {INDIAN_STATES.map((s) => (
@@ -1737,17 +2061,32 @@ export function QuoteBuilder({
               </option>
             ))}
           </select>
+          {buyerFieldErrors.buyerState ? (
+            <span className="mt-1 block text-xs text-red-700">
+              {buyerFieldErrors.buyerState}
+            </span>
+          ) : null}
         </label>
         <label className="block text-xs">
-          <span className="mb-0.5 block text-mid-green">Address</span>
+          <span className="mb-0.5 block text-mid-green">
+            Address <span className="text-red-600">*</span>
+          </span>
           <textarea
+            data-buyer-field="buyerAddress"
             value={form.buyerAddress}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, buyerAddress: e.target.value }))
-            }
+            aria-invalid={Boolean(buyerFieldErrors.buyerAddress) || undefined}
+            onChange={(e) => {
+              setBuyerFieldErrors((prev) => ({ ...prev, buyerAddress: undefined }));
+              setForm((f) => ({ ...f, buyerAddress: e.target.value }));
+            }}
             rows={3}
-            className="w-full rounded-lg border border-light-green/40 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-mid-green"
+            className={border(buyerFieldErrors.buyerAddress)}
           />
+          {buyerFieldErrors.buyerAddress ? (
+            <span className="mt-1 block text-xs text-red-700">
+              {buyerFieldErrors.buyerAddress}
+            </span>
+          ) : null}
         </label>
       </div>
     );
@@ -1901,21 +2240,31 @@ export function QuoteBuilder({
   const productDetailLine =
     productDetailIdx >= 0 ? form.lineItems[productDetailIdx] : null;
 
-  const saveLabel = saving
-    ? "Saving…"
-    : msg
-      ? "Save failed"
-      : hasPendingSave
-        ? "Saving…"
-        : form.id
-          ? "Saved"
-          : "Unsaved";
+  const saveLabel = conflict
+    ? "Conflict"
+    : saving
+      ? "Saving…"
+      : saveError
+        ? "Save failed"
+        : hasPendingSave
+          ? notice
+            ? "Not saved"
+            : "Saving…"
+          : form.id
+            ? "Saved"
+            : "Unsaved";
   const saveTone =
-    saveLabel === "Save failed"
-      ? "bg-dark-primary/10 text-dark-primary"
+    saveLabel === "Save failed" || saveLabel === "Conflict" || saveLabel === "Not saved"
+      ? "bg-red-50 text-red-800"
       : saveLabel === "Saving…"
         ? "bg-light-green/30 text-dark-secondary"
         : "bg-light-green/25 text-dark-secondary";
+  const readyLabel =
+    readinessGaps.length === 0
+      ? "Ready to send"
+      : readinessWaived
+        ? "Gaps acknowledged"
+        : "Not ready";
   const iconBtn =
     "inline-flex h-8 w-8 items-center justify-center rounded-md border border-light-green/35 bg-white text-mid-green hover:bg-light-green/15 disabled:opacity-60";
   const field =
@@ -1949,6 +2298,15 @@ export function QuoteBuilder({
           aria-live="polite"
         >
           {saveLabel}
+        </span>
+        <span
+          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            readinessGaps.length === 0
+              ? "bg-light-green/25 text-dark-secondary"
+              : "bg-amber-50 text-amber-950"
+          }`}
+        >
+          {readyLabel}
         </span>
         <button
           type="button"
@@ -2018,7 +2376,103 @@ export function QuoteBuilder({
         </div>
       </header>
 
+      {saveError ? (
+        <p className="text-sm text-red-700" role="alert">
+          {saveError}
+          {conflict ? (
+            <span className="ml-2 inline-flex gap-2">
+              <button
+                type="button"
+                className="underline"
+                onClick={() => window.location.reload()}
+              >
+                Reload
+              </button>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  conflictHoldRef.current = false;
+                  forceSaveRef.current = true;
+                  setConflict(false);
+                  setSaveError("");
+                  void saveQuote();
+                }}
+              >
+                Overwrite
+              </button>
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+      {notice ? (
+        <p className="text-sm text-red-700" role="alert">
+          {notice}
+        </p>
+      ) : null}
       {msg ? <p className="text-sm text-mid-green">{msg}</p> : null}
+
+      <section
+        id="quote-readiness"
+        aria-label="Ready to send"
+        className="rounded-xl border border-light-green/30 bg-white/80 px-3 py-2"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-dark-primary">
+            {readinessGaps.length === 0 ? "Ready to send" : "Not ready to send"}
+          </h2>
+          <span className="text-[11px] text-mid-green">
+            Saved means stored. Preview is for review. Sending stays blocked until
+            these gaps are fixed or acknowledged.
+          </span>
+        </div>
+        {readinessGaps.length > 0 ? (
+          <>
+            <ul className="mt-2 space-y-1">
+              {readinessGaps.map((gap) => (
+                <li key={gap.id} className="flex items-center justify-between gap-2 text-sm">
+                  <span>{gap.message}</span>
+                  <button
+                    type="button"
+                    className="shrink-0 text-xs font-medium text-mid-green underline"
+                    onClick={() => {
+                      if (gap.fix === "buyer") openBuyerPanel("edit");
+                      else if (gap.fix === "price" && gap.lineIndex != null)
+                        focusLineField(gap.lineIndex, "price");
+                      else if (gap.fix === "hsn" && gap.lineIndex != null)
+                        focusLineField(gap.lineIndex, "hsn");
+                      else if (gap.fix === "stock" && gap.lineIndex != null)
+                        focusLineField(gap.lineIndex, "price");
+                      else if (gap.fix === "warranty" || gap.fix === "terms") {
+                        document
+                          .getElementById("quote-commercial")
+                          ?.scrollIntoView({ block: "center" });
+                      }
+                    }}
+                  >
+                    Fix
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <label className="mt-2 flex items-center gap-2 text-xs text-dark-primary">
+              <input
+                type="checkbox"
+                checked={readinessWaived}
+                onChange={(e) =>
+                  setWaivedForKey(e.target.checked ? readinessKey : null)
+                }
+              />
+              I have reviewed these gaps and want to continue anyway. Buyer company,
+              address, and state are still required to generate the PDF.
+            </label>
+          </>
+        ) : (
+          <p className="mt-1 text-xs text-mid-green">
+            Buyer details, prices, and HSN look complete.
+          </p>
+        )}
+      </section>
 
       {renderPreviewModal()}
 
@@ -2200,6 +2654,7 @@ export function QuoteBuilder({
       {buyerOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-dark-primary/40 px-4">
           <div
+            ref={buyerDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="buyer-details-title"
@@ -2215,9 +2670,11 @@ export function QuoteBuilder({
                       ? "Fill buyer details to send quote"
                       : "Buyer details"}
                 </h2>
-                <p className="mt-1 text-sm text-mid-green">
-                  Company name, address, and state are required on the quotation.
-                </p>
+                {buyerError ? null : (
+                  <p className="mt-1 text-sm text-mid-green">
+                    Company name, address, and state are required on the quotation.
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -2230,7 +2687,24 @@ export function QuoteBuilder({
             </div>
             <div className="mt-5">
               {buyerError ? (
-                <p className="mb-3 text-sm text-dark-primary">{buyerError}</p>
+                <p
+                  className="mb-3 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+                  role="alert"
+                >
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.75} />
+                  <span>{buyerError}</span>
+                </p>
+              ) : null}
+              {suggestedState ? (
+                <button
+                  type="button"
+                  className="mb-3 text-left text-xs text-mid-green underline"
+                  onClick={() =>
+                    setForm((f) => ({ ...f, buyerState: suggestedState }))
+                  }
+                >
+                  Use {suggestedState} from the RFQ (address is not filled in)
+                </button>
               ) : null}
               {renderBuyerFields()}
             </div>
@@ -2303,8 +2777,11 @@ export function QuoteBuilder({
       {discountDialog ? (
         <QuoteDiscountDialog
           percent={discountDialog.percent}
+          amount={discountDialog.amount}
+          amountMode={discountDialog.amountMode}
           methods={discountDialog.methods}
           hasExistingDiscount={discountDialog.hasExistingDiscount}
+          currentSubtotal={calc.subtotal}
           lines={form.lineItems.map((line) => ({
             qty: line.qty,
             unitPrice: line.unitPrice,
@@ -2312,12 +2789,28 @@ export function QuoteBuilder({
           }))}
           onPercentChange={(percent) =>
             setDiscountDialog((current) =>
-              current ? { ...current, percent } : current
+              current ? { ...current, percent, amountMode: false } : current
+            )
+          }
+          onAmountChange={(amount) =>
+            setDiscountDialog((current) =>
+              current ? { ...current, amount } : current
+            )
+          }
+          onAmountModeChange={(amountMode) =>
+            setDiscountDialog((current) =>
+              current ? { ...current, amountMode } : current
             )
           }
           onMethodsChange={(methods) =>
             setDiscountDialog((current) =>
-              current ? { ...current, methods } : current
+              current
+                ? {
+                    ...current,
+                    methods,
+                    amountMode: methods.method === "lines" ? false : current.amountMode,
+                  }
+                : current
             )
           }
           onCancel={closeDiscountDialog}
@@ -2326,7 +2819,13 @@ export function QuoteBuilder({
             closeDiscountDialog();
           }}
           onApply={() => {
-            applyDiscountSelection(discountDialog.percent, discountDialog.methods);
+            applyDiscountSelection(
+              discountDialog.percent,
+              discountDialog.methods,
+              discountDialog.amountMode && discountDialog.methods.method === "header"
+                ? discountDialog.amount
+                : 0
+            );
             closeDiscountDialog();
           }}
         />
@@ -2351,8 +2850,8 @@ export function QuoteBuilder({
             clearMarkup();
             closeMarkupDialog();
           }}
-          onApply={() => {
-            applyMarkup(markupDialog.percent);
+          onApply={(opts) => {
+            applyMarkup(markupDialog.percent, opts);
             closeMarkupDialog();
           }}
         />
@@ -2402,7 +2901,7 @@ export function QuoteBuilder({
       ) : null}
 
       <div className="space-y-3">
-            <section className="min-w-0 overflow-hidden rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+            <section className="min-w-0 rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
               <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-1.5">
                 <h2 className="text-sm font-semibold text-dark-primary">
                   Line items
@@ -2441,20 +2940,26 @@ export function QuoteBuilder({
                       Unit
                     </button>
                   )}
-                  <select
-                    value={form.gstMode}
-                    onChange={(e) =>
-                      setForm((f) => ({
-                        ...f,
-                        gstMode: e.target.value as QuoteFormState["gstMode"],
-                      }))
-                    }
-                    className="h-7 rounded-md border border-light-green/40 bg-background px-1.5 text-xs"
-                  >
-                    <option value="AUTO">GST auto</option>
-                    <option value="CGST_SGST">CGST + SGST</option>
-                    <option value="IGST">IGST</option>
-                  </select>
+                  <label className="inline-flex items-center gap-1 text-[11px] text-mid-green">
+                    <select
+                      value={form.gstMode}
+                      aria-label="GST split"
+                      onChange={(e) =>
+                        setForm((f) => ({
+                          ...f,
+                          gstMode: e.target.value as QuoteFormState["gstMode"],
+                        }))
+                      }
+                      className="h-7 rounded-md border border-light-green/40 bg-background px-1.5 text-xs"
+                    >
+                      <option value="AUTO">GST auto</option>
+                      <option value="CGST_SGST">CGST + SGST</option>
+                      <option value="IGST">IGST</option>
+                    </select>
+                    {form.gstMode === "AUTO" ? (
+                      <span>{describeGstAuto(form.buyerState, sellerState)}</span>
+                    ) : null}
+                  </label>
                   {showVendorCost ? null : (
                     <button
                       type="button"
@@ -2510,6 +3015,15 @@ export function QuoteBuilder({
                   ) : null}
                   <button
                     type="button"
+                    onClick={undoLines}
+                    disabled={!canUndo}
+                    className="inline-flex h-7 items-center gap-1 rounded-md border border-light-green/40 bg-background px-2 text-xs hover:bg-light-green/15 disabled:opacity-40"
+                  >
+                    <Undo2 className="h-3 w-3" strokeWidth={1.5} />
+                    Undo
+                  </button>
+                  <button
+                    type="button"
                     onClick={addLine}
                     className="inline-flex h-7 items-center gap-1 rounded-md bg-mid-green px-2 text-xs font-medium text-background hover:bg-dark-secondary"
                   >
@@ -2519,27 +3033,12 @@ export function QuoteBuilder({
                 </div>
               </div>
 
-              <table className="w-full table-fixed text-left text-sm">
-                  <colgroup>
-                    <col className="w-[30%]" />
-                    <col />
-                    {form.showHsn ? <col className="w-[6.75rem]" /> : null}
-                    <col className="w-[4.25rem]" />
-                    {form.showUnit ? <col className="w-[4.75rem]" /> : null}
-                    {showVendorCost ? <col className="w-[10rem]" /> : null}
-                    {showMarketplace ? <col className="w-[9.5rem]" /> : null}
-                    {showCatalog ? <col className="w-[8.5rem]" /> : null}
-                    <col className="w-[8.75rem]" />
-                    <col className="w-[4.25rem]" />
-                    <col className="w-[6.5rem]" />
-                    <col className="w-[3.75rem]" />
-                    <col className="w-[9.5rem]" />
-                    <col className="w-8" />
-                  </colgroup>
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[76rem] border-separate border-spacing-0 text-left text-sm">
                   <thead className="bg-dark-secondary/[0.04] text-[10px] uppercase tracking-wide text-mid-green">
                     <tr>
-                      <th className="px-2 py-1.5 font-medium">Item</th>
-                      <th className="px-2 py-1.5 font-medium">Description</th>
+                      <th className="min-w-[16rem] px-2 py-1.5 font-medium">Item</th>
+                      <th className="min-w-[12rem] px-2 py-1.5 font-medium">Description</th>
                       {form.showHsn ? (
                         <th className="px-1.5 py-1.5 font-medium">
                           <span className="inline-flex items-center gap-1">
@@ -2627,8 +3126,10 @@ export function QuoteBuilder({
                       </th>
                       <th className="px-1.5 py-1.5 font-medium">Warranty</th>
                       <th className="px-1.5 py-1.5 font-medium">Tax%</th>
-                      <th className="px-2 py-1.5 text-right text-xs font-semibold">Total</th>
-                      <th className="px-1 py-1.5"></th>
+                      <th className="min-w-[8.5rem] px-2 py-1.5 text-right text-xs font-semibold">Total</th>
+                      <th className="min-w-[6.5rem] px-1 py-1.5">
+                        <span className="sr-only">Line actions</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -2645,7 +3146,7 @@ export function QuoteBuilder({
                                 onClick={() => openCatalogSearch(idx)}
                                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-light-green/40 text-mid-green hover:bg-light-green/20"
                                 title="Search catalog"
-                                aria-label="Search catalog"
+                                aria-label={`Search catalog, line ${idx + 1}`}
                               >
                                 <Search className="h-3.5 w-3.5" strokeWidth={1.5} />
                               </button>
@@ -2662,7 +3163,8 @@ export function QuoteBuilder({
                                     Math.ceil(line.aliasName.length / 28)
                                   )
                                 )}
-                                className={`${field} min-h-[2.5rem] w-full resize-y px-2 py-1.5 leading-snug whitespace-pre-wrap break-words`}
+                                aria-label={`Item name, line ${idx + 1}`}
+                                className={`${field} min-h-[2.5rem] min-w-[12rem] w-full resize-y px-2 py-1.5 leading-snug whitespace-pre-wrap break-words`}
                                 placeholder="Name on quote"
                                 title={
                                   line.catalogName
@@ -2685,9 +3187,13 @@ export function QuoteBuilder({
                                   name: line.catalogName,
                                 })}
                               </button>
+                            ) : line.customItem ? (
+                              <p className="mt-1 px-1 text-[11px] text-mid-green">
+                                Custom line — not in the catalog
+                              </p>
                             ) : (
-                              <p className="mt-1 px-1 text-[11px] text-amber-800/90">
-                                Not mapped
+                              <p className="mt-1 px-1 text-[11px] text-mid-green">
+                                Not in catalog
                               </p>
                             )}
                             {line.productId &&
@@ -2702,10 +3208,17 @@ export function QuoteBuilder({
                                 Catalog mismatch — review suggestions; this SKU may not match the RFQ line.
                               </p>
                             ) : null}
-                            {!line.productId && line.aliasName.trim() ? (
-                              <p className="mt-1 rounded-md border border-amber-200/80 bg-amber-50 px-2 py-1 text-[11px] text-amber-950">
-                                No confident catalog match — pick a product from search/suggestions.
-                              </p>
+                            {!line.productId && !line.customItem && line.aliasName.trim() ? (
+                              <div className="mt-1 rounded-md border border-light-green/40 bg-light-green/10 px-2 py-1 text-[11px] text-dark-primary">
+                                <p>No catalog product picked yet.</p>
+                                <button
+                                  type="button"
+                                  className="mt-1 font-medium text-mid-green underline"
+                                  onClick={() => updateLine(idx, { customItem: true })}
+                                >
+                                  Mark as custom line
+                                </button>
+                              </div>
                             ) : null}
                             {searchIdx === idx ? (
                               <div className="absolute left-0 z-20 mt-1 w-[min(22rem,calc(100vw-2rem))] rounded-lg border border-light-green/40 bg-background p-2 shadow-lg">
@@ -2714,6 +3227,7 @@ export function QuoteBuilder({
                                   value={searchQ}
                                   onChange={(e) => {
                                     setSearchQ(e.target.value);
+                                    setSearchLoading(e.target.value.trim().length > 0);
                                     setSearchAiDone(false);
                                     setSearchAiError("");
                                   }}
@@ -2784,7 +3298,8 @@ export function QuoteBuilder({
                             onChange={(e) =>
                               updateLine(idx, { description: e.target.value })
                             }
-                            className={cellInput}
+                            aria-label={`Description, line ${idx + 1}`}
+                            className={`${cellInput} min-w-[10rem]`}
                             placeholder="Description"
                             title="Fetched from the product; edit as needed for this quote"
                           />
@@ -2792,26 +3307,33 @@ export function QuoteBuilder({
                         {form.showHsn ? (
                           <td className="px-1.5 py-1.5 align-top">
                             <input
+                              data-line-field={`hsn-${idx}`}
                               value={line.hsnCode || ""}
+                              inputMode="numeric"
+                              aria-label={`HSN, line ${idx + 1}`}
+                              aria-invalid={Boolean(hsnFieldError(line.hsnCode || "")) || undefined}
                               onChange={(e) =>
-                                updateLine(idx, { hsnCode: e.target.value })
+                                updateLine(idx, { hsnCode: sanitizeHsnInput(e.target.value) })
                               }
-                              className={`${cellInput} px-1 font-mono text-xs`}
+                              className={`${cellInput} min-w-[6.5rem] px-1 font-mono text-xs`}
                               placeholder="—"
                               title="HSN shown on the quotation"
                             />
+                            {hsnFieldError(line.hsnCode || "") ? (
+                              <p className="mt-0.5 text-[10px] text-red-700">
+                                {hsnFieldError(line.hsnCode || "")}
+                              </p>
+                            ) : null}
                           </td>
                         ) : null}
                         <td className="px-1.5 py-1.5 align-top">
-                          <input
-                            type="number"
-                            min={0}
-                            step="0.001"
+                          <LineQtyInput
                             value={line.qty}
-                            onChange={(e) =>
-                              updateLine(idx, { qty: Number(e.target.value) })
-                            }
                             className={numInput}
+                            ariaLabel={`Quantity, line ${idx + 1}`}
+                            fieldId={`qty-${idx}`}
+                            onCommit={(qty) => updateLine(idx, { qty })}
+                            onReject={(message) => toast(message, "error")}
                           />
                         </td>
                         {form.showUnit ? (
@@ -2896,15 +3418,60 @@ export function QuoteBuilder({
                         </td>
                         ) : null}
                         <td className="px-1.5 py-1.5 align-top">
+                          <div data-line-field={`price-${idx}`}>
                           <CalcMoneyInput
                             value={line.unitPrice}
                             max={MAX_QUOTE_UNIT_PRICE}
-                            onCommit={(unitPrice) => updateLine(idx, { unitPrice })}
-                            onRangeError={(message) => toast(message, "error")}
+                            onCommit={(unitPrice) => {
+                              setNotice("");
+                              updateLine(idx, { unitPrice });
+                            }}
+                            onRangeError={(message) => {
+                              setNotice(message);
+                              toast(message, "error");
+                            }}
                             className={moneyInput}
                             title="Sell price on the quotation"
-                            aria-label="Sell price"
+                            aria-label={`Sell price, line ${idx + 1}`}
                           />
+                          {(() => {
+                            const margin = lineMargin(line.unitPrice, line.costPrice);
+                            const last = line.catalogLastPrice;
+                            const suggest =
+                              !(line.unitPrice > 0) && last != null && last > 0
+                                ? { price: last, source: "last price" }
+                                : !(line.unitPrice > 0) &&
+                                    line.costPrice != null &&
+                                    line.costPrice > 0
+                                  ? { price: line.costPrice, source: "vendor cost" }
+                                  : null;
+                            return (
+                              <div className="mt-0.5 space-y-0.5 text-[10px] leading-snug text-mid-green">
+                                <div>
+                                  {line.costPrice == null
+                                    ? "Cost: no cost"
+                                    : `Cost ${formatMoney(line.costPrice)}`}
+                                  {margin.missing
+                                    ? " · Margin —"
+                                    : ` · Margin ${formatMoney(margin.amount)}${
+                                        margin.percent != null ? ` (${margin.percent}%)` : ""
+                                      }`}
+                                </div>
+                                {suggest ? (
+                                  <button
+                                    type="button"
+                                    className="underline"
+                                    onClick={() =>
+                                      updateLine(idx, { unitPrice: suggest.price })
+                                    }
+                                  >
+                                    Use {suggest.source} {formatMoney(suggest.price)}
+                                  </button>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
+                          </div>
                           {clampDiscountPercent(line.discountPercent ?? 0) > 0 ? (
                             <span className="mt-0.5 block text-[10px] tabular-nums text-mid-green">
                               Net{" "}
@@ -2942,6 +3509,7 @@ export function QuoteBuilder({
                             }}
                             className={numInput}
                             title="Per-product discount % (editable)"
+                            aria-label={`Discount percent, line ${idx + 1}`}
                             placeholder="0"
                           />
                         </td>
@@ -2953,17 +3521,24 @@ export function QuoteBuilder({
                                 min={0}
                                 max={9999}
                                 step={1}
-                                value={line.warrantyQty ?? 0}
-                                onChange={(e) =>
+                                value={(line.warrantyQty ?? 0) > 0 ? line.warrantyQty : ""}
+                                placeholder="—"
+                                onChange={(e) => {
+                                  const raw = e.target.value;
                                   updateLine(idx, {
-                                    warrantyQty: clampWarrantyQty(
-                                      Number(e.target.value)
-                                    ),
-                                  })
-                                }
+                                    warrantyQty:
+                                      raw.trim() === ""
+                                        ? 0
+                                        : clampWarrantyQty(Number(raw)),
+                                  });
+                                }}
                                 className={`${numInput} w-[2.35rem] px-0.5`}
-                                title="Warranty duration"
-                                aria-label="Warranty duration"
+                                title={
+                                  (line.warrantyQty ?? 0) > 0
+                                    ? "Warranty duration"
+                                    : "Warranty not specified"
+                                }
+                                aria-label={`Warranty duration, line ${idx + 1}`}
                               />
                               <select
                                 value={normalizeWarrantyUnit(line.warrantyUnit)}
@@ -3009,30 +3584,125 @@ export function QuoteBuilder({
                             min={0}
                             step="0.01"
                             value={line.taxRate}
-                            onChange={(e) =>
-                              updateLine(idx, { taxRate: Number(e.target.value) })
-                            }
+                            aria-label={`Tax rate, line ${idx + 1}`}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw.trim() === "") return;
+                              const next = Number(raw);
+                              if (!Number.isFinite(next) || next < 0) return;
+                              updateLine(idx, { taxRate: next });
+                            }}
                             className={numInput}
                           />
                         </td>
-                        <td className="px-2 py-1.5 text-right align-middle text-base font-semibold tabular-nums text-dark-primary">
+                        <td className="whitespace-nowrap px-2 py-1.5 text-right align-middle text-sm font-semibold tabular-nums text-dark-primary">
                           {formatMoney(calc.lineTotals[idx] ?? 0)}
                         </td>
-                        <td className="px-1 py-1.5 align-middle">
-                          <button
-                            type="button"
-                            onClick={() => removeLine(idx)}
-                            className="rounded p-1 text-mid-green hover:bg-light-green/30"
-                            disabled={form.lineItems.length <= 1}
-                          >
-                            <Trash2 className="h-4 w-4" strokeWidth={1.5} />
-                          </button>
+                        <td className="whitespace-nowrap px-1 py-1.5 align-middle">
+                          <div className="inline-flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => moveLine(idx, -1)}
+                              disabled={idx === 0}
+                              className="rounded p-1 text-mid-green hover:bg-light-green/30 disabled:opacity-30"
+                              aria-label={`Move line ${idx + 1} up`}
+                            >
+                              <ChevronUp className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => moveLine(idx, 1)}
+                              disabled={idx === form.lineItems.length - 1}
+                              className="rounded p-1 text-mid-green hover:bg-light-green/30 disabled:opacity-30"
+                              aria-label={`Move line ${idx + 1} down`}
+                            >
+                              <ChevronDown className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => duplicateLine(idx)}
+                              className="rounded p-1 text-mid-green hover:bg-light-green/30"
+                              aria-label={`Duplicate line ${idx + 1}`}
+                            >
+                              <Copy className="h-3.5 w-3.5" strokeWidth={1.75} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeLine(idx)}
+                              className="rounded p-1 text-mid-green hover:bg-light-green/30"
+                              disabled={form.lineItems.length <= 1}
+                              aria-label={`Remove line ${idx + 1}`}
+                            >
+                              <Trash2 className="h-4 w-4" strokeWidth={1.5} />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
 
+              <div
+                id="quote-commercial"
+                className="grid gap-2 border-t border-light-green/20 px-3 py-2 sm:grid-cols-3"
+              >
+                <label className="block text-xs">
+                  <span className="mb-0.5 block text-mid-green">Payment terms</span>
+                  <input
+                    value={commercial.paymentTerms}
+                    onChange={(e) => updateCommercial({ paymentTerms: e.target.value })}
+                    className={field}
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span className="mb-0.5 block text-mid-green">
+                    Validity {commercial.validity.trim() ? "" : "· not specified"}
+                  </span>
+                  <input
+                    value={commercial.validity}
+                    placeholder="Not specified"
+                    onChange={(e) => updateCommercial({ validity: e.target.value })}
+                    className={field}
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span className="mb-0.5 block text-mid-green">
+                    Delivery {commercial.delivery.trim() ? "" : "· not specified"}
+                  </span>
+                  <input
+                    value={commercial.delivery}
+                    placeholder="Not specified"
+                    onChange={(e) => updateCommercial({ delivery: e.target.value })}
+                    className={field}
+                  />
+                </label>
+                {warrantyAsk ? (
+                  <button
+                    type="button"
+                    className="text-left text-xs text-mid-green underline sm:col-span-3"
+                    onClick={() => {
+                      setForm((f) => ({
+                        ...f,
+                        lineItems: f.lineItems.map((line) =>
+                          (line.warrantyQty ?? 0) > 0
+                            ? line
+                            : {
+                                ...line,
+                                warrantyQty: warrantyAsk.qty,
+                                warrantyUnit: warrantyAsk.unit,
+                                warrantyService: warrantyAsk.service,
+                              }
+                        ),
+                      }));
+                    }}
+                  >
+                    RFQ asks for {warrantyAsk.qty} {warrantyAsk.unit}
+                    {warrantyAsk.service ? ` ${warrantyAsk.service}` : ""} — apply to
+                    lines that are not specified
+                  </button>
+                ) : null}
+              </div>
               <div className="flex flex-wrap items-end justify-between gap-3 border-t border-light-green/20 px-3 py-2">
                 <div className="flex flex-wrap items-end gap-2">
                   <div className="block">
@@ -3089,7 +3759,9 @@ export function QuoteBuilder({
                           <span className="tabular-nums">
                             {form.discountPercent > 0
                               ? `${form.discountPercent}% quote`
-                              : hasAnyLineDiscount
+                              : form.discountAmount > 0
+                                ? formatMoney(form.discountAmount)
+                                : hasAnyLineDiscount
                                 ? appliedLineDiscountPercent
                                   ? `${appliedLineDiscountPercent}% lines`
                                   : "Mixed lines"
@@ -3097,7 +3769,9 @@ export function QuoteBuilder({
                           </span>
                         </span>
                       </button>
-                      {form.discountPercent > 0 || hasAnyLineDiscount ? (
+                      {form.discountPercent > 0 ||
+                      form.discountAmount > 0 ||
+                      hasAnyLineDiscount ? (
                         <button
                           type="button"
                           onClick={clearAllDiscounts}
@@ -3266,5 +3940,71 @@ export function QuoteBuilder({
         <QuoteRequirementSidebar context={requirementContext} />
       </div>
     </div>
+  );
+}
+
+function LineQtyInput({
+  value,
+  onCommit,
+  onReject,
+  className,
+  ariaLabel,
+  fieldId,
+}: {
+  value: number;
+  onCommit: (qty: number) => void;
+  onReject: (message: string) => void;
+  className?: string;
+  ariaLabel: string;
+  fieldId: string;
+}) {
+  const [focused, setFocused] = useState(false);
+  const [text, setText] = useState(String(value));
+  const [syncedValue, setSyncedValue] = useState(value);
+  if (!focused && value !== syncedValue) {
+    setSyncedValue(value);
+    setText(Number.isFinite(value) ? String(value) : "");
+  }
+
+  return (
+    <input
+      data-line-field={fieldId}
+      type="text"
+      inputMode="decimal"
+      aria-label={ariaLabel}
+      className={className}
+      value={focused ? text : String(value)}
+      onFocus={() => {
+        setFocused(true);
+        setText(String(value));
+      }}
+      onChange={(e) => {
+        const raw = e.target.value;
+        if (/[a-z]/i.test(raw)) {
+          onReject("Quantity must be a number");
+          return;
+        }
+        setText(raw.replace(/[^\d.]/g, ""));
+      }}
+      onBlur={() => {
+        setFocused(false);
+        const trimmed = text.trim();
+        if (!trimmed) {
+          onReject("Quantity is required. The previous quantity was kept.");
+          setText(String(value));
+          return;
+        }
+        const next = Number(trimmed);
+        if (!Number.isFinite(next) || next < 0) {
+          onReject("Quantity cannot be negative. The previous quantity was kept.");
+          setText(String(value));
+          return;
+        }
+        if (next === 0) {
+          onReject("Quantity is zero, so this line total becomes ₹0.");
+        }
+        onCommit(next);
+      }}
+    />
   );
 }

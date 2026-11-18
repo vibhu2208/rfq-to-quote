@@ -64,6 +64,34 @@ export function lineSubtotal(lines: PricedLine[]): number {
   );
 }
 
+/** Line sum before any per-product or whole-quote discount. */
+export function grossLineSubtotal(lines: PricedLine[]): number {
+  return round2(
+    lines.reduce((sum, line) => {
+      const qty = Number(line.qty);
+      const price = Math.max(0, Number(line.unitPrice) || 0);
+      if (!(qty > 0)) return sum;
+      return sum + round2(qty * price);
+    }, 0)
+  );
+}
+
+export function validateFixedDiscountAmount(
+  amount: number,
+  gross: number
+): DiscountValidation {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, reason: "Enter a discount amount greater than 0." };
+  }
+  if (amount > Math.max(0, gross) + 0.001) {
+    return {
+      ok: false,
+      reason: "Fixed discount cannot be more than the gross subtotal.",
+    };
+  }
+  return { ok: true };
+}
+
 export function headerDiscountAmount(subtotal: number, percent: number): number {
   const p = clampDiscountPercent(percent);
   return round2(Math.max(0, Number(subtotal) || 0) * (p / 100));
@@ -75,7 +103,7 @@ export function headerDiscountAmount(subtotal: number, percent: number): number 
 export function applyPercentToLineDiscounts<T extends PricedLine>(
   lines: T[],
   percent: number
-): T[] {
+): Array<T & { discountPercent: number }> {
   const p = clampDiscountPercent(percent);
   return lines.map((line) => ({
     ...line,

@@ -15,7 +15,6 @@ describe("resolveMoneyCommit", () => {
     expect(resolveMoneyCommit(0, { min: 0, prior: 4500 })).toEqual({
       ok: true,
       value: 0,
-      clampedToMax: false,
     });
   });
 
@@ -23,18 +22,17 @@ describe("resolveMoneyCommit", () => {
     expect(resolveMoneyCommit(4500, { min: 0, prior: 1200 })).toEqual({
       ok: true,
       value: 4500,
-      clampedToMax: false,
     });
   });
 
-  it("clamps values above max and flags clampedToMax", () => {
+  it("rejects values above max instead of clamping them", () => {
     expect(
-      resolveMoneyCommit(1e15, { min: 0, max: 9_999_999_999.99, prior: 100 })
-    ).toEqual({
-      ok: true,
-      value: 9_999_999_999.99,
-      clampedToMax: true,
-    });
+      resolveMoneyCommit(99_999_999_999, {
+        min: 0,
+        max: 9_999_999_999.99,
+        prior: 4500,
+      })
+    ).toEqual({ ok: false, reason: "above_max" });
   });
 
   it("rejects non-finite input", () => {
@@ -49,5 +47,14 @@ describe("formatMoneyCommitRangeError", () => {
     expect(formatMoneyCommitRangeError("below_min", { min: 0 })).toBe(
       "Price cannot be negative"
     );
+  });
+
+  it("explains the maximum without saving a clamped price", () => {
+    expect(
+      formatMoneyCommitRangeError("above_max", {
+        min: 0,
+        max: 9_999_999_999.99,
+      })
+    ).toContain("9,99,99,99,999.99");
   });
 });

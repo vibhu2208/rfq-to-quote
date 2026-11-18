@@ -74,7 +74,7 @@ describe("s3ConfigFromEnv", () => {
         S3_SECRET_ACCESS_KEY: "secret",
         S3_ENDPOINT: "https://example.storage.supabase.co/storage/v1/s3",
         S3_REGION: "eu-west-1",
-      } as NodeJS.ProcessEnv)
+      } as unknown as NodeJS.ProcessEnv)
     ).toMatchObject({
       accessKeyId: "access",
       bucket: "quote-attachments",

@@ -35,6 +35,8 @@ const lineSchema = z.object({
   warrantyUnit: z.enum(["years", "months", "days"]).optional().default("years"),
   warrantyService: z.enum(["", "onsite", "offsite", "both"]).optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
+  hsnCode: z.string().optional().default(""),
+  customItem: z.boolean().optional().default(false),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
 
@@ -62,7 +64,10 @@ const quoteSchema = z.object({
   quoteName: z.string().optional().default(""),
   quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT"]).optional().default("DRAFT"),
-  manualOverrides: z.record(z.string(), z.boolean()).optional().default({}),
+  manualOverrides: z
+    .record(z.string(), z.union([z.boolean(), z.number()]))
+    .optional()
+    .default({}),
   // Manual total overrides (when flagged)
   subtotal: moneyAmount.optional(),
   gstAmount: moneyAmount.optional(),
@@ -257,12 +262,14 @@ export async function POST(req: NextRequest) {
           warrantyUnit: l.warrantyUnit ?? "years",
           warrantyService: l.warrantyService ?? "",
           taxRate: l.taxRate,
+          hsnCode: (l.hsnCode || "").replace(/\D/g, "").slice(0, 8),
+          customItem: Boolean(l.customItem),
           lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
           sortOrder: l.sortOrder ?? i,
         })),
       },
     },
-    select: { id: true, quoteNumber: true, status: true },
+    select: { id: true, quoteNumber: true, status: true, version: true },
   });
 
   await persistQuoteLineVendorCosts(
