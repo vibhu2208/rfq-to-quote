@@ -583,7 +583,6 @@ async function catalogSearch(query: string, take: number): Promise<AdminToolResu
       active: true,
       OR: or.length > 0 ? or : [{ name: { contains: q, mode: "insensitive" } }],
     },
-    take: 80,
     select: {
       code: true,
       name: true,
@@ -655,7 +654,7 @@ export async function executeAdminTool(
       case "catalog_search": {
         const query = typeof args.query === "string" ? args.query : "";
         const take = Math.min(15, Math.max(1, Number(args.take) || 8));
-        return catalogSearch(query, take);
+        return await catalogSearch(query, take);
       }
       case "stock_balances": {
         const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
