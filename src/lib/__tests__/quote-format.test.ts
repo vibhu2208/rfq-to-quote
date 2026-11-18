@@ -94,6 +94,19 @@ describe("quote footer lines", () => {
       line2: "Email: sales@example.com | Website: www.example.com",
     });
   });
+
+  it("peels email/website out of a joined address string onto line 2", () => {
+    expect(
+      quoteContactFooterLines({
+        address:
+          "Sector 62, Noida | Email: sales@example.com | Website: www.example.com",
+        phone: "0120-1234567",
+      })
+    ).toEqual({
+      line1: "Address: Sector 62, Noida | PH: 0120-1234567",
+      line2: "Email: sales@example.com | Website: www.example.com",
+    });
+  });
 });
 
 describe("quote dates use IST", () => {

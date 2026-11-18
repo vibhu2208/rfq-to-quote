@@ -252,6 +252,22 @@ export function quoteBankDetailsLine(company: {
   return [line1, line2].filter(Boolean).join("  ");
 }
 
+function peelContactField(
+  raw: string,
+  label: RegExp
+): { remainder: string; value: string | null } {
+  const match = raw.match(label);
+  if (!match?.[1]) return { remainder: raw.trim(), value: null };
+  const value = match[1].trim();
+  const remainder = raw
+    .replace(match[0], " ")
+    .replace(/\s*\|\s*\|\s*/g, " | ")
+    .replace(/^\s*\|\s*|\s*\|\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return { remainder, value: value || null };
+}
+
 export function quoteContactFooterLines(company: {
   address?: string;
   phone?: string;
@@ -259,14 +275,37 @@ export function quoteContactFooterLines(company: {
   email?: string;
   website?: string;
 }): QuoteFooterLines {
+  let address = (company.address || "").trim();
+  let email = (company.email || "").trim();
+  let website = (company.website || "").trim();
+
+  // If address was stored as one joined footer string, split digital bits out.
+  const fromEmail = peelContactField(
+    address,
+    /(?:^|\|\s*)Email:\s*([^|]+)/i
+  );
+  address = fromEmail.remainder;
+  if (!email && fromEmail.value) email = fromEmail.value;
+
+  const fromWeb = peelContactField(
+    address,
+    /(?:^|\|\s*)Website:\s*([^|]+)/i
+  );
+  address = fromWeb.remainder;
+  if (!website && fromWeb.value) website = fromWeb.value;
+
+  if (/^Address:\s*/i.test(address)) {
+    address = address.replace(/^Address:\s*/i, "").trim();
+  }
+
   const primary = [
-    company.address ? `Address: ${company.address}` : null,
+    address ? `Address: ${address}` : null,
     company.phone ? `PH: ${company.phone}` : null,
     company.mobile ? `Mobile: ${company.mobile}` : null,
   ].filter(Boolean);
   const digital = [
-    company.email ? `Email: ${company.email}` : null,
-    company.website ? `Website: ${company.website}` : null,
+    email ? `Email: ${email}` : null,
+    website ? `Website: ${website}` : null,
   ].filter(Boolean);
 
   return {
