@@ -1,16 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Percent } from "lucide-react";
 import { formatMoney } from "@/lib/tax";
 import {
   clampDiscountPercent,
+  grossLineSubtotal,
   headerDiscountAmount,
   previewDiscountedSubtotal,
   validateDiscountApplication,
+  validateFixedDiscountAmount,
   type QuoteDiscountMethod,
   type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
+import { formatPercentInput, sanitizePercentDraft } from "@/lib/percent-input";
 
 type PricedLine = {
   qty: number;
@@ -20,10 +23,17 @@ type PricedLine = {
 
 type Props = {
   percent: number;
+  /** Whole-quote fixed rupee amount. Mutually exclusive with percent. */
+  amount?: number;
+  amountMode?: boolean;
   lines: PricedLine[];
   methods: QuoteDiscountMethods;
   hasExistingDiscount?: boolean;
+  /** Subtotal the editor already shows (after discounts). */
+  currentSubtotal?: number;
   onPercentChange: (percent: number) => void;
+  onAmountChange?: (amount: number) => void;
+  onAmountModeChange?: (amountMode: boolean) => void;
   onMethodsChange: (methods: QuoteDiscountMethods) => void;
   onCancel: () => void;
   onApply: () => void;
@@ -32,10 +42,15 @@ type Props = {
 
 export function QuoteDiscountDialog({
   percent,
+  amount = 0,
+  amountMode = false,
   lines,
   methods,
   hasExistingDiscount = false,
+  currentSubtotal,
   onPercentChange,
+  onAmountChange,
+  onAmountModeChange,
   onMethodsChange,
   onCancel,
   onApply,
@@ -43,25 +58,42 @@ export function QuoteDiscountDialog({
 }: Props) {
   const [focused, setFocused] = useState(false);
   const [percentText, setPercentText] = useState(formatPercentInput(percent));
+  const [amountText, setAmountText] = useState(amount > 0 ? String(amount) : "");
+  const [seenPercent, setSeenPercent] = useState(percent);
+  const [seenAmount, setSeenAmount] = useState(amount);
+  if (!focused && percent !== seenPercent) {
+    setSeenPercent(percent);
+    setPercentText(formatPercentInput(percent));
+  }
+  if (!focused && amount !== seenAmount) {
+    setSeenAmount(amount);
+    setAmountText(amount > 0 ? String(amount) : "");
+  }
 
-  useEffect(() => {
-    if (!focused) setPercentText(formatPercentInput(percent));
-  }, [percent, focused]);
-
-  const listSubtotal = previewDiscountedSubtotal(lines, 0, {
-    method: "header",
-  });
-  const finalSubtotal = previewDiscountedSubtotal(lines, percent, methods);
-  const headerAmount = headerDiscountAmount(listSubtotal, percent);
+  const gross = grossLineSubtotal(lines);
+  const shownCurrent = currentSubtotal ?? gross;
+  const usingAmount = amountMode && methods.method === "header";
+  const finalSubtotal = usingAmount
+    ? Math.max(0, Math.round((gross - amount) * 100) / 100)
+    : previewDiscountedSubtotal(lines, percent, methods);
+  const headerAmount = usingAmount
+    ? amount
+    : headerDiscountAmount(gross, percent);
   const lineSubtotalAfter = previewDiscountedSubtotal(lines, percent, {
     method: "lines",
   });
-  const clearing = !(percent > 0);
-  const validation = validateDiscountApplication({
+  const clearing = usingAmount ? !(amount > 0) : !(percent > 0);
+  const percentValidation = validateDiscountApplication({
     percent,
     methods,
     lines,
   });
+  const amountValidation = validateFixedDiscountAmount(amount, gross);
+  const validation = usingAmount
+    ? amount > 0
+      ? amountValidation
+      : { ok: true as const }
+    : percentValidation;
   // Clear only when an applied discount exists; otherwise require a positive %.
   const canApply = clearing
     ? hasExistingDiscount
@@ -118,20 +150,72 @@ export function QuoteDiscountDialog({
                 : "Apply client discount"}
             </h2>
             <p className="mt-1 text-sm text-mid-green">
-              Choose one discount type — whole quote or per product, not both.
-              Current subtotal {formatMoney(listSubtotal)}. Set % to 0 to remove.
+              Choose one discount: a whole-quote percent, a whole-quote rupee
+              amount, or a per-product percent. They are not combined.
+            </p>
+            <p className="mt-2 text-xs text-mid-green">
+              {shownCurrent === gross ? (
+                <>Subtotal on the quote {formatMoney(gross)} (no discount yet).</>
+              ) : (
+                <>
+                  Gross (before discounts) {formatMoney(gross)}. Discounted
+                  subtotal on the quote {formatMoney(shownCurrent)}.
+                </>
+              )}
             </p>
           </div>
         </div>
 
+        {methods.method === "header" ? (
+          <div className="mt-4 flex gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => onAmountModeChange?.(false)}
+              className={`rounded-full px-3 py-1 ${
+                !usingAmount
+                  ? "bg-mid-green text-background"
+                  : "border border-light-green/40 text-mid-green"
+              }`}
+            >
+              Percent
+            </button>
+            <button
+              type="button"
+              onClick={() => onAmountModeChange?.(true)}
+              className={`rounded-full px-3 py-1 ${
+                usingAmount
+                  ? "bg-mid-green text-background"
+                  : "border border-light-green/40 text-mid-green"
+              }`}
+            >
+              Fixed ₹
+            </button>
+          </div>
+        ) : null}
+
+        {usingAmount ? (
+          <label className="mt-4 block text-sm">
+            <span className="mb-1 block text-mid-green">Discount amount (₹)</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              value={amountText}
+              onFocus={() => setFocused(true)}
+              onChange={(e) => {
+                const raw = sanitizePercentDraft(e.target.value);
+                setAmountText(raw);
+                onAmountChange?.(raw.trim() === "" ? 0 : Number(raw) || 0);
+              }}
+              onBlur={() => setFocused(false)}
+              className="h-9 w-36 rounded-lg border border-light-green/40 bg-white/60 px-3 text-right tabular-nums outline-none focus:border-mid-green"
+            />
+          </label>
+        ) : (
         <label className="mt-5 block text-sm">
           <span className="mb-1 block text-mid-green">Discount %</span>
           <input
-            type="number"
-            min={0}
-            max={100}
-            step={1}
-            inputMode="numeric"
+            type="text"
+            inputMode="decimal"
             value={percentText}
             onFocus={() => setFocused(true)}
             onChange={(e) => {
@@ -152,6 +236,7 @@ export function QuoteDiscountDialog({
             className="h-9 w-28 rounded-lg border border-light-green/40 bg-white/60 px-3 text-right tabular-nums outline-none focus:border-mid-green"
           />
         </label>
+        )}
 
         <fieldset className="mt-4 grid gap-2">
           <legend className="sr-only">Discount type</legend>
@@ -174,9 +259,11 @@ export function QuoteDiscountDialog({
                 Whole quote discount
               </span>
               <span className="mt-1 block text-xs leading-relaxed text-mid-green">
-                Keep product list prices. Show {displayPercent(percent)}% (
-                {formatMoney(headerAmount)}) as a single discount line on the
-                quotation.
+                Keep product list prices. Show{" "}
+                {usingAmount
+                  ? formatMoney(headerAmount)
+                  : `${displayPercent(percent)}% (${formatMoney(headerAmount)})`}{" "}
+                as a single discount on the quotation.
               </span>
             </span>
           </label>
@@ -207,7 +294,7 @@ export function QuoteDiscountDialog({
           </label>
         </fieldset>
 
-        {percent > 0 ? (
+        {percent > 0 || (usingAmount && amount > 0) ? (
           <p className="mt-3 text-xs text-mid-green">
             After apply: subtotal before tax ≈ {formatMoney(finalSubtotal)}
             {methods.method === "header"
@@ -253,33 +340,9 @@ export function QuoteDiscountDialog({
   );
 }
 
-/** Empty while zero so typing `9` never becomes `09`. */
-function formatPercentInput(percent: number) {
-  if (!Number.isFinite(percent) || percent <= 0) return "";
-  // Strip float noise / leading zeros (9 not 09, 10 not 10.00).
-  const rounded = Math.round(percent * 100) / 100;
-  if (Number.isInteger(rounded)) return String(rounded);
-  return String(rounded);
-}
-
 function displayPercent(percent: number) {
   if (!Number.isFinite(percent) || percent <= 0) return 0;
   const rounded = Math.round(percent * 100) / 100;
   return Number.isInteger(rounded) ? rounded : rounded;
 }
 
-/** Keep digits (and one optional decimal); drop leading zeros like 09 → 9. */
-function sanitizePercentDraft(raw: string) {
-  const cleaned = raw.replace(/[^\d.]/g, "");
-  if (cleaned === "") return "";
-  const dot = cleaned.indexOf(".");
-  if (dot === -1) {
-    return String(Number(cleaned));
-  }
-  const whole = cleaned.slice(0, dot);
-  const frac = cleaned.slice(dot + 1).replace(/\./g, "");
-  const wholeNorm = whole === "" ? "0" : String(Number(whole));
-  // Preserve trailing dot while typing 9. → "9."
-  if (cleaned.endsWith(".") && frac === "") return `${wholeNorm}.`;
-  return `${wholeNorm}.${frac}`;
-}

@@ -35,6 +35,8 @@ const lineSchema = z.object({
   warrantyUnit: z.enum(["years", "months", "days"]).optional().default("years"),
   warrantyService: z.enum(["", "onsite", "offsite", "both"]).optional().default(""),
   taxRate: z.coerce.number().nonnegative().default(18),
+  hsnCode: z.string().optional().default(""),
+  customItem: z.boolean().optional().default(false),
   sortOrder: z.coerce.number().int().optional().default(0),
 });
 
@@ -63,7 +65,10 @@ const quoteSchema = z.object({
   closingText: z.string().optional(),
   quoteDate: z.string().optional(),
   status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED"]).optional(),
-  manualOverrides: z.record(z.string(), z.boolean()).optional(),
+  manualOverrides: z
+    .record(z.string(), z.union([z.boolean(), z.number()]))
+    .optional(),
+  expectedVersion: z.number().int().positive().optional(),
   subtotal: moneyAmount.optional(),
   gstAmount: moneyAmount.optional(),
   grandTotal: moneyAmount.optional(),
@@ -234,14 +239,17 @@ export async function PUT(req: NextRequest, { params }: Params) {
       warrantyUnit: l.warrantyUnit ?? "years",
       warrantyService: l.warrantyService ?? "",
       taxRate: l.taxRate,
+      hsnCode: (l.hsnCode || "").replace(/\D/g, "").slice(0, 8),
+      customItem: Boolean(l.customItem),
       lineTotal: calc.lineTotals[i] ?? l.qty * l.unitPrice,
       sortOrder: l.sortOrder ?? i,
     }))
   );
 
   try {
+    const expectedVersion = data.expectedVersion ?? null;
     const rows = await prisma.$queryRaw<
-      Array<{ id: string; quoteNumber: string; status: string }>
+      Array<{ id: string; quoteNumber: string; status: string; version: number }>
     >`
       WITH upd AS (
         UPDATE "Quote"
@@ -283,9 +291,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
             WHEN ${status}::text = 'SENT' AND "sentAt" IS NULL THEN NOW()
             ELSE "sentAt"
           END,
+          "version" = "version" + 1,
           "updatedAt" = NOW()
         WHERE id = ${id}
-        RETURNING id, "quoteNumber", status
+          AND (
+            ${expectedVersion}::int IS NULL
+            OR "version" = ${expectedVersion}::int
+          )
+        RETURNING id, "quoteNumber", status, version
       ),
       del AS (
         DELETE FROM "QuoteLineItem" WHERE "quoteId" IN (SELECT id FROM upd)
@@ -295,7 +308,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
           "id", "quoteId", "productId", "description", "aliasName",
           "qty", "unit", "unitPrice", "costPrice", "costVendorName",
           "discountPercent", "warrantyQty", "warrantyUnit", "warrantyService",
-          "taxRate", "lineTotal", "sortOrder"
+          "taxRate", "hsnCode", "customItem", "lineTotal", "sortOrder"
         )
         SELECT
           COALESCE(NULLIF(e->>'id', ''), replace(gen_random_uuid()::text, '-', '')),
@@ -313,17 +326,39 @@ export async function PUT(req: NextRequest, { params }: Params) {
           COALESCE(e->>'warrantyUnit', 'years'),
           COALESCE(e->>'warrantyService', ''),
           COALESCE((e->>'taxRate')::numeric, 18),
+          COALESCE(e->>'hsnCode', ''),
+          COALESCE((e->>'customItem')::boolean, false),
           COALESCE((e->>'lineTotal')::numeric, 0),
           COALESCE((e->>'sortOrder')::int, 0)
         FROM jsonb_array_elements(${linesJson}::jsonb) AS e
         WHERE EXISTS (SELECT 1 FROM upd)
           AND jsonb_array_length(${linesJson}::jsonb) > 0
       )
-      SELECT id, "quoteNumber", status::text AS status FROM upd
+      SELECT id, "quoteNumber", status::text AS status, version FROM upd
     `;
 
     const quote = rows[0];
-    if (!quote) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!quote) {
+      const existing = await prisma.quote.findUnique({
+        where: { id },
+        select: { version: true },
+      });
+      if (
+        existing &&
+        data.expectedVersion != null &&
+        existing.version !== data.expectedVersion
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "This quote was saved in another tab. Reload before saving so that version is not overwritten.",
+            code: "conflict",
+          },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
     if (status) {
       try {

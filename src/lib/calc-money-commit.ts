@@ -8,13 +8,13 @@ export type MoneyCommitOpts = {
 };
 
 export type MoneyCommitResult =
-  | { ok: true; value: number; clampedToMax?: boolean }
-  | { ok: false; reason: "below_min" | "invalid" };
+  | { ok: true; value: number }
+  | { ok: false; reason: "below_min" | "above_max" | "invalid" };
 
 /**
  * Resolve a typed/evaluated money edit.
- * Negative (below min) values are rejected so the caller can keep the prior
- * price — never coerce an invalid sell price into a free ₹0 line.
+ * Values outside min/max are rejected so the caller keeps the prior price.
+ * An oversized sell price must not be clamped and saved.
  */
 export function resolveMoneyCommit(
   next: number,
@@ -23,17 +23,15 @@ export function resolveMoneyCommit(
   if (!Number.isFinite(next)) return { ok: false, reason: "invalid" };
   if (next < opts.min) return { ok: false, reason: "below_min" };
 
-  let value = round2(next);
-  let clampedToMax = false;
+  const value = round2(next);
   if (
     typeof opts.max === "number" &&
     Number.isFinite(opts.max) &&
     value > opts.max
   ) {
-    value = round2(opts.max);
-    clampedToMax = true;
+    return { ok: false, reason: "above_max" };
   }
-  return { ok: true, value, clampedToMax };
+  return { ok: true, value };
 }
 
 export function formatMoneyCommitRangeError(

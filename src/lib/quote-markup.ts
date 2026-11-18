@@ -6,12 +6,44 @@ export type MarkupLine = {
   costPrice?: number | null;
 };
 
-/** Prefer vendor cost; fall back to current sell when cost is missing. */
-export function markupBasePrice(line: MarkupLine): number {
-  if (line.costPrice != null && Number(line.costPrice) > 0) {
-    return Number(line.costPrice);
+export type MarkupBaseOptions = {
+  /** When true, lines with no cost use the current sell price as the base. */
+  allowSellFallback?: boolean;
+};
+
+/**
+ * Vendor cost is the markup base.
+ * Missing cost stays missing (null) unless the user explicitly allows sell fallback.
+ * A stored cost of 0 is a real zero, not a missing cost.
+ */
+export function markupBasePrice(
+  line: MarkupLine,
+  opts?: MarkupBaseOptions
+): number | null {
+  if (line.costPrice != null && Number.isFinite(Number(line.costPrice))) {
+    const cost = Number(line.costPrice);
+    if (cost > 0) return cost;
+    if (cost === 0) return 0;
   }
-  return Math.max(0, Number(line.unitPrice) || 0);
+  if (opts?.allowSellFallback) {
+    return Math.max(0, Number(line.unitPrice) || 0);
+  }
+  return null;
+}
+
+export function lineHasCost(line: MarkupLine): boolean {
+  return line.costPrice != null && Number(line.costPrice) > 0;
+}
+
+/** Tax-exclusive margin. Missing cost is not treated as ₹0. */
+export function lineMargin(
+  sell: number,
+  cost: number | null | undefined
+): { missing: true } | { missing: false; amount: number; percent: number | null } {
+  if (cost == null || !Number.isFinite(Number(cost))) return { missing: true };
+  const amount = round2(Number(sell) - Number(cost));
+  const percent = Number(sell) > 0 ? round2((amount / Number(sell)) * 100) : null;
+  return { missing: false, amount, percent };
 }
 
 export function clampMarkupPercent(percent: number): number {
@@ -31,33 +63,39 @@ export function markedUpUnitPrice(base: number, percent: number): number {
 }
 
 /**
- * Raise each unit (sell) price by `percent` over vendor cost when present,
- * otherwise over the current unit price. Leftover paise from rounding is
- * absorbed on the last priced line so the subtotal matches the target.
+ * Raise each unit (sell) price by `percent` over vendor cost.
+ * Lines with no cost are left unchanged unless `allowSellFallback` is set.
+ * Leftover paise from rounding is absorbed on the last priced line.
  */
 export function applyMarkupPercentToLines<T extends MarkupLine>(
   lines: T[],
-  percent: number
+  percent: number,
+  opts?: MarkupBaseOptions
 ): T[] {
   const p = clampMarkupPercent(percent);
-  const bases = lines.map((line) => markupBasePrice(line));
-  const baseGrosses = lines.map((line, i) =>
-    round2(Number(line.qty) * bases[i])
-  );
+  const bases = lines.map((line) => markupBasePrice(line, opts));
+  const baseGrosses = lines.map((line, i) => {
+    const base = bases[i];
+    if (base == null) return 0;
+    return round2(Number(line.qty) * base);
+  });
   const baseSubtotal = round2(baseGrosses.reduce((sum, gross) => sum + gross, 0));
   const targetSubtotal = round2(baseSubtotal * (1 + p / 100));
 
   if (p === 0 || baseSubtotal <= 0) {
     return lines.map((line, i) => ({
       ...line,
-      unitPrice: round2(bases[i]),
+      unitPrice: bases[i] == null ? line.unitPrice : round2(bases[i]!),
     }));
   }
 
   const next = lines.map((line) => ({ ...line }));
   const adjustable = next
     .map((_, index) => index)
-    .filter((index) => Number(next[index].qty) > 0 && bases[index] > 0);
+    .filter(
+      (index) =>
+        Number(next[index].qty) > 0 && bases[index] != null && bases[index]! > 0
+    );
 
   if (adjustable.length === 0) return next;
 
@@ -105,12 +143,13 @@ export function applyMarkupPercentToLines<T extends MarkupLine>(
     : next;
 }
 
+/** Sum of real vendor costs only. Missing cost is skipped, not replaced with sell. */
 export function costSubtotal(lines: MarkupLine[]): number {
   return round2(
     lines.reduce((sum, line) => {
       const base = markupBasePrice(line);
       const qty = Number(line.qty);
-      if (!(qty > 0) || !(base > 0)) return sum;
+      if (base == null || !(qty > 0) || !(base > 0)) return sum;
       return sum + round2(qty * base);
     }, 0)
   );
