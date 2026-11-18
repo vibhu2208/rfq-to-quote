@@ -80,10 +80,9 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     },
     lineItems: quote.lineItems.map((li) => {
       const qty = decimalToNumber(li.qty);
-      const unitPrice = effectiveUnitPrice(
-        decimalToNumber(li.unitPrice),
-        decimalToNumber(li.discountPercent)
-      );
+      const listPrice = decimalToNumber(li.unitPrice);
+      const discountPercent = decimalToNumber(li.discountPercent);
+      const unitPrice = effectiveUnitPrice(listPrice, discountPercent);
       const taxRate = decimalToNumber(li.taxRate);
       const taxable = round2(qty * unitPrice);
       const taxAmount = withGst ? round2((taxable * taxRate) / 100) : 0;
@@ -92,7 +91,8 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
         aliasName: li.aliasName || "",
         qty,
         unit: li.unit,
-        unitPrice,
+        unitPrice: listPrice,
+        discountPercent,
         taxRate,
         lineTotal: taxable,
         taxAmount,

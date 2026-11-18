@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronDown, Plus, Search, Sparkles, Upload, X } from "lucide-react";
 import {
+  quoteListExportHref,
   quoteListHasFilters,
   quoteListQuery,
   QUOTE_LIST_STATUSES,
@@ -251,25 +252,43 @@ export function QuotesFilters({
 }) {
   const router = useRouter();
   const [q, setQ] = useState(filters.q);
+  const [client, setClient] = useState(filters.client);
+  const [minAmount, setMinAmount] = useState(filters.min);
+  const [maxAmount, setMaxAmount] = useState(filters.max);
   const [dates, setDates] = useState({ from: filters.from, to: filters.to });
-  const filtered = quoteListHasFilters({ ...filters, q, from: dates.from, to: dates.to });
+  const filtered = quoteListHasFilters({
+    ...filters,
+    q,
+    client,
+    min: minAmount,
+    max: maxAmount,
+    from: dates.from,
+    to: dates.to,
+  });
 
   useEffect(() => {
     setQ(filters.q);
+    setClient(filters.client);
+    setMinAmount(filters.min);
+    setMaxAmount(filters.max);
     setDates({ from: filters.from, to: filters.to });
-  }, [filters.q, filters.from, filters.to]);
+  }, [filters.q, filters.client, filters.min, filters.max, filters.from, filters.to]);
 
   function navigate(next: Partial<QuoteListFilters>) {
     const href = quoteListQuery({
       ...filters,
       q: next.q ?? q,
+      client: next.client ?? client,
+      min: next.min ?? minAmount,
+      max: next.max ?? maxAmount,
       from: next.from ?? dates.from,
       to: next.to ?? dates.to,
-      client: "",
-      product: "",
+      product: filters.product,
       status: next.status ?? filters.status,
       gst: next.gst ?? filters.gst,
       assist: next.assist ?? filters.assist,
+      sort: next.sort ?? filters.sort,
+      dir: next.dir ?? filters.dir,
       page: 1,
     });
     startTransition(() => {
@@ -278,11 +297,21 @@ export function QuotesFilters({
   }
 
   useEffect(() => {
-    if (q === filters.q) return;
-    const t = window.setTimeout(() => navigate({ q }), 250);
+    if (
+      q === filters.q &&
+      client === filters.client &&
+      minAmount === filters.min &&
+      maxAmount === filters.max
+    ) {
+      return;
+    }
+    const t = window.setTimeout(
+      () => navigate({ q, client, min: minAmount, max: maxAmount }),
+      300
+    );
     return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce search text only
-  }, [q]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce text filters only
+  }, [q, client, minAmount, maxAmount]);
 
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -328,6 +357,38 @@ export function QuotesFilters({
             className="h-9 w-full rounded-full border-0 bg-dark-secondary/[0.05] pl-9 pr-3 text-sm outline-none placeholder:text-mid-green/60 focus:bg-white focus:ring-1 focus:ring-mid-green/30"
           />
         </div>
+
+        <input
+          type="search"
+          name="client"
+          value={client}
+          autoComplete="off"
+          onChange={(e) => setClient(e.target.value)}
+          placeholder="Client"
+          aria-label="Filter by client"
+          className={`${fieldClass} w-[8.5rem]`}
+        />
+
+        <input
+          inputMode="decimal"
+          name="min"
+          value={minAmount}
+          autoComplete="off"
+          onChange={(e) => setMinAmount(e.target.value)}
+          placeholder="Min ₹"
+          aria-label="Minimum total"
+          className={`${fieldClass} w-[5.75rem]`}
+        />
+        <input
+          inputMode="decimal"
+          name="max"
+          value={maxAmount}
+          autoComplete="off"
+          onChange={(e) => setMaxAmount(e.target.value)}
+          placeholder="Max ₹"
+          aria-label="Maximum total"
+          className={`${fieldClass} w-[5.75rem]`}
+        />
 
         <select
           name="status"
@@ -381,6 +442,20 @@ export function QuotesFilters({
         ) : null}
 
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <a
+            href={quoteListExportHref({
+              ...filters,
+              q,
+              client,
+              min: minAmount,
+              max: maxAmount,
+              from: dates.from,
+              to: dates.to,
+            })}
+            className="inline-flex h-9 items-center rounded-full border border-light-green/35 bg-white px-3 text-sm font-medium text-dark-secondary hover:bg-light-green/15"
+          >
+            Export
+          </a>
           <QuotesNewButton />
           <Link
             href="/quotes/generate"

@@ -17,6 +17,55 @@ export function formatQuoteAmount(n: number): string {
   }).format(n || 0);
 }
 
+export type QuoteGstSplitLabel = "IGST" | "CGST_SGST" | "NONE";
+
+/** Name the tax the quote actually computed (interstate IGST vs intra-state CGST+SGST). */
+export function quoteGstSplitFromAmounts(input: {
+  withGst: boolean;
+  cgstAmount?: number;
+  sgstAmount?: number;
+  igstAmount?: number;
+}): QuoteGstSplitLabel {
+  if (!input.withGst) return "NONE";
+  const igst = Number(input.igstAmount) || 0;
+  const cgst = Number(input.cgstAmount) || 0;
+  const sgst = Number(input.sgstAmount) || 0;
+  if (igst > 0 && cgst <= 0 && sgst <= 0) return "IGST";
+  if (cgst > 0 || sgst > 0) return "CGST_SGST";
+  return "NONE";
+}
+
+function halfMoney(amount: number): [number, number] {
+  const first = Math.round((amount / 2) * 100) / 100;
+  const second = Math.round((amount - first) * 100) / 100;
+  return [first, second];
+}
+
+function halfRateLabel(rate: number): string {
+  const half = rate / 2;
+  return Number.isInteger(half) ? String(half) : String(half);
+}
+
+function pushGstBucket(
+  parts: string[],
+  rate: number,
+  tax: number,
+  split?: QuoteGstSplitLabel
+) {
+  if (split === "IGST") {
+    parts.push(`IGST@${rate}% ${formatQuoteAmount(tax)}`);
+    return;
+  }
+  if (split === "CGST_SGST") {
+    const [cgst, sgst] = halfMoney(tax);
+    const half = halfRateLabel(rate);
+    parts.push(`CGST@${half}% ${formatQuoteAmount(cgst)}`);
+    parts.push(`SGST@${half}% ${formatQuoteAmount(sgst)}`);
+    return;
+  }
+  parts.push(`GST@${rate}% ${formatQuoteAmount(tax)}`);
+}
+
 export function formatTaxAnalysis(input: {
   taxable: number;
   withGst: boolean;
@@ -27,15 +76,25 @@ export function formatTaxAnalysis(input: {
   deliveryCharge?: number;
   otherTaxAmount?: number;
   otherTaxLabel?: string;
+  /** When set, tax lines say IGST or CGST+SGST instead of a generic GST. */
+  gstSplit?: QuoteGstSplitLabel;
 }): string {
   const parts = [`Tax Analysis: Taxable Amount: ${formatQuoteAmount(input.taxable)}`];
   if (input.withGst) {
     if (input.gstBuckets.length > 0) {
       for (const [rate, tax] of input.gstBuckets) {
-        parts.push(`GST@${rate}% ${formatQuoteAmount(tax)}`);
+        pushGstBucket(parts, rate, tax, input.gstSplit);
       }
     } else if (input.gstAmount > 0) {
-      parts.push(`GST ${formatQuoteAmount(input.gstAmount)}`);
+      if (input.gstSplit === "IGST") {
+        parts.push(`IGST ${formatQuoteAmount(input.gstAmount)}`);
+      } else if (input.gstSplit === "CGST_SGST") {
+        const [cgst, sgst] = halfMoney(input.gstAmount);
+        parts.push(`CGST ${formatQuoteAmount(cgst)}`);
+        parts.push(`SGST ${formatQuoteAmount(sgst)}`);
+      } else {
+        parts.push(`GST ${formatQuoteAmount(input.gstAmount)}`);
+      }
     }
   }
   if (input.discountAmount && input.discountAmount > 0) {
@@ -200,6 +259,48 @@ export function formatQuoteQty(
   const q = Number.isInteger(qty) ? String(qty) : String(qty);
   if (!quoteShowUnit(showUnit)) return q;
   return `${q} ${formatQuoteUnit(unit)}`;
+}
+
+/** Customer-facing rate: list price, plus a line discount when one was applied. */
+export function formatQuoteRateLabel(
+  unitPrice: number,
+  discountPercent?: number | null
+): { amount: string; discountLabel: string | null } {
+  const pct = Number(discountPercent);
+  const hasDiscount = Number.isFinite(pct) && pct > 0;
+  const shown = hasDiscount ? Math.min(100, Math.round(pct * 100) / 100) : 0;
+  const pretty = Number.isInteger(shown) ? String(shown) : String(shown);
+  return {
+    amount: formatQuoteAmount(unitPrice || 0),
+    discountLabel: hasDiscount ? `less ${pretty}%` : null,
+  };
+}
+
+/**
+ * Buyer meta line on the quotation. Blank phone and GSTIN are omitted so the
+ * document does not print dangling "M: ." or "GSTIN:" labels.
+ */
+export function quoteBuyerContactParts(input: {
+  state?: string | null;
+  phone?: string | null;
+  gstin?: string | null;
+}): { lead: string; gstin: string } {
+  const state = input.state?.trim() || "";
+  const phone = input.phone?.trim() || "";
+  const gstin = input.gstin?.trim() || "";
+  return {
+    lead: [state, phone ? `M: ${phone}` : ""].filter(Boolean).join("  "),
+    gstin,
+  };
+}
+
+export function quoteBuyerContactLine(input: {
+  state?: string | null;
+  phone?: string | null;
+  gstin?: string | null;
+}): string {
+  const { lead, gstin } = quoteBuyerContactParts(input);
+  return [lead, gstin ? `GSTIN: ${gstin}` : ""].filter(Boolean).join("  ");
 }
 
 export const DEFAULT_QUOTE_TAGLINE = "ENABLING IT   |   ISO 9001:2015";

@@ -19,6 +19,16 @@ import {
   buyerRequiredMessage,
 } from "@/lib/quote-buyer-required";
 import { useToast } from "@/components/app-toast";
+import {
+  downloadQuotePdf,
+  openPrintWindow,
+  PRINT_BLOCKED_MESSAGE,
+  printQuotePdf,
+} from "@/lib/quote-pdf-client";
+import {
+  confirmZeroPricedExport,
+  type ZeroPricedLineInput,
+} from "@/lib/quote-zero-price";
 
 const QuotePdfPreviewModal = dynamic(
   () => import("@/components/quote-pdf-preview-modal").then((m) => m.QuotePdfPreviewModal),
@@ -42,9 +52,11 @@ export type QuoteRowActionQuote = {
 
 export function QuoteRowActions({
   quote,
+  lines = [],
   attachmentCount = 0,
 }: {
   quote: QuoteRowActionQuote;
+  lines?: ZeroPricedLineInput[];
   attachmentCount?: number;
 }) {
   const { toast } = useToast();
@@ -74,13 +86,26 @@ export function QuoteRowActions({
     return false;
   }
 
+  function allowZeroPricedExport(): boolean {
+    return confirmZeroPricedExport(lines, (message) => window.confirm(message));
+  }
+
   async function onPrint() {
     if (!guardExport()) return;
+    const popup = openPrintWindow();
+    if (popup.blocked || !popup.win) {
+      toast(PRINT_BLOCKED_MESSAGE, "error");
+      return;
+    }
+    if (!allowZeroPricedExport()) {
+      popup.win.close();
+      return;
+    }
     setBusy("print");
     try {
-      const { printQuotePdf } = await import("@/lib/quote-pdf-client");
-      await printQuotePdf(quote.id);
+      await printQuotePdf(quote.id, popup);
     } catch (e) {
+      if (popup.win && !popup.win.closed) popup.win.close();
       toast(e instanceof Error ? e.message : "Print failed", "error");
     } finally {
       setBusy(null);
@@ -89,9 +114,9 @@ export function QuoteRowActions({
 
   async function onDownload() {
     if (!guardExport()) return;
+    if (!allowZeroPricedExport()) return;
     setBusy("download");
     try {
-      const { downloadQuotePdf } = await import("@/lib/quote-pdf-client");
       await downloadQuotePdf(quote.id, fileName);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Download failed", "error");

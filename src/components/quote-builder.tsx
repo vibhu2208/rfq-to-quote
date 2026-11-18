@@ -68,7 +68,13 @@ import {
   type ClientHit,
 } from "@/components/client-company-field";
 import { buyerRequiredGaps } from "@/lib/quote-buyer-required";
-import { downloadQuotePdf, printQuotePdf } from "@/lib/quote-pdf-client";
+import {
+  downloadQuotePdf,
+  openPrintWindow,
+  PRINT_BLOCKED_MESSAGE,
+  printQuotePdf,
+} from "@/lib/quote-pdf-client";
+import { confirmZeroPricedExport } from "@/lib/quote-zero-price";
 import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 import { QuoteCalculator } from "@/components/quote-calculator";
 import { CalcMoneyInput } from "@/components/calc-money-input";
@@ -521,9 +527,9 @@ export function QuoteBuilder({
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewSection, setPreviewSection] = useState<PreviewSection>("buyer");
   const [buyerOpen, setBuyerOpen] = useState(false);
-  const [buyerIntent, setBuyerIntent] = useState<"edit" | "pdf" | "send" | null>(
-    null
-  );
+  const [buyerIntent, setBuyerIntent] = useState<
+    "edit" | "pdf" | "print" | "send" | null
+  >(null);
   const [buyerError, setBuyerError] = useState("");
   const [hsnConfirmOpen, setHsnConfirmOpen] = useState(false);
   const [unitConfirmOpen, setUnitConfirmOpen] = useState(false);
@@ -618,10 +624,45 @@ export function QuoteBuilder({
     setSendOpen(true);
   }
 
-  function openBuyerPanel(intent: "edit" | "pdf" | "send") {
+  function openBuyerPanel(intent: "edit" | "pdf" | "print" | "send") {
     setBuyerIntent(intent);
     setBuyerError("");
     setBuyerOpen(true);
+  }
+
+  function allowZeroPricedExport(): boolean {
+    return confirmZeroPricedExport(formRef.current.lineItems, (message) =>
+      window.confirm(message)
+    );
+  }
+
+  function startPrint() {
+    const popup = openPrintWindow();
+    if (popup.blocked || !popup.win) {
+      setMsg(PRINT_BLOCKED_MESSAGE);
+      void saveQuote();
+      return;
+    }
+    if (!allowZeroPricedExport()) {
+      popup.win.close();
+      void saveQuote();
+      return;
+    }
+    void (async () => {
+      const ok = await saveQuote();
+      const id = formRef.current.id;
+      if (!ok || !id) {
+        popup.win?.close();
+        setMsg("Could not save quote before printing");
+        return;
+      }
+      try {
+        await printQuotePdf(id, popup);
+      } catch (e) {
+        if (popup.win && !popup.win.closed) popup.win.close();
+        setMsg(e instanceof Error ? e.message : "Print failed");
+      }
+    })();
   }
 
   function closeBuyerPanel() {
@@ -641,27 +682,28 @@ export function QuoteBuilder({
         openBuyerPanel("pdf");
         return;
       }
+      if (!allowZeroPricedExport()) return;
       await downloadPdf();
     })();
   }
 
   function requestPrint() {
-    void (async () => {
-      const ok = await saveQuote();
-      if (!ok || !formRef.current.id) {
-        setMsg("Could not save quote before printing");
-        return;
-      }
-      if (buyerGaps(formRef.current).length > 0) {
-        openBuyerPanel("pdf");
-        return;
-      }
-      try {
-        await printQuotePdf(formRef.current.id);
-      } catch {
-        setMsg("Print failed");
-      }
-    })();
+    if (buyerGaps(formRef.current).length > 0) {
+      void (async () => {
+        const ok = await saveQuote();
+        if (!ok || !formRef.current.id) {
+          setMsg("Could not save quote before printing");
+          return;
+        }
+        if (buyerGaps(formRef.current).length > 0) {
+          openBuyerPanel("print");
+          return;
+        }
+        startPrint();
+      })();
+      return;
+    }
+    startPrint();
   }
 
   function requestSend() {
@@ -688,7 +730,15 @@ export function QuoteBuilder({
     const intent = buyerIntent;
     closeBuyerPanel();
     if (intent === "pdf") {
+      if (!allowZeroPricedExport()) {
+        void saveQuote();
+        return;
+      }
       void downloadPdf();
+      return;
+    }
+    if (intent === "print") {
+      startPrint();
       return;
     }
     if (intent === "send") {
@@ -2209,11 +2259,13 @@ export function QuoteBuilder({
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 id="buyer-details-title" className="text-lg font-semibold">
-                  {buyerIntent === "pdf"
-                    ? "Fill buyer details to generate PDF"
-                    : buyerIntent === "send"
-                      ? "Fill buyer details to send quote"
-                      : "Buyer details"}
+                  {buyerIntent === "print"
+                    ? "Fill buyer details to print"
+                    : buyerIntent === "pdf"
+                      ? "Fill buyer details to generate PDF"
+                      : buyerIntent === "send"
+                        ? "Fill buyer details to send quote"
+                        : "Buyer details"}
                 </h2>
                 <p className="mt-1 text-sm text-mid-green">
                   Company name, address, and state are required on the quotation.
@@ -2247,11 +2299,13 @@ export function QuoteBuilder({
                 onClick={() => void confirmBuyer()}
                 className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
               >
-                {buyerIntent === "pdf"
-                  ? "Continue to PDF"
-                  : buyerIntent === "send"
-                    ? "Continue to send"
-                    : "Done"}
+                {buyerIntent === "print"
+                  ? "Continue to print"
+                  : buyerIntent === "pdf"
+                    ? "Continue to PDF"
+                    : buyerIntent === "send"
+                      ? "Continue to send"
+                      : "Done"}
               </button>
             </div>
           </div>
@@ -2627,7 +2681,14 @@ export function QuoteBuilder({
                       </th>
                       <th className="px-1.5 py-1.5 font-medium">Warranty</th>
                       <th className="px-1.5 py-1.5 font-medium">Tax%</th>
-                      <th className="px-2 py-1.5 text-right text-xs font-semibold">Total</th>
+                      <th className="px-2 py-1.5 text-right text-xs font-semibold leading-tight">
+                        Total
+                        {form.withGst ? (
+                          <span className="mt-0.5 block text-[9px] font-medium normal-case tracking-normal text-mid-green">
+                            excl. GST
+                          </span>
+                        ) : null}
+                      </th>
                       <th className="px-1 py-1.5"></th>
                     </tr>
                   </thead>
@@ -3016,7 +3077,12 @@ export function QuoteBuilder({
                           />
                         </td>
                         <td className="px-2 py-1.5 text-right align-middle text-base font-semibold tabular-nums text-dark-primary">
-                          {formatMoney(calc.lineTotals[idx] ?? 0)}
+                          <div>{formatMoney(calc.lineTotals[idx] ?? 0)}</div>
+                          {form.withGst ? (
+                            <div className="text-[10px] font-normal normal-case tracking-normal text-mid-green">
+                              excl. GST
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-1 py-1.5 align-middle">
                           <button
@@ -3199,7 +3265,10 @@ export function QuoteBuilder({
                     </>
                   ) : null}
                   <label className="flex items-center justify-between gap-3">
-                    <span>Subtotal {form.manualOverrides.subtotal ? "(manual)" : ""}</span>
+                    <span>
+                      {form.withGst ? "Subtotal excl. GST" : "Subtotal"}
+                      {form.manualOverrides.subtotal ? " (manual)" : ""}
+                    </span>
                     <input
                       type="number"
                       step="0.01"
@@ -3236,7 +3305,7 @@ export function QuoteBuilder({
                   ) : null}
                   <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
                     <span className="text-sm font-semibold">
-                      Grand total
+                      {form.withGst ? "Grand total incl. GST" : "Grand total"}
                       {form.manualOverrides.grandTotal ? " · man" : ""}
                     </span>
                     <input
@@ -3246,7 +3315,7 @@ export function QuoteBuilder({
                       onChange={(e) =>
                         setOverride("grandTotal", Number(e.target.value))
                       }
-                      aria-label="Grand total"
+                      aria-label={form.withGst ? "Grand total incl. GST" : "Grand total"}
                       className="w-36 bg-transparent text-right text-lg font-bold tabular-nums text-background outline-none"
                     />
                   </label>
