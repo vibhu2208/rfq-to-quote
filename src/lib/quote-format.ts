@@ -218,24 +218,21 @@ export function quoteBankDetailsLines(company: {
   bankAccount?: string;
   bankAccountType?: string;
 }): QuoteFooterLines {
-  const primary = [
+  const parts = [
     company.bankName,
     company.bankBranch ? `Branch: ${company.bankBranch}` : null,
     company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
-  ].filter(Boolean);
-  const account = [
     company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
     company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
   ].filter(Boolean);
 
-  if (primary.length === 0 && account.length === 0) {
+  if (parts.length === 0) {
     return { line1: null, line2: null };
   }
 
   return {
-    line1:
-      primary.length > 0 ? `Bank Details: ${primary.join("  ")}` : "Bank Details:",
-    line2: account.length > 0 ? account.join("  ") : null,
+    line1: `Bank Details: ${parts.join("  ")}`,
+    line2: null,
   };
 }
 
