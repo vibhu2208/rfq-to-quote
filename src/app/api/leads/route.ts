@@ -175,7 +175,10 @@ export async function GET(req: NextRequest) {
     : [];
   const newestDraft = new Map<string, (typeof drafts)[number]>();
   for (const draft of drafts) {
-    if (!newestDraft.has(draft.rfqId)) newestDraft.set(draft.rfqId, draft);
+    const rfqId = draft.rfqId;
+    // Quotes with no lead are never attached to a list row.
+    if (!rfqId || newestDraft.has(rfqId)) continue;
+    newestDraft.set(rfqId, draft);
   }
 
   return NextResponse.json({
