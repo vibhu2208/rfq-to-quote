@@ -81,14 +81,15 @@ export async function GET(_request: NextRequest, { params }: Params) {
     parsedSpecs: rfq.parsedSpecs,
   });
 
-  const result = await matchVendorsToRfq({
-    parsedCategory: normalized.parsedCategory || rfq.parsedCategory,
-    parsedSpecs: normalized.parsedSpecs || rfq.parsedSpecs,
-    subject: rfq.subject,
-    rawText: rfq.rawText,
-  });
-
-  const outreaches = await getOutreachMapForRfq(id);
+  const [result, outreaches] = await Promise.all([
+    matchVendorsToRfq({
+      parsedCategory: normalized.parsedCategory || rfq.parsedCategory,
+      parsedSpecs: normalized.parsedSpecs || rfq.parsedSpecs,
+      subject: rfq.subject,
+      rawText: rfq.rawText,
+    }),
+    getOutreachMapForRfq(id),
+  ]);
   const matchedIds = new Set(result.matches.map((match) => match.vendor.id));
   const matches = result.matches.map((match) => ({
     ...match,

@@ -1,4 +1,5 @@
 import { searchFlipkartApify, searchIndiaMartApify } from "@/lib/marketplace/apify";
+import { friendlyMarketplaceSourceError } from "@/lib/marketplace/errors";
 import { searchAmazonIndia } from "@/lib/marketplace/serpapi";
 import type { MarketplaceListing } from "@/lib/marketplace/types";
 
@@ -51,9 +52,15 @@ export async function searchMarketplaces(
   ]);
 
   const errors: string[] = [];
-  if (amazonResult.error) errors.push(`Amazon: ${amazonResult.error}`);
-  if (flipkartResult.error) errors.push(`Flipkart: ${flipkartResult.error}`);
-  if (indiamartResult.error) errors.push(`IndiaMART: ${indiamartResult.error}`);
+  if (amazonResult.error) {
+    errors.push(friendlyMarketplaceSourceError("Amazon", amazonResult.error));
+  }
+  if (flipkartResult.error) {
+    errors.push(friendlyMarketplaceSourceError("Flipkart", flipkartResult.error));
+  }
+  if (indiamartResult.error) {
+    errors.push(friendlyMarketplaceSourceError("IndiaMART", indiamartResult.error));
+  }
 
   return {
     amazon: amazonResult.data ?? [],

@@ -387,6 +387,48 @@ describe("catalog auto-match constraints", () => {
     }
   });
 
+  it("KAN-10: prefers 24-inch HDMI+DP over a 22-inch Dell for a 24-inch request", () => {
+    const withDell = [
+      ...catalog,
+      fakeProduct({
+        id: "dell22",
+        code: "DELL-22",
+        name: "Dell 22 inch FHD Monitor HDMI",
+        category: "TFT",
+        brand: "Dell",
+        description: "Dell 22 inch FHD monitor HDMI",
+      }),
+      fakeProduct({
+        id: "dell24",
+        code: "DELL-24",
+        name: "Dell 24 inch FHD Monitor HDMI DisplayPort",
+        category: "TFT",
+        brand: "Dell",
+        description: "Dell 24 inch FHD, HDMI + DisplayPort",
+      }),
+    ];
+    const matches = matchProductsToRfqItems(withDell, {
+      parsedSpecs: {
+        items: [
+          {
+            description: '24" FHD monitor, HDMI+DP',
+            quantity: 10,
+            unit: "pcs",
+          },
+        ],
+      },
+    });
+    const top = matches[0]?.matches[0]?.product.code;
+    expect(top === "DELL-24" || top === "MON-24-DP").toBe(true);
+    expect(matches[0]?.matches.every((m) => m.product.code !== "DELL-22")).toBe(true);
+    expect(
+      catalogBindingLooksMismatched(
+        '24" FHD monitor, HDMI+DP',
+        "Dell 22 inch FHD Monitor HDMI"
+      )
+    ).toBe(true);
+  });
+
   it("KAN-10: does not bind HDMI+VGA when the RFQ asks for DisplayPort", () => {
     const matches = matchProductsToRfqItems(catalog, {
       parsedSpecs: {

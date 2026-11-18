@@ -4,6 +4,7 @@ import { requireSession } from "@/lib/api";
 import { requireUserId } from "@/lib/api/session-user";
 import { canUseAdminCopilot, runAdminCopilot } from "@/lib/ai/admin-copilot";
 import { appendCopilotTurn } from "@/lib/ai/copilot-chats";
+import { userFacingCopilotError } from "@/lib/copilot-error";
 
 const bodySchema = z.object({
   chatId: z.string().nullish(),
@@ -72,7 +73,9 @@ export async function POST(req: NextRequest) {
 
         send({ type: "done", ...result, chatId: saved.chatId, title: saved.title });
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Copilot failed";
+        const message = userFacingCopilotError(
+          err instanceof Error ? err.message : "Copilot failed"
+        );
         send({ type: "error", error: message });
       } finally {
         controller.close();

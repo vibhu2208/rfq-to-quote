@@ -294,6 +294,8 @@ export function scoreVendorCategoryForItem(input: {
     category: string;
     subcategory: string;
     keywords: unknown;
+    mapPriority?: number;
+    isPreferred?: boolean;
   };
   itemCategory: string | null | undefined;
   rfqCategory: string | null | undefined;
@@ -351,12 +353,18 @@ export function scoreVendorCategoryForItem(input: {
   // Exact category is enough to include the vendor; keywords only improve rank
   // (covers brand/model lines like "Dell Latitude 5540" under LAPTOP).
 
+  const mapRow = input.vendorCategory as {
+    mapPriority?: number;
+    isPreferred?: boolean;
+  };
   const score =
     (exactCategory ? 20 : 0) +
     (exactCategory ? matchedExplicit.length : strongExplicit.length) * 6 +
     // Ignore Misc/Hardware label-token hits — they are not product signals.
     (exactCategory || !looseVendor ? matchedLabel.length * 3 : 0) +
-    (subcategoryHit ? 10 : 0);
+    (subcategoryHit ? 10 : 0) +
+    (mapRow.isPreferred ? 25 : 0) +
+    Math.min(15, Math.max(0, mapRow.mapPriority ?? 0));
 
   if (score <= 0) return null;
 
@@ -707,6 +715,8 @@ export async function matchVendorsToRfq(
       category: string;
       subcategory: string;
       keywords: unknown;
+      mapPriority: number;
+      isPreferred: boolean;
       explicitKeywords: string[];
       labelTokens: string[];
       subcategoryTokens: string[];
@@ -721,6 +731,8 @@ export async function matchVendorsToRfq(
         category: category.category,
         subcategory: category.subcategory,
         keywords: category.keywords,
+        mapPriority: category.mapPriority ?? 0,
+        isPreferred: category.isPreferred ?? false,
         explicitKeywords: normalizeKeywords(category.keywords),
         labelTokens: tokenize(`${category.category} ${category.subcategory}`),
         subcategoryTokens: tokenize(category.subcategory || ""),

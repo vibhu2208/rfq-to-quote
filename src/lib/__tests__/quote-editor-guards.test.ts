@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { quoteAmountBlockReason } from "@/lib/quote-amount-limits";
+import {
+  MAX_QUOTE_LINE_QTY,
+  quoteAmountBlockReason,
+} from "@/lib/quote-amount-limits";
 import { validateBuyerDetails, sanitizePhoneInput } from "@/lib/quote-buyer-fields";
 import { hsnFieldError, sanitizeHsnInput } from "@/lib/hsn";
 import { sanitizePercentDraft } from "@/lib/percent-input";
@@ -24,6 +27,14 @@ describe("quote amount limits", () => {
     });
     expect(reason).toMatch(/Switch/);
     expect(reason).toMatch(/sell price/i);
+  });
+
+  it("rejects an extreme quantity before line total overflows", () => {
+    const reason = quoteAmountBlockReason({
+      lines: [{ qty: MAX_QUOTE_LINE_QTY + 1, unitPrice: 100 }],
+      grandTotal: 1,
+    });
+    expect(reason).toMatch(/quantity exceeds/i);
   });
 
   it("allows a normal quotation", () => {

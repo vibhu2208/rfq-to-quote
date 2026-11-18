@@ -9,7 +9,7 @@ export type ClientIdentity = {
 };
 
 export const CLIENT_BOOKS_BALANCE_NOTE =
-  "Opening balance is the figure stored on the client master. A running balance and transaction history depend on Books, which is not available yet.";
+  "Opening balance is the figure stored on the client master. Recent activity below is built from quotes in QuoteFlow.";
 
 function clean(value: string | null | undefined) {
   return String(value || "").trim();

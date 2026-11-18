@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { differenceInCalendarDays, isToday, isYesterday } from "date-fns";
+import { userFacingCopilotError } from "@/lib/copilot-error";
 import {
   ChevronRight,
   Loader2,
@@ -444,7 +445,7 @@ export function AdminCopilot({
         }
         if (event.type === "error") {
           settled = true;
-          const msg = event.error || "Copilot request failed";
+          const msg = userFacingCopilotError(event.error || "Copilot request failed");
           setError(msg);
           applyPending((m) => ({
             ...m,
@@ -488,7 +489,9 @@ export function AdminCopilot({
     } catch (err) {
       if (gen !== requestGen.current) return;
       if (err instanceof DOMException && err.name === "AbortError") return;
-      const msg = err instanceof Error ? err.message : "Copilot request failed";
+      const msg = userFacingCopilotError(
+        err instanceof Error ? err.message : "Copilot request failed"
+      );
       setError(msg);
       applyPending((m) => ({
         ...m,

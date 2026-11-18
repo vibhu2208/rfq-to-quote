@@ -11,6 +11,7 @@ import {
   formatMoneyCommitRangeError,
   resolveMoneyCommit,
 } from "@/lib/calc-money-commit";
+import { sanitizeAmountDraft } from "@/lib/percent-input";
 
 type Props = {
   value: number;
@@ -112,7 +113,11 @@ export function CalcMoneyInput({
           onRangeError?.("Sell price must be a number");
           return;
         }
-        setText(raw.replace(/[^0-9.,+\-*/%()\s=]/g, ""));
+        if (/[+\-*/%=()]/.test(raw)) {
+          setText(raw.replace(/[^0-9.,+\-*/%()\s=]/g, ""));
+          return;
+        }
+        setText(sanitizeAmountDraft(raw.replace(/[^0-9.+\-*/%()\s=,]/g, "")));
       }}
       onKeyDown={onKeyDown}
       className={className}

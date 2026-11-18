@@ -17,11 +17,18 @@ export async function GET(req: NextRequest) {
   const { error } = await requireSession();
   if (error) return error;
 
-  const filters = parseQuoteListFilters(
-    Object.fromEntries(req.nextUrl.searchParams.entries())
-  );
+  const params = Object.fromEntries(req.nextUrl.searchParams.entries());
+  const filters = parseQuoteListFilters(params);
+  const idList = String(params.ids || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean)
+    .slice(0, 500);
   const quotes = await prisma.quote.findMany({
-    where: quoteListWhere(filters),
+    where:
+      idList.length > 0
+        ? { id: { in: idList } }
+        : quoteListWhere(filters),
     orderBy: quoteListOrderBy(filters),
     take: QUOTE_LIST_EXPORT_LIMIT + 1,
     select: {

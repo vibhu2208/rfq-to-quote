@@ -187,6 +187,53 @@ export function ClientRelatedWork({
           <div className="rounded-lg bg-white/60 px-3 py-2 text-sm">
             <div className="flex flex-wrap items-baseline justify-between gap-2">
               <h4 className="text-xs font-semibold uppercase tracking-wide text-mid-green">
+                Quote activity
+              </h4>
+              <span className="text-xs text-mid-green">{data.booksNote}</span>
+            </div>
+            {data.quoteCount > 0 ? (
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full min-w-[320px] text-left text-xs">
+                  <thead className="text-[10px] uppercase tracking-wide text-mid-green">
+                    <tr>
+                      <th className="pb-1 pr-2 font-medium">Date</th>
+                      <th className="pb-1 pr-2 font-medium">Quote</th>
+                      <th className="pb-1 pr-2 font-medium">Status</th>
+                      <th className="pb-1 text-right font-medium">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.quotes.slice(0, 12).map((quote) => (
+                      <tr key={quote.id} className="border-t border-light-green/20">
+                        <td className="py-1 pr-2 whitespace-nowrap text-mid-green">
+                          {new Date(quote.updatedAt).toLocaleDateString("en-IN", {
+                            day: "2-digit",
+                            month: "short",
+                            year: "numeric",
+                          })}
+                        </td>
+                        <td className="py-1 pr-2">
+                          <Link
+                            href={`/quotes/${quote.id}`}
+                            className="font-medium text-dark-primary hover:text-mid-green"
+                          >
+                            {quote.quoteNumber}
+                          </Link>
+                        </td>
+                        <td className="py-1 pr-2 text-mid-green">{quote.status}</td>
+                        <td className="py-1 text-right font-medium tabular-nums">
+                          {money(quote.grandTotal)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="mt-1 text-xs text-mid-green">No quotes yet for this client.</p>
+            )}
+            <div className="mt-3 flex flex-wrap items-baseline justify-between gap-2 border-t border-light-green/20 pt-2">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-mid-green">
                 Opening balance
               </h4>
               <span className="font-medium text-dark-primary">
@@ -194,7 +241,6 @@ export function ClientRelatedWork({
                 {data.openingDrCr ? ` ${data.openingDrCr}` : ""}
               </span>
             </div>
-            <p className="mt-1 text-xs text-mid-green">{data.booksNote}</p>
             {data.invoiceCount > 0 ? (
               <ul className="mt-2 space-y-1">
                 {data.invoices.map((invoice) => (
