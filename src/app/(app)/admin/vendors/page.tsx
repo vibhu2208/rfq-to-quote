@@ -23,12 +23,23 @@ import {
 } from "lucide-react";
 import { PRODUCT_CATEGORIES } from "@/lib/categories";
 import {
+  countNamedSubcategoryRows,
   countVendorMappingCategories,
   countVendorMappingSubcategories,
+  summarizeTaxonomyCoverage,
+  vendorMappingGroupLabel,
 } from "@/lib/vendor-mapping-counts";
 import {
+  COVERAGE_TOTALS_TITLE,
+  PRIMARY_POC_TITLE,
+  assignMappingHelp,
+  assignMappingSaveLabel,
+  taxonomySourceLabel,
+} from "@/lib/vendor-mapping-labels";
+import {
+  applyTaxonomyUnlink,
   nextDistinctVendorCountAfterMap,
-  nextDistinctVendorCountAfterUnlink,
+  remainingCategorySubcategories,
   vendorHasCategoryMapping,
 } from "@/lib/vendor-taxonomy-counts";
 import { useToast } from "@/components/app-toast";
@@ -91,6 +102,13 @@ type VendorListItem = {
     category?: string;
     subcategory?: string;
   }>;
+  productHistory?: Array<{
+    id?: string;
+    productKey: string;
+    lastPrice: number;
+    lastQuotedAt: string;
+    sourceRfqId?: string | null;
+  }>;
 };
 
 type MapPoc = {
@@ -117,6 +135,8 @@ type MapForm = {
 type CategoryAssignForm = {
   category: string;
   subcategories: string[];
+  /** Category-only map (no subcategory), used by CABLE, TFT, and Misc. */
+  categoryLevel: boolean;
   /** Keywords keyed by subcategory name. */
   subcategoryKeywords: Record<string, string>;
   contacts: MapPoc[];
@@ -176,6 +196,7 @@ function seedVendorMapContacts(vendor: VendorListItem): MapPoc[] {
 const emptyCategoryAssignForm = (): CategoryAssignForm => ({
   category: PRODUCT_CATEGORIES[0],
   subcategories: [],
+  categoryLevel: false,
   subcategoryKeywords: {},
   contacts: [emptyPoc()],
 });
@@ -190,8 +211,14 @@ function assignFormFromVendor(
   );
   const subcategories: string[] = [];
   const subcategoryKeywords: Record<string, string> = {};
+  let categoryLevel = false;
   for (const row of mapped) {
     const subcategory = row.subcategory || "";
+    if (!subcategory) {
+      categoryLevel = true;
+      subcategoryKeywords[""] = (row.keywords || []).join(", ");
+      continue;
+    }
     if (!subcategories.includes(subcategory)) {
       subcategories.push(subcategory);
     }
@@ -200,6 +227,7 @@ function assignFormFromVendor(
   return {
     category,
     subcategories,
+    categoryLevel,
     subcategoryKeywords,
     contacts: [emptyPoc()],
   };
@@ -306,7 +334,15 @@ function AdminVendorsPageInner() {
   const [newSubcategory, setNewSubcategory] = useState("");
   const [addingSubcategory, setAddingSubcategory] = useState(false);
   const [categoryQuery, setCategoryQuery] = useState("");
+  const [categoryListFilter, setCategoryListFilter] = useState<
+    "all" | "unmapped" | "no-subcategory" | "gap"
+  >("all");
   const [vendorQuery, setVendorQuery] = useState("");
+  const [vendorMapFilter, setVendorMapFilter] = useState<
+    "all" | "mapped" | "unmapped" | "no-poc"
+  >("all");
+  const [vendorPage, setVendorPage] = useState(1);
+  const [vendorTotal, setVendorTotal] = useState(0);
   const [selectedVendorId, setSelectedVendorId] = useState(initialVendorId);
   const [selectedVendor, setSelectedVendor] = useState<VendorListItem | null>(
     null
@@ -432,7 +468,9 @@ function AdminVendorsPageInner() {
         else subRow.vendors.push(vendorEntry);
         if (isNewToSubcategory) subRow.vendorCount += 1;
         subRow.vendorCount = Math.max(subRow.vendorCount, subRow.vendors.length);
-        categoryRow.subcategoryCount = categoryRow.subcategories.length;
+        categoryRow.subcategoryCount = countNamedSubcategoryRows(
+          categoryRow.subcategories
+        );
         const alreadyInCategory =
           categoryRow.subcategories.some(
             (sub) =>
@@ -529,9 +567,9 @@ function AdminVendorsPageInner() {
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch(
-          `/api/vendors/${selectedVendorId}?light=1`
-        );
+        const response = await fetch(`/api/vendors/${selectedVendorId}`, {
+          cache: "no-store",
+        });
         const data = await response.json();
         if (!response.ok || cancelled) return;
         const vendor = data as VendorListItem;
@@ -602,15 +640,25 @@ function AdminVendorsPageInner() {
           const params = new URLSearchParams({
             active: "true",
             light: "1",
-            // Default list shows a top slice; search expands the pool.
-            limit: q ? "40" : "10",
+            page: String(vendorPage),
+            pageSize: "25",
           });
           if (q) params.set("q", q);
-          const response = await fetch(`/api/vendors?${params}`);
+          if (vendorMapFilter === "mapped") params.set("mapped", "yes");
+          if (vendorMapFilter === "unmapped") params.set("mapped", "no");
+          if (vendorMapFilter === "no-poc") params.set("poc", "no");
+          const response = await fetch(`/api/vendors?${params}`, {
+            cache: "no-store",
+          });
           const data = await response.json();
           const lightRows = Array.isArray(data)
             ? (data as VendorListItem[])
-            : [];
+            : Array.isArray(data?.items)
+              ? (data.items as VendorListItem[])
+              : [];
+          setVendorTotal(
+            typeof data?.total === "number" ? data.total : lightRows.length
+          );
           // Keep previously loaded detail (keywords/POCs) when the light list
           // refresh would otherwise wipe them back to empty stubs.
           setVendors((previous) => {
@@ -638,7 +686,7 @@ function AdminVendorsPageInner() {
       })();
     }, q ? 250 : 0);
     return () => window.clearTimeout(handle);
-  }, [tab, vendorQuery, toast]);
+  }, [tab, vendorQuery, vendorPage, vendorMapFilter, toast]);
 
   useEffect(() => {
     if (!mapSearchOpen) return;
@@ -694,31 +742,30 @@ function AdminVendorsPageInner() {
 
   const filteredCategories = useMemo(() => {
     const q = categoryQuery.trim().toLowerCase();
-    if (!q) return taxonomy;
-    return taxonomy.filter(
-      (row) =>
-        row.category.toLowerCase().includes(q) ||
-        row.subcategories.some((sub) =>
+    return taxonomy.filter((row) => {
+      if (
+        q &&
+        !row.category.toLowerCase().includes(q) &&
+        !row.subcategories.some((sub) =>
           sub.subcategory.toLowerCase().includes(q)
         )
-    );
-  }, [taxonomy, categoryQuery]);
+      ) {
+        return false;
+      }
+      const named = row.subcategories.filter((sub) => sub.subcategory.trim());
+      if (categoryListFilter === "unmapped") return row.vendorCount === 0;
+      if (categoryListFilter === "no-subcategory") return named.length === 0;
+      if (categoryListFilter === "gap") {
+        return named.some((sub) => sub.vendorCount === 0);
+      }
+      return true;
+    });
+  }, [taxonomy, categoryQuery, categoryListFilter]);
 
-  const taxonomyStats = useMemo(() => {
-    const subcategories = taxonomy.reduce(
-      (sum, row) => sum + row.subcategoryCount,
-      0
-    );
-    const vendorsMapped = taxonomy.reduce(
-      (sum, row) => sum + row.vendorCount,
-      0
-    );
-    return {
-      categories: taxonomy.length,
-      subcategories,
-      vendorsMapped,
-    };
-  }, [taxonomy]);
+  const taxonomyStats = useMemo(
+    () => summarizeTaxonomyCoverage(taxonomy),
+    [taxonomy]
+  );
 
   const filteredVendors = vendors;
 
@@ -733,6 +780,45 @@ function AdminVendorsPageInner() {
       (a, b) => a.localeCompare(b)
     );
   }, [taxonomy, assignForm.category, assignForm.subcategories]);
+
+  const assignSaveState = useMemo(() => {
+    const existing = (selectedVendor?.categories || []).filter(
+      (row) => row.category === assignForm.category
+    );
+    const existingNamed = existing
+      .map((row) => row.subcategory || "")
+      .filter(Boolean);
+    const existingLevel = existing.some((row) => !row.subcategory);
+    const unlinking =
+      existingNamed.filter((sub) => !assignForm.subcategories.includes(sub))
+        .length + (existingLevel && !assignForm.categoryLevel ? 1 : 0);
+    return {
+      unlinking,
+      label: assignMappingSaveLabel({
+        saving: assignSaving,
+        selectedSubcategories: assignForm.subcategories.length,
+        categoryLevelSelected: assignForm.categoryLevel,
+        unlinking,
+      }),
+      help: assignMappingHelp({
+        selectedSubcategories: assignForm.subcategories.length,
+        categoryLevelSelected: assignForm.categoryLevel,
+        unlinking,
+        categoryHasNamedSubs: subcategoryOptionsForAssign.length > 0,
+      }),
+      disabled:
+        assignForm.subcategories.length === 0 &&
+        !assignForm.categoryLevel &&
+        unlinking === 0,
+    };
+  }, [
+    assignForm.category,
+    assignForm.categoryLevel,
+    assignForm.subcategories,
+    assignSaving,
+    selectedVendor,
+    subcategoryOptionsForAssign.length,
+  ]);
 
   useEffect(() => {
     if (!assignOpen || !selectedVendorId || assignForm.subcategories.length === 0) {
@@ -957,34 +1043,12 @@ function AdminVendorsPageInner() {
         categoryRow.subcategories.sort((a, b) =>
           a.subcategory.localeCompare(b.subcategory)
         );
-        categoryRow.subcategoryCount = categoryRow.subcategories.length;
+        categoryRow.subcategoryCount = countNamedSubcategoryRows(
+          categoryRow.subcategories
+        );
       }
       return [...next];
     });
-  }
-
-  function removeTaxonomySubcategoryLocal(
-    category: string,
-    subcategory: string
-  ) {
-    setTaxonomy((current) =>
-      current.map((row) => {
-        if (row.category !== category) return row;
-        const subcategories = row.subcategories.filter(
-          (sub) => sub.subcategory !== subcategory
-        );
-        return {
-          ...row,
-          subcategories,
-          subcategoryCount: subcategories.length,
-          vendorCount: new Set(
-            subcategories.flatMap((sub) =>
-              sub.vendors.map((vendor) => vendor.vendorId)
-            )
-          ).size,
-        };
-      })
-    );
   }
 
   function toggleAssignSubcategory(subcategory: string) {
@@ -1130,6 +1194,42 @@ function AdminVendorsPageInner() {
     }
   }
 
+  async function readRemainingSubcategories(
+    vendorId: string,
+    category: string,
+    unlinkedSubcategory: string
+  ) {
+    const dropUnlinked = (subs: string[]) =>
+      subs.filter(
+        (sub) => sub.toLowerCase() !== unlinkedSubcategory.trim().toLowerCase()
+      );
+    try {
+      const vendorResponse = await fetch(`/api/vendors/${vendorId}`, {
+        cache: "no-store",
+      });
+      const vendor = (await vendorResponse.json().catch(() => null)) as
+        | VendorListItem
+        | null;
+      if (vendorResponse.ok && vendor?.id && Array.isArray(vendor.categories)) {
+        upsertVendorLocal(vendor);
+        if (selectedVendorId === vendorId) setSelectedVendor(vendor);
+        return dropUnlinked(
+          remainingCategorySubcategories(vendor.categories, category)
+        );
+      }
+    } catch {
+      // Fall through to the last detail payload, or leave the count unchanged.
+    }
+    const cached =
+      (selectedVendor?.id === vendorId ? selectedVendor : null) ||
+      vendors.find((row) => row.id === vendorId) ||
+      null;
+    if (!cached || !vendorDetailReadyIdsRef.current.has(vendorId)) return null;
+    return dropUnlinked(
+      remainingCategorySubcategories(cached.categories, category)
+    );
+  }
+
   async function removeAssignSubcategory(subcategory: string) {
     const category = assignForm.category;
     const label = subcategory || "(category-level)";
@@ -1165,72 +1265,38 @@ function AdminVendorsPageInner() {
         delete nextKeywords[subcategory];
         return {
           ...current,
+          categoryLevel: subcategory ? current.categoryLevel : false,
           subcategories: current.subcategories.filter(
             (value) => value !== subcategory
           ),
           subcategoryKeywords: nextKeywords,
         };
       });
-      const vendorResponse = await fetch(
-        `/api/vendors/${selectedVendorId}?light=1`
-      );
-      const vendor = (await vendorResponse.json().catch(() => null)) as
-        | VendorListItem
-        | null;
-      const remainsInCategory = vendor?.id
-        ? vendorHasCategoryMapping(vendor.categories, category)
-        : vendorHasCategoryMapping(
-            selectedVendor?.id === selectedVendorId
-              ? selectedVendor.categories
-              : vendors.find((row) => row.id === selectedVendorId)?.categories,
-            category,
-            { excludeSubcategory: subcategory }
-          );
-      if (vendor?.id) {
-        setSelectedVendor(vendor);
-        upsertVendorLocal(vendor);
+      if (!data.deleted) {
+        toast(`No mapping for ${label}`);
+        return;
       }
+      const vendorRemainingSubcategories = await readRemainingSubcategories(
+        selectedVendorId,
+        category,
+        subcategory
+      );
       setTaxonomy((current) =>
-        current.map((row) => {
-          if (row.category !== category) return row;
-          const subcategories = row.subcategories.map((sub) => {
-            if (sub.subcategory !== subcategory) return sub;
-            const vendorsForSub = sub.vendors.filter(
-              (entry) => entry.vendorId !== selectedVendorId
-            );
-            return {
-              ...sub,
-              vendors: vendorsForSub,
-              vendorCount:
-                sub.vendors.length > 0
-                  ? vendorsForSub.length
-                  : Math.max(0, sub.vendorCount - 1),
-            };
-          });
-          const remainsInLoadedSubs = subcategories.some((sub) =>
-            sub.vendors.some((entry) => entry.vendorId === selectedVendorId)
-          );
-          return {
-            ...row,
-            subcategories,
-            vendorCount: nextDistinctVendorCountAfterUnlink(
-              row.vendorCount,
-              remainsInCategory || remainsInLoadedSubs
-            ),
-          };
+        applyTaxonomyUnlink(current, {
+          category,
+          subcategory,
+          vendorId: selectedVendorId,
+          vendorRemainingSubcategories,
         })
       );
-      toast(
-        data.deleted
-          ? `Unlinked vendor from ${label}`
-          : `No mapping for ${label}`
-      );
+      await loadTaxonomy(true);
+      toast(`Unlinked vendor from ${label}`);
     } finally {
       setAssignRemovingSubcategory(null);
     }
   }
 
-  function useAvailablePoc(contact: VendorListItem["contacts"][number]) {
+  function addAvailablePoc(contact: VendorListItem["contacts"][number]) {
     const next: MapPoc = {
       name: contact.name || "",
       email: contact.email || "",
@@ -1389,66 +1455,28 @@ function AdminVendorsPageInner() {
       toast(apiError(data.error), "error");
       return;
     }
-
-    // Distinct category counts need the vendor's remaining maps — don't
-    // decrement once per unlinked subcategory row.
-    let remainsInCategory = false;
-    try {
-      const vendorResponse = await fetch(`/api/vendors/${vendorId}?light=1`);
-      const vendor = (await vendorResponse.json()) as VendorListItem;
-      if (vendor?.id) {
-        remainsInCategory = vendorHasCategoryMapping(
-          vendor.categories,
-          category
-        );
-        upsertVendorLocal(vendor);
-        if (selectedVendorId === vendorId) setSelectedVendor(vendor);
-      }
-    } catch {
-      const cached =
-        (selectedVendor?.id === vendorId ? selectedVendor : null) ||
-        vendors.find((vendor) => vendor.id === vendorId) ||
-        null;
-      remainsInCategory = vendorHasCategoryMapping(
-        cached?.categories,
-        category,
-        { excludeSubcategory: subcategory }
-      );
+    if (!data.deleted) {
+      toast("No mapping to unlink");
+      return;
     }
 
+    const vendorRemainingSubcategories = await readRemainingSubcategories(
+      vendorId,
+      category,
+      subcategory
+    );
     setTaxonomy((current) =>
-      current.map((row) => {
-        if (row.category !== category) return row;
-        const subcategories = row.subcategories.map((sub) => {
-          if (sub.subcategory !== subcategory) return sub;
-          const vendorsForSub = sub.vendors.filter(
-            (vendor) => vendor.vendorId !== vendorId
-          );
-          return {
-            ...sub,
-            vendors: vendorsForSub,
-            vendorCount:
-              sub.vendors.length > 0
-                ? vendorsForSub.length
-                : Math.max(0, sub.vendorCount - 1),
-          };
-        });
-        const remainsInLoadedSubs = subcategories.some((sub) =>
-          sub.vendors.some((vendor) => vendor.vendorId === vendorId)
-        );
-        return {
-          ...row,
-          subcategories,
-          vendorCount: nextDistinctVendorCountAfterUnlink(
-            row.vendorCount,
-            remainsInCategory || remainsInLoadedSubs
-          ),
-        };
+      applyTaxonomyUnlink(current, {
+        category,
+        subcategory,
+        vendorId,
+        vendorRemainingSubcategories,
       })
     );
     setSubcategoryVendors((current) =>
       current.filter((vendor) => vendor.vendorId !== vendorId)
     );
+    await loadTaxonomy(true);
     toast("Vendor unlinked");
   }
 
@@ -1478,15 +1506,18 @@ function AdminVendorsPageInner() {
         const subcategories = row.subcategories.filter(
           (sub) => sub.subcategory !== subcategory
         );
+        const vendorsLoaded = subcategories.some((sub) => sub.vendors.length > 0);
         return {
           ...row,
           subcategories,
-          subcategoryCount: subcategories.length,
-          vendorCount: new Set(
-            subcategories.flatMap((sub) =>
-              sub.vendors.map((vendor) => vendor.vendorId)
-            )
-          ).size,
+          subcategoryCount: countNamedSubcategoryRows(subcategories),
+          vendorCount: vendorsLoaded
+            ? new Set(
+                subcategories.flatMap((sub) =>
+                  sub.vendors.map((vendor) => vendor.vendorId)
+                )
+              ).size
+            : row.vendorCount,
         };
       })
     );
@@ -1545,7 +1576,9 @@ function AdminVendorsPageInner() {
         categoryRow.subcategories.sort((a, b) =>
           a.subcategory.localeCompare(b.subcategory)
         );
-        categoryRow.subcategoryCount = categoryRow.subcategories.length;
+        categoryRow.subcategoryCount = countNamedSubcategoryRows(
+          categoryRow.subcategories
+        );
       }
       return [...next];
     });
@@ -1565,11 +1598,16 @@ function AdminVendorsPageInner() {
           .map((row) => row.subcategory || "")
       ),
     ];
-    const toUnlink = existingSubs.filter(
-      (subcategory) => !subcategories.includes(subcategory)
-    );
-    if (subcategories.length === 0 && toUnlink.length === 0) {
-      toast("Select at least one subcategory", "error");
+    const toUnlink = existingSubs.filter((subcategory) => {
+      if (!subcategory) return !assignForm.categoryLevel;
+      return !subcategories.includes(subcategory);
+    });
+    if (
+      subcategories.length === 0 &&
+      !assignForm.categoryLevel &&
+      toUnlink.length === 0
+    ) {
+      toast("Select a subcategory, or map the category itself", "error");
       return;
     }
     setAssignSaving(true);
@@ -1599,6 +1637,21 @@ function AdminVendorsPageInner() {
       } catch (err) {
         lastError =
           err instanceof Error ? err.message : "Could not unlink subcategory";
+      }
+    }
+
+    if (assignForm.categoryLevel) {
+      try {
+        await persistVendorSubcategoryMapping({
+          category: assignForm.category,
+          subcategory: "",
+          keywords: parseKeywordInput(assignForm.subcategoryKeywords[""] || ""),
+          contacts,
+        });
+        saved += 1;
+      } catch (err) {
+        lastError =
+          err instanceof Error ? err.message : "Could not save category mapping";
       }
     }
 
@@ -1645,9 +1698,9 @@ function AdminVendorsPageInner() {
     }
     await loadTaxonomy(true);
     if (selectedVendorId) {
-      const vendorResponse = await fetch(
-        `/api/vendors/${selectedVendorId}?light=1`
-      );
+      const vendorResponse = await fetch(`/api/vendors/${selectedVendorId}`, {
+        cache: "no-store",
+      });
       const vendor = await vendorResponse.json().catch(() => null);
       if (vendor?.id) {
         setSelectedVendor(vendor);
@@ -1656,10 +1709,12 @@ function AdminVendorsPageInner() {
     }
     setAssignOpen(false);
     const parts: string[] = [];
-    if (saved === 1) {
+    if (saved === 1 && assignForm.categoryLevel && subcategories.length === 0) {
+      parts.push(`Mapped ${assignForm.category} at category level`);
+    } else if (saved === 1) {
       parts.push(`Mapped ${assignForm.category} / ${subcategories[0]}`);
     } else if (saved > 1) {
-      parts.push(`Mapped ${assignForm.category} to ${saved} subcategories`);
+      parts.push(`Mapped ${assignForm.category} to ${saved} mappings`);
     }
     if (unlinked > 0) {
       parts.push(`unlinked ${unlinked}`);
@@ -1684,20 +1739,37 @@ function AdminVendorsPageInner() {
               Vendor mapping
             </h1>
             {!loading || taxonomy.length > 0 ? (
-              <p className="text-xs text-mid-green">
+              <p className="text-xs text-mid-green" title={COVERAGE_TOTALS_TITLE}>
                 {taxonomyStats.categories} categories ·{" "}
-                {taxonomyStats.subcategories} subcategories ·{" "}
-                {taxonomyStats.vendorsMapped} mapped
+                {taxonomyStats.namedSubcategories} named subcategories ·{" "}
+                {taxonomyStats.vendorLinks} vendor links
+                {taxonomyStats.categoryLevelLinks > 0
+                  ? ` · ${taxonomyStats.categoryLevelLinks} category-level`
+                  : ""}
               </p>
             ) : null}
           </div>
           <p className="mt-0.5 text-xs text-mid-green">
-            Category / subcategory POCs ·{" "}
+            Category / subcategory POCs
+            {taxonomyStats.categoriesWithNoNamedSubcategory > 0
+              ? ` · ${taxonomyStats.categoriesWithNoNamedSubcategory} categories have no subcategory`
+              : ""}
+            {taxonomyStats.namedSubcategoriesWithNoVendor > 0
+              ? ` · ${taxonomyStats.namedSubcategoriesWithNoVendor} subcategories have no vendor`
+              : ""}
+            {" · "}
             <Link
               href="/vendors"
               className="font-medium text-dark-secondary underline decoration-light-green/60 underline-offset-2 hover:text-dark-primary"
             >
-              Vendors
+              Vendor directory
+            </Link>
+            {" · "}
+            <Link
+              href="/vendors/import"
+              className="font-medium text-dark-secondary underline decoration-light-green/60 underline-offset-2 hover:text-dark-primary"
+            >
+              Import vendors
             </Link>
           </p>
         </div>
@@ -1750,6 +1822,38 @@ function AdminVendorsPageInner() {
                 className="w-full rounded-xl border border-light-green/35 bg-background/60 py-2 pl-8 pr-2 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
               />
             </div>
+            <div className="mb-2 flex flex-wrap gap-1">
+              {(
+                [
+                  ["all", "All"],
+                  ["unmapped", "No vendors"],
+                  ["no-subcategory", "No subcategory"],
+                  ["gap", "Unmapped subs"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setCategoryListFilter(value)}
+                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                    categoryListFilter === value
+                      ? "bg-mid-green text-background"
+                      : "bg-light-green/20 text-mid-green"
+                  }`}
+                  title={
+                    value === "no-subcategory"
+                      ? "Categories such as CABLE and TFT can be mapped at category level"
+                      : value === "gap"
+                        ? "Named subcategories that have no vendor yet"
+                        : value === "unmapped"
+                          ? "Categories with no vendor links"
+                          : "Every taxonomy category"
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
               {filteredCategories.length === 0 ? (
                 <p className="px-2 py-6 text-center text-xs text-mid-green">
@@ -1797,9 +1901,16 @@ function AdminVendorsPageInner() {
                 <h2 className="text-xl font-semibold tracking-tight text-dark-primary">
                   {selectedCategory}
                 </h2>
-                <p className="mt-0.5 text-xs text-mid-green">
-                  {subcategoryRows.length} subcategories ·{" "}
-                  {categoryRow?.vendorCount || 0} mapped vendors
+                <p
+                  className="mt-0.5 text-xs text-mid-green"
+                  title="Named subcategories exclude category-level maps. Vendor count is distinct vendors in this category."
+                >
+                  {countNamedSubcategoryRows(subcategoryRows)} subcategories
+                  {subcategoryRows.some((row) => !row.subcategory.trim())
+                    ? " · category-level"
+                    : ""}
+                  {" · "}
+                  {categoryRow?.vendorCount || 0} vendors
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -1829,15 +1940,31 @@ function AdminVendorsPageInner() {
 
             <div className="grid gap-2.5 md:grid-cols-2 xl:grid-cols-3">
               {subcategoryRows.length === 0 ? (
-                <div className="md:col-span-2 xl:col-span-3">
+                <div className="md:col-span-2 xl:col-span-3 space-y-3">
                   <MappingEmptyState>
-                    No subcategories yet. Add one above, or map vendors after
-                    products create catalog subcategories.
+                    No subcategories yet. Map vendors to {selectedCategory}{" "}
+                    itself, or add a subcategory above. Category-level maps
+                    still match RFQs in this category.
                   </MappingEmptyState>
+                  <button
+                    type="button"
+                    onClick={() => openMapModal("")}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-mid-green px-3.5 py-2 text-sm font-medium text-background transition hover:bg-dark-secondary"
+                  >
+                    <UserPlus className="h-3.5 w-3.5" strokeWidth={1.6} />
+                    Map vendors to this category
+                  </button>
                 </div>
               ) : (
                 subcategoryRows.map((row) => {
                   const active = selectedSubcategory === row.subcategory;
+                  const source = taxonomySourceLabel(
+                    row.fromCatalog
+                      ? "catalog"
+                      : row.fromAdmin
+                        ? "admin"
+                        : "mapped"
+                  );
                   return (
                     <button
                       key={row.subcategory || "__empty__"}
@@ -1854,17 +1981,14 @@ function AdminVendorsPageInner() {
                           {row.subcategory || "(category-level)"}
                         </p>
                         <span
+                          title={source.title}
                           className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
                             active
                               ? "bg-background/20 text-background"
                               : "bg-light-green/30 text-mid-green"
                           }`}
                         >
-                          {row.fromCatalog
-                            ? "Catalog"
-                            : row.fromAdmin
-                              ? "Admin"
-                              : "Mapped"}
+                          {source.label}
                         </span>
                       </div>
                       <p
@@ -1889,7 +2013,9 @@ function AdminVendorsPageInner() {
                       {selectedSubRow.subcategory || "(category-level)"}
                     </h3>
                     <p className="text-xs text-mid-green">
-                      Vendors mapped to this subcategory
+                      {selectedSubRow.subcategory
+                        ? "Vendors mapped to this subcategory"
+                        : "Vendors mapped to this category. Product price history is on each vendor."}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1954,9 +2080,13 @@ function AdminVendorsPageInner() {
                               }`}
                             >
                               <td className="px-3.5 py-3">
-                                <div className="font-medium text-dark-primary">
+                                <Link
+                                  href={`/admin/vendors?tab=vendor&vendorId=${vendor.vendorId}`}
+                                  className="font-medium text-dark-primary underline decoration-light-green/50 underline-offset-2 hover:text-mid-green"
+                                  title="Open this vendor, including product price history"
+                                >
                                   {vendor.vendorName}
-                                </div>
+                                </Link>
                                 <div className="text-xs text-mid-green">
                                   {vendor.phone || vendor.email || "—"}
                                 </div>
@@ -2029,10 +2159,48 @@ function AdminVendorsPageInner() {
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-mid-green" />
               <input
                 value={vendorQuery}
-                onChange={(event) => setVendorQuery(event.target.value)}
+                onChange={(event) => {
+                  setVendorQuery(event.target.value);
+                  setVendorPage(1);
+                }}
                 placeholder="Search vendors"
                 className="w-full rounded-xl border border-light-green/35 bg-background/60 py-2 pl-8 pr-2 text-sm outline-none transition focus:border-mid-green focus:ring-2 focus:ring-mid-green/15"
               />
+            </div>
+            <div className="mb-2 flex flex-wrap gap-1">
+              {(
+                [
+                  ["all", "All"],
+                  ["mapped", "Mapped"],
+                  ["unmapped", "Unmapped"],
+                  ["no-poc", "No POC"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => {
+                    setVendorMapFilter(value);
+                    setVendorPage(1);
+                  }}
+                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${
+                    vendorMapFilter === value
+                      ? "bg-mid-green text-background"
+                      : "bg-light-green/20 text-mid-green"
+                  }`}
+                  title={
+                    value === "no-poc"
+                      ? "Vendors with no point of contact on file"
+                      : value === "mapped"
+                        ? "Vendors with at least one category mapping"
+                        : value === "unmapped"
+                          ? "Vendors with no category mappings"
+                          : "Every vendor in this page of the directory"
+                  }
+                >
+                  {label}
+                </button>
+              ))}
             </div>
             <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
               {vendorSearching && filteredVendors.length === 0 ? (
@@ -2045,11 +2213,14 @@ function AdminVendorsPageInner() {
                 </MappingEmptyState>
               ) : (
                 <>
-                  {!vendorQuery.trim() ? (
-                    <p className="px-2 pb-1 text-[11px] text-mid-green">
-                      Top {filteredVendors.length} vendors · search for more
-                    </p>
-                  ) : null}
+                  <p className="px-2 pb-1 text-[11px] text-mid-green">
+                    {vendorTotal === 0
+                      ? "No vendors"
+                      : `${(vendorPage - 1) * 25 + 1}–${Math.min(
+                          vendorPage * 25,
+                          vendorTotal
+                        )} of ${vendorTotal}`}
+                  </p>
                   {filteredVendors.map((vendor) => {
                     const active = selectedVendorId === vendor.id;
                     const categoryCount = countVendorMappingCategories(
@@ -2060,6 +2231,14 @@ function AdminVendorsPageInner() {
                         key={vendor.id}
                         type="button"
                         onClick={() => {
+                          const ready = vendorDetailReadyIdsRef.current.has(
+                            vendor.id
+                          )
+                            ? vendors.find((row) => row.id === vendor.id) ||
+                              null
+                            : null;
+                          setSelectedVendor(ready);
+                          setSelectedVendorLoading(!ready);
                           setSelectedVendorId(vendor.id);
                           syncVendorMappingUrl({
                             tab: "vendor",
@@ -2080,23 +2259,66 @@ function AdminVendorsPageInner() {
                             active ? "text-background/80" : "text-mid-green"
                           }`}
                         >
-                          {categoryCount} categor
-                          {categoryCount === 1 ? "y" : "ies"}
+                          <span title="Distinct categories. Category-only maps count as a category, not as a subcategory.">
+                            {categoryCount} categor
+                            {categoryCount === 1 ? "y" : "ies"}
+                          </span>
                         </span>
                       </button>
                     );
                   })}
+                  {vendorTotal > 25 ? (
+                    <div className="flex items-center justify-between px-1 pt-2">
+                      <button
+                        type="button"
+                        disabled={vendorPage <= 1 || vendorSearching}
+                        onClick={() => setVendorPage((page) => Math.max(1, page - 1))}
+                        className="rounded-md px-2 py-1 text-[11px] font-medium text-mid-green disabled:opacity-40"
+                      >
+                        Previous
+                      </button>
+                      <button
+                        type="button"
+                        disabled={vendorPage * 25 >= vendorTotal || vendorSearching}
+                        onClick={() => setVendorPage((page) => page + 1)}
+                        className="rounded-md px-2 py-1 text-[11px] font-medium text-mid-green disabled:opacity-40"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>
           </MappingPanel>
 
           <MappingPanel className="p-5">
+            {vendorQuery.trim() &&
+            selectedVendorId &&
+            !filteredVendors.some((vendor) => vendor.id === selectedVendorId) ? (
+              <p className="mb-3 rounded-xl border border-light-green/40 bg-background/70 px-3 py-2 text-xs text-mid-green">
+                {filteredVendors.length === 0
+                  ? `No vendors match “${vendorQuery.trim()}”. `
+                  : "This vendor is outside the current search. "}
+                The detail below is not a search result.
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVendorQuery("");
+                    setVendorPage(1);
+                  }}
+                  className="ml-2 font-medium text-dark-secondary underline underline-offset-2"
+                >
+                  Clear search
+                </button>
+              </p>
+            ) : null}
             {!selectedVendorId ? (
               <MappingEmptyState>
                 Select a vendor to assign categories, subcategories, and POCs.
               </MappingEmptyState>
-            ) : selectedVendorLoading && !selectedVendor ? (
+            ) : selectedVendorLoading &&
+              (!selectedVendor || selectedVendor.id !== selectedVendorId) ? (
               <div className="space-y-4" aria-busy="true">
                 <div className="border-b border-light-green/20 pb-4">
                   <h2 className="text-xl font-semibold tracking-tight text-dark-primary">
@@ -2114,7 +2336,7 @@ function AdminVendorsPageInner() {
                   <div className="h-10 animate-pulse rounded-lg bg-light-green/25" />
                 </div>
               </div>
-            ) : !selectedVendor ? (
+            ) : !selectedVendor || selectedVendor.id !== selectedVendorId ? (
               <MappingEmptyState>
                 Could not load this vendor. Try selecting it again.
               </MappingEmptyState>
@@ -2271,8 +2493,7 @@ function AdminVendorsPageInner() {
                             ) : (
                               categoryGroups.flatMap(
                                 ([category, mappings]) => {
-                                  const namedSubcategoryCount =
-                                    countVendorMappingSubcategories(mappings);
+                                  const groupLabel = vendorMappingGroupLabel(mappings);
                                   const headerRow = (
                                     <tr
                                       key={`cat-${category}`}
@@ -2284,10 +2505,7 @@ function AdminVendorsPageInner() {
                                       >
                                         {category}
                                         <span className="ml-2 text-xs font-normal text-mid-green">
-                                          {namedSubcategoryCount} subcategor
-                                          {namedSubcategoryCount === 1
-                                            ? "y"
-                                            : "ies"}
+                                          {groupLabel}
                                         </span>
                                       </td>
                                     </tr>
@@ -2340,14 +2558,19 @@ function AdminVendorsPageInner() {
                                               <span className="inline-flex items-center gap-1.5">
                                                 {poc.name}
                                                 {poc.isPrimary ? (
-                                                  <span className="rounded-md bg-mid-green/15 px-1.5 py-0.5 text-[10px] font-medium text-mid-green">
+                                                  <span
+                                                    title={PRIMARY_POC_TITLE}
+                                                    className="rounded-md bg-mid-green/15 px-1.5 py-0.5 text-[10px] font-medium text-mid-green"
+                                                  >
                                                     Primary
                                                   </span>
                                                 ) : null}
                                               </span>
                                             ) : (
                                               <span className="text-mid-green">
-                                                No subcategory POC
+                                                {mapping.subcategory
+                                                  ? "No subcategory POC"
+                                                  : "No category POC"}
                                               </span>
                                             )}
                                           </td>
@@ -2396,6 +2619,77 @@ function AdminVendorsPageInner() {
                     </div>
                   );
                 })()}
+                <section className="rounded-xl border border-light-green/25 bg-white/70 p-4">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-dark-primary">
+                      Product price history
+                    </h3>
+                    <Link
+                      href="/vendors/import"
+                      className="text-xs font-medium text-dark-secondary underline decoration-light-green/60 underline-offset-2"
+                    >
+                      Bulk vendor import
+                    </Link>
+                  </div>
+                  <p className="mt-1 text-xs text-mid-green">
+                    Last price this vendor quoted for a product. This is quote
+                    history, not a catalog price list.
+                  </p>
+                  {(selectedVendor.productHistory || []).length === 0 ? (
+                    <p className="mt-3 text-sm text-mid-green">
+                      No product prices stored for this vendor yet.
+                    </p>
+                  ) : (
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full text-left text-sm">
+                        <thead className="text-xs text-mid-green">
+                          <tr>
+                            <th className="py-1.5 pr-3 font-medium">Product</th>
+                            <th className="py-1.5 pr-3 font-medium">Last price</th>
+                            <th className="py-1.5 pr-3 font-medium">Quoted</th>
+                            <th className="py-1.5 font-medium">RFQ</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(selectedVendor.productHistory || []).map((row) => (
+                            <tr
+                              key={row.id || `${row.productKey}-${row.lastQuotedAt}`}
+                              className="border-t border-light-green/20"
+                            >
+                              <td className="py-1.5 pr-3">{row.productKey}</td>
+                              <td className="py-1.5 pr-3 tabular-nums">
+                                {Number(row.lastPrice).toLocaleString("en-IN", {
+                                  style: "currency",
+                                  currency: "INR",
+                                  maximumFractionDigits: 2,
+                                })}
+                              </td>
+                              <td className="py-1.5 pr-3 text-xs text-mid-green">
+                                {row.lastQuotedAt
+                                  ? new Date(row.lastQuotedAt).toLocaleDateString(
+                                      "en-IN"
+                                    )
+                                  : "—"}
+                              </td>
+                              <td className="py-1.5 text-xs">
+                                {row.sourceRfqId ? (
+                                  <Link
+                                    href={`/rfq/${row.sourceRfqId}`}
+                                    className="text-dark-secondary underline underline-offset-2"
+                                  >
+                                    Open RFQ
+                                  </Link>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </section>
               </div>
             )}
           </MappingPanel>
@@ -2511,7 +2805,9 @@ function AdminVendorsPageInner() {
                     Add vendors
                     <span className="ml-2 text-sm font-normal text-mid-green">
                       {selectedCategory}
-                      {selectedSubcategory ? ` / ${selectedSubcategory}` : ""}
+                      {selectedSubcategory
+                        ? ` / ${selectedSubcategory}`
+                        : " · category-level"}
                     </span>
                   </h2>
                 </div>
@@ -3024,22 +3320,11 @@ function AdminVendorsPageInner() {
                 </button>
                 <button
                   type="submit"
-                  disabled={
-                    assignSaving ||
-                    (assignForm.subcategories.length === 0 &&
-                      !(selectedVendor?.categories || []).some(
-                        (row) => row.category === assignForm.category
-                      ))
-                  }
+                  disabled={assignSaving || assignSaveState.disabled}
+                  title={assignSaveState.help}
                   className="rounded-xl bg-mid-green px-3.5 py-1.5 text-sm font-medium text-background transition hover:bg-dark-secondary disabled:opacity-50"
                 >
-                  {assignSaving
-                    ? "Saving…"
-                    : assignForm.subcategories.length > 1
-                      ? `Save ${assignForm.subcategories.length} mappings`
-                      : assignForm.subcategories.length === 0
-                        ? "Save (unlink all)"
-                        : "Save mapping"}
+                  {assignSaveState.label}
                 </button>
                 <button
                   type="button"
@@ -3085,9 +3370,33 @@ function AdminVendorsPageInner() {
                       ? ` · ${assignForm.subcategories.length} selected`
                       : ""}
                   </p>
+                  <label className="mb-2 flex shrink-0 items-start gap-2 rounded-lg border border-light-green/30 bg-background/60 px-2.5 py-2 text-xs text-dark-primary">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={assignForm.categoryLevel}
+                      onChange={(event) =>
+                        setAssignForm((current) => ({
+                          ...current,
+                          categoryLevel: event.target.checked,
+                        }))
+                      }
+                    />
+                    <span>
+                      <span className="font-medium">Map at category level</span>
+                      <span className="mt-0.5 block text-[11px] text-mid-green">
+                        Use this when there is no subcategory, such as CABLE or
+                        TFT. The vendor still matches RFQs in this category.
+                      </span>
+                    </span>
+                  </label>
+                  <p className="mb-2 shrink-0 text-[11px] text-mid-green">
+                    {assignSaveState.help}
+                  </p>
                   {subcategoryOptionsForAssign.length === 0 ? (
                     <p className="shrink-0 rounded-lg border border-dashed border-light-green/40 px-3 py-2 text-xs text-mid-green">
-                      No subcategories yet — add one below.
+                      No subcategories yet — add one below, or map the category
+                      itself.
                     </p>
                   ) : (
                     <div className="max-h-[min(40vh,22rem)] space-y-2 overflow-y-auto overscroll-contain pr-0.5 lg:max-h-none lg:min-h-0 lg:flex-1">
@@ -3255,7 +3564,7 @@ function AdminVendorsPageInner() {
                           key={pocKey(contact)}
                           type="button"
                           disabled={alreadyUsed}
-                          onClick={() => useAvailablePoc(contact)}
+                          onClick={() => addAvailablePoc(contact)}
                           className={`w-full rounded-lg border p-3 text-left transition ${
                             alreadyUsed
                               ? "border-mid-green/25 bg-mid-green/10"
@@ -3278,7 +3587,11 @@ function AdminVendorsPageInner() {
                           </div>
                           <p className="mt-0.5 truncate text-[11px] text-mid-green">
                             {contact.role || "Category POC"}
-                            {contact.isPrimary ? " · Primary" : ""}
+                            {contact.isPrimary ? (
+                              <span title={PRIMARY_POC_TITLE}> · Primary</span>
+                            ) : (
+                              ""
+                            )}
                           </p>
                           <div className="mt-2 space-y-0.5 text-[11px] text-dark-secondary">
                             <p className="truncate">

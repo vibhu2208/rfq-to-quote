@@ -9,6 +9,7 @@ import {
   type ClientContact,
 } from "@/components/client-contacts-editor";
 import { ClientGstLookupDialog } from "@/components/client-gst-lookup-dialog";
+import { ClientRelatedWork } from "@/components/client-related-work";
 
 type BillingAddress = {
   id?: string;
@@ -405,6 +406,11 @@ export default function ClientsPage() {
             </button>
           }
         >
+          <ClientRelatedWork
+            key={detail.id}
+            partyId={detail.id}
+            legalName={detail.legalName}
+          />
           <ClientContactsEditor
             partyId={detail.id}
             contacts={detail.contacts || []}
