@@ -116,7 +116,7 @@ export async function createProformaFromQuote(quoteId: string, userId?: string) 
                   l.description ||
                   l.product?.name ||
                   "Item",
-                hsnCode: l.product?.hsnCode ?? null,
+                hsnCode: l.hsnCode?.trim() || l.product?.hsnCode || null,
                 uqc: mapUnitToUqc(l.unit || l.product?.unit || "pcs"),
                 quantity: toNumber(l.qty),
                 unitPrice: toNumber(l.unitPrice),
