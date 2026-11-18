@@ -79,18 +79,15 @@ export function collectReadinessGaps(input: {
         lineIndex: index,
       });
     }
-  });
-
-  if (input.warrantyAsked) {
-    const unanswered = input.lines.every((line) => !(Number(line.warrantyQty) > 0));
-    if (unanswered && input.lines.length > 0) {
+    if (input.warrantyAsked && !(Number(line.warrantyQty) > 0)) {
       gaps.push({
-        id: "warranty",
-        message: "Warranty was asked in the RFQ and is not specified",
+        id: `warranty-${index}`,
+        message: `${name} has no warranty, and the RFQ asked for one`,
         fix: "warranty",
+        lineIndex: index,
       });
     }
-  }
+  });
 
   if (input.termsMissing) {
     gaps.push({

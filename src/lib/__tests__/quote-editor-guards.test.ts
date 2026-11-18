@@ -106,8 +106,22 @@ describe("readiness gaps", () => {
       "price-0",
       "hsn-0",
       "stock-0",
-      "warranty",
+      "warranty-0",
     ]);
+  });
+
+  it("still flags a line with no warranty when another line has one", () => {
+    const gaps = collectReadinessGaps({
+      buyerCompany: "Cafe",
+      buyerAddress: "1 Road",
+      buyerState: "Madhya Pradesh",
+      warrantyAsked: true,
+      lines: [
+        { name: "Switch", unitPrice: 100, hsnCode: "8517", warrantyQty: 1 },
+        { name: "Cable", unitPrice: 20, hsnCode: "8544", warrantyQty: 0 },
+      ],
+    });
+    expect(gaps.map((gap) => gap.id)).toEqual(["warranty-1"]);
   });
 });
 

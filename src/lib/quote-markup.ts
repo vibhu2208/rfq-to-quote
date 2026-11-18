@@ -114,12 +114,17 @@ export function applyMarkupPercentToLines<T extends MarkupLine>(
     };
   }
 
-  const newSubtotal = round2(
-    next.reduce(
-      (sum, line) => sum + round2(Number(line.qty) * Number(line.unitPrice)),
-      0
-    )
-  );
+  const adjustableTotal = (rows: T[]) =>
+    round2(
+      adjustable.reduce(
+        (sum, index) =>
+          sum + round2(Number(rows[index].qty) * Number(rows[index].unitPrice)),
+        0
+      )
+    );
+  // Only costed lines are in the target. Uncosted sell prices stay put and
+  // must not be treated as leftover to claw back from a marked-up line.
+  const newSubtotal = adjustableTotal(next);
   const leftover = round2(targetSubtotal - newSubtotal);
   if (leftover === 0) return next;
 
@@ -131,12 +136,7 @@ export function applyMarkupPercentToLines<T extends MarkupLine>(
   const trial = next.map((line, i) =>
     i === index ? { ...line, unitPrice: candidate } : line
   );
-  const trialSubtotal = round2(
-    trial.reduce(
-      (sum, line) => sum + round2(Number(line.qty) * Number(line.unitPrice)),
-      0
-    )
-  );
+  const trialSubtotal = adjustableTotal(trial);
   return Math.abs(trialSubtotal - targetSubtotal) <=
     Math.abs(newSubtotal - targetSubtotal)
     ? trial

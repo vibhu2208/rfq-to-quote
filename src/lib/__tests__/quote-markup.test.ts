@@ -37,6 +37,16 @@ describe("applyMarkupPercentToLines", () => {
     expect(next[0].costPrice).toBe(100);
   });
 
+  it("does not claw an uncosted sell price back from a costed line", () => {
+    const lines = [
+      { qty: 1, unitPrice: 100, costPrice: 100 },
+      { qty: 1, unitPrice: 50, costPrice: null },
+    ];
+    const next = applyMarkupPercentToLines(lines, 10);
+    expect(next[0].unitPrice).toBe(110);
+    expect(next[1].unitPrice).toBe(50);
+  });
+
   it("leaves sell unchanged when cost is missing", () => {
     const lines = [{ key: "x", qty: 2, unitPrice: 50, costPrice: null }];
     const next = applyMarkupPercentToLines(lines, 20);
