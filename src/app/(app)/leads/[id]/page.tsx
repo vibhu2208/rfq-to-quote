@@ -6,6 +6,10 @@ import { useCallback, useEffect, useState } from "react";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import type { LeadStage } from "@prisma/client";
 import { continueQuoteTarget } from "@/components/leads/leads-workbench-helpers";
+import {
+  parseLocalDateTimeValue,
+  toLocalDateTimeValue,
+} from "@/components/ui/date-time-picker";
 import { LeadStageProcess } from "@/components/leads/lead-stage-process";
 import {
   LEAD_CHANNEL_LABELS,
@@ -871,7 +875,10 @@ export default function LeadDetailPage() {
                         disabled={busy}
                         onClick={() => {
                           setRescheduleFor((current) => (current === f.id ? null : f.id));
-                          setRescheduleDue(f.dueAt.slice(0, 16));
+                          const due = new Date(f.dueAt);
+                          setRescheduleDue(
+                            Number.isNaN(due.getTime()) ? "" : toLocalDateTimeValue(due)
+                          );
                         }}
                         className="font-medium text-dark-primary hover:underline disabled:opacity-50"
                       >
@@ -901,12 +908,14 @@ export default function LeadDetailPage() {
                       <button
                         type="button"
                         disabled={busy || !rescheduleDue}
-                        onClick={() =>
+                        onClick={() => {
+                          const due = parseLocalDateTimeValue(rescheduleDue);
+                          if (!due) return;
                           void updateFollowUp(f.id, {
                             action: "reschedule",
-                            dueAt: new Date(rescheduleDue).toISOString(),
-                          })
-                        }
+                            dueAt: due.toISOString(),
+                          });
+                        }}
                         className="rounded-full bg-dark-primary px-2 py-1 text-[11px] text-background disabled:opacity-50"
                       >
                         Save time
