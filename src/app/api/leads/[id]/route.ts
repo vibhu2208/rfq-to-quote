@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
@@ -110,7 +110,8 @@ async function getDrawerLead(id: string) {
 }
 
 async function getFullLead(id: string) {
-  const lead = await prisma.rfq.findUnique({
+  const [lead, activities] = await Promise.all([
+    prisma.rfq.findUnique({
     where: { id },
     include: {
       assignedTo: { select: { id: true, name: true, email: true } },
@@ -120,7 +121,6 @@ async function getFullLead(id: string) {
           contacts: true,
         },
       },
-      messages: { orderBy: { createdAt: "asc" } },
       quotes: {
         orderBy: { createdAt: "desc" },
         include: {
@@ -151,6 +151,7 @@ async function getFullLead(id: string) {
       },
       stageHistory: {
         orderBy: { createdAt: "desc" },
+        take: 40,
         include: {
           actor: { select: { id: true, name: true, email: true } },
         },
@@ -161,20 +162,12 @@ async function getFullLead(id: string) {
           assignedTo: { select: { id: true, name: true, email: true } },
         },
       },
-      ownershipHistory: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          fromUser: { select: { id: true, name: true, email: true } },
-          toUser: { select: { id: true, name: true, email: true } },
-          actor: { select: { id: true, name: true, email: true } },
-        },
-      },
     },
-  });
+  }),
+    listLeadActivities(id, 80),
+  ]);
 
   if (!lead) return null;
-
-  const activities = await listLeadActivities(id, 200);
 
   const proformaIds = lead.quotes.flatMap((q) =>
     q.proformaInvoices.map((p) => p.id)
@@ -214,26 +207,27 @@ async function repairCustomerIdentityFromBody<
     customerEmail: lead.customerEmail,
   });
 
-  let next = {
+  const next = {
     customerName: heuristic.customerName,
     customerCompany: heuristic.customerCompany,
     customerPhone: heuristic.customerPhone,
     customerEmail: heuristic.customerEmail,
   };
 
-  // If heuristics still look weak, ask Gemini Flash Lite (signature only).
-  if (!next.customerCompany.trim() || !next.customerPhone.trim()) {
-    const resolved = await resolveCustomerIdentityFromEmail(
-      lead.rawText || "",
-      next.customerName,
-      next.customerEmail
-    );
-    next = {
-      customerName: resolved.customerName || next.customerName,
-      customerCompany: resolved.customerCompany || next.customerCompany,
-      customerPhone: resolved.customerPhone || next.customerPhone,
-      customerEmail: resolved.customerEmail || next.customerEmail,
-    };
+  // Gemini is scheduled after the response. Awaiting it made lead detail wait several seconds.
+  const needsRemote = !next.customerCompany.trim() || !next.customerPhone.trim();
+  if (needsRemote) {
+    const snapshot = { ...lead, ...next };
+    after(async () => {
+      try {
+        await backfillIdentityWithGemini(snapshot);
+      } catch (err) {
+        console.warn(
+          "[lead-identity] background repair failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+    });
   }
 
   const changed =
@@ -250,6 +244,37 @@ async function repairCustomerIdentityFromBody<
   });
 
   return { ...lead, ...next };
+}
+
+async function backfillIdentityWithGemini<
+  T extends {
+    id: string;
+    rawText?: string | null;
+    customerName?: string | null;
+    customerCompany?: string | null;
+    customerPhone?: string | null;
+    customerEmail?: string | null;
+  },
+>(lead: T) {
+  const resolved = await resolveCustomerIdentityFromEmail(
+    lead.rawText || "",
+    String(lead.customerName || ""),
+    String(lead.customerEmail || "")
+  );
+  const next = {
+    customerName: resolved.customerName || String(lead.customerName || "").trim(),
+    customerCompany:
+      resolved.customerCompany || String(lead.customerCompany || "").trim(),
+    customerPhone: resolved.customerPhone || String(lead.customerPhone || "").trim(),
+    customerEmail: resolved.customerEmail || String(lead.customerEmail || "").trim(),
+  };
+  const changed =
+    next.customerName !== String(lead.customerName || "").trim() ||
+    next.customerCompany !== String(lead.customerCompany || "").trim() ||
+    next.customerPhone !== String(lead.customerPhone || "").trim() ||
+    next.customerEmail !== String(lead.customerEmail || "").trim();
+  if (!changed) return;
+  await prisma.rfq.update({ where: { id: lead.id }, data: next });
 }
 
 export async function GET(req: NextRequest, { params }: Params) {

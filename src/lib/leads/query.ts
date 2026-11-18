@@ -17,6 +17,8 @@ export type LeadsListFilters = {
   dateFrom?: string;
   dateTo?: string;
   slaStatus?: string;
+  /** NEW / NEEDS_REVIEW / PARSED — dashboard Open RFQs drill-down. */
+  openRfq?: boolean;
   /** Extra preset query params (mine, hotOnly, etc.) */
   presetQuery?: string | Record<string, string>;
 };
@@ -36,6 +38,8 @@ export type LeadsWorkbenchUrlState = {
   slaStatus: string;
   page: number;
   leadId: string | null;
+  /** Dashboard "Open RFQs" drill-down: NEW, NEEDS_REVIEW, PARSED. */
+  openRfq?: boolean;
 };
 
 const WORKBENCH_INTAKE_VALUES = new Set<LeadIntakeFilter>([
@@ -89,6 +93,7 @@ export function parseLeadsWorkbenchSearchParams(
     slaStatus: params.get("slaStatus") || "",
     page,
     leadId,
+    openRfq: params.get("openRfq") === "1",
   };
 }
 
@@ -118,8 +123,54 @@ export function buildLeadsWorkbenchSearchParams(
   if (state.slaStatus) params.set("slaStatus", state.slaStatus);
   if (state.page > 0) params.set("page", String(state.page));
   if (state.leadId) params.set("leadId", state.leadId);
+  if (state.openRfq) params.set("openRfq", "1");
 
   return params;
+}
+
+/** Stable comparison so param order and encoding don't look like a new URL. */
+export function canonicalSearch(qs: string): string {
+  const raw = qs.startsWith("?") ? qs.slice(1) : qs;
+  const params = new URLSearchParams(raw);
+  return [...params.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
+}
+
+export type LeadsUrlSyncAction =
+  | { type: "idle" }
+  | { type: "apply-external" }
+  | { type: "write" };
+
+/**
+ * Decide how the leads list should reconcile React state with the address bar.
+ * A stale router.replace must not be adopted as Back/Forward — that dropped the
+ * last typed search character (the bar kept the previous query forever).
+ */
+export function decideLeadsUrlSync(input: {
+  currentSearch: string;
+  desiredSearch: string;
+  lastWrittenSearch: string;
+  pendingSearch: string | null;
+}): LeadsUrlSyncAction {
+  const current = canonicalSearch(input.currentSearch);
+  const desired = canonicalSearch(input.desiredSearch);
+  const lastWritten = canonicalSearch(input.lastWrittenSearch);
+  const pending =
+    input.pendingSearch == null ? null : canonicalSearch(input.pendingSearch);
+
+  if (current === desired) return { type: "idle" };
+
+  if (pending != null && current !== pending) {
+    return { type: "write" };
+  }
+
+  if (pending == null && current !== lastWritten && desired === lastWritten) {
+    return { type: "apply-external" };
+  }
+
+  return { type: "write" };
 }
 
 export type LeadsListResponse = {
@@ -185,6 +236,8 @@ export function buildLeadsSearchParams(filters: LeadsListFilters) {
   }
   if (filters.slaStatus) params.set("slaStatus", filters.slaStatus);
   else params.delete("slaStatus");
+  if (filters.openRfq) params.set("openRfq", "1");
+  else params.delete("openRfq");
 
   return params;
 }

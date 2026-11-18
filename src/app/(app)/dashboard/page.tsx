@@ -4,6 +4,12 @@ import { Money, StatusBadge } from "@/components/ui";
 import { decimalToNumber } from "@/lib/quotes";
 import { computeLeadKpis } from "@/lib/leads/kpis";
 import { LEAD_STAGE_LABELS } from "@/lib/leads/constants";
+import { dashboardDrilldowns } from "@/lib/dashboard-links";
+import { getDefaultOrganisationId } from "@/lib/accounting/context";
+import {
+  PIPELINE_QUOTE_STATUSES,
+  WON_QUOTE_STATUSES,
+} from "@/lib/quote-list";
 import { format, startOfMonth, subDays } from "date-fns";
 import {
   ArrowUpRight,
@@ -15,16 +21,18 @@ import {
   TrendingUp,
 } from "lucide-react";
 
-const PIPELINE_STATUSES = ["SENT", "VIEWED", "UNDER_NEGOTIATION", "REVISED"] as const;
-const WON_STATUSES = ["ACCEPTED", "INVOICE_GENERATED", "PAYMENT_PENDING", "PAYMENT_RECEIVED", "DELIVERED", "CLOSED"] as const;
+const PIPELINE_STATUSES = PIPELINE_QUOTE_STATUSES;
+const WON_STATUSES = WON_QUOTE_STATUSES;
 
 function formatLabel(status: string) {
   return status.replaceAll("_", " ").toLowerCase();
 }
 
 export default async function DashboardPage() {
-  const monthStart = startOfMonth(new Date());
-  const weekAgo = subDays(new Date(), 7);
+  const now = new Date();
+  const monthStart = startOfMonth(now);
+  const weekAgo = subDays(now, 7);
+  const links = dashboardDrilldowns(now);
 
   const [
     productCount,
@@ -44,10 +52,17 @@ export default async function DashboardPage() {
     statusGroups,
     pipelineAgg,
     wonAgg,
+    newThisWeek,
+    leadKpis,
   ] = await Promise.all([
     prisma.product.count({ where: { active: true } }),
     prisma.quote.count(),
-    prisma.rfq.count({ where: { status: { in: ["NEW", "NEEDS_REVIEW", "PARSED"] } } }),
+    prisma.rfq.count({
+      where: {
+        archivedAt: null,
+        status: { in: ["NEW", "NEEDS_REVIEW", "PARSED"] },
+      },
+    }),
     prisma.quote.count({ where: { needsAssistance: true } }),
     prisma.quote.count({ where: { status: "DRAFT" } }),
     prisma.quote.count({ where: { status: { in: [...PIPELINE_STATUSES] } } }),
@@ -55,7 +70,11 @@ export default async function DashboardPage() {
       where: { status: { in: [...WON_STATUSES] }, updatedAt: { gte: monthStart } },
     }),
     prisma.quote.count({ where: { createdAt: { gte: monthStart } } }),
-    prisma.party.count({ where: { type: { in: ["CUSTOMER", "BOTH"] }, active: true } }),
+    getDefaultOrganisationId().then((organisationId) =>
+      prisma.party.count({
+        where: { organisationId, active: true, type: { not: "OTHER" } },
+      })
+    ),
     prisma.vendor.count({ where: { active: true } }),
     prisma.invoice.count({
       where: { status: { in: ["ISSUED", "PARTIALLY_PAID"] }, balanceDue: { gt: 0 } },
@@ -86,11 +105,8 @@ export default async function DashboardPage() {
       where: { status: { in: [...WON_STATUSES] }, updatedAt: { gte: monthStart } },
       _sum: { grandTotal: true },
     }),
-  ]);
-
-  const [newThisWeek, leadKpis] = await Promise.all([
     prisma.quote.count({ where: { createdAt: { gte: weekAgo } } }),
-    computeLeadKpis(),
+    computeLeadKpis({}, { profile: "dashboard" }),
   ]);
   const pipelineValue = decimalToNumber(pipelineAgg._sum.grandTotal);
   const wonValue = decimalToNumber(wonAgg._sum.grandTotal);
@@ -130,22 +146,25 @@ export default async function DashboardPage() {
     {
       label: "Open RFQs",
       value: rfqCount,
-      hint: "Waiting in inbox",
-      href: "/leads",
+      hint: "New, needs review, or parsed",
+      href: links.openRfqs,
+      title: "Open the leads list filtered to unprocessed RFQs",
       icon: Target,
     },
     {
       label: "Pipeline value",
       valueNode: <Money value={pipelineValue} />,
       hint: `${pipelineCount} active quotes`,
-      href: "/quotes",
+      href: links.pipeline,
+      title: "Quotes that are sent, viewed, negotiating, or revised",
       icon: TrendingUp,
     },
     {
       label: "Need assistance",
       value: assistCount,
       hint: assistCount > 0 ? "Buyer replies waiting" : "All clear",
-      href: "/quotes",
+      href: links.needAssistance,
+      title: "Quotes with needs assistance checked",
       icon: CircleAlert,
       alert: assistCount > 0,
     },
@@ -153,15 +172,16 @@ export default async function DashboardPage() {
       label: "Won this month",
       valueNode: <Money value={wonValue} />,
       hint: winRate != null ? `${winRate}% of ${quotesThisMonth} quotes` : "No quotes yet",
-      href: "/quotes",
+      href: links.wonThisMonth,
+      title: "Won quotes updated since the start of this month",
       icon: FileText,
     },
   ];
 
   const quickActions = [
     { href: "/quotes/new", label: "New quote", desc: "Build and send a quotation", icon: FileText },
-    { href: "/leads", label: "Leads", desc: `${leadKpis.totalLeads} leads in pipeline`, icon: Target },
-    { href: "/leads", label: "Leads", desc: `${rfqCount} open RFQs in leads`, icon: Target },
+    { href: links.totalLeads, label: "Leads", desc: `${leadKpis.totalLeads} requirements`, icon: Target },
+    { href: links.openRfqs, label: "Open RFQs", desc: `${rfqCount} unprocessed RFQs`, icon: Target },
     { href: "/products", label: "Catalog", desc: `${productCount} active products`, icon: Package },
     { href: "/request", label: "Public RFQ", desc: "Share the intake form", icon: ClipboardList },
   ];
@@ -203,6 +223,7 @@ export default async function DashboardPage() {
             <Link
               key={kpi.label}
               href={kpi.href}
+              title={"title" in kpi ? kpi.title : undefined}
               className={`group rounded-2xl border p-4 transition hover:border-mid-green/30 hover:bg-white/80 ${
                 kpi.alert
                   ? "border-dark-primary/15 bg-dark-primary/[0.04]"
@@ -235,14 +256,17 @@ export default async function DashboardPage() {
           <div>
             <h2 className="text-base font-semibold tracking-tight">Leads</h2>
             <p className="mt-0.5 text-xs text-mid-green">
-              Pipeline health · conversion{" "}
-              {Math.round(leadKpis.conversionRate * 1000) / 10}% · quote-to-win{" "}
-              {Math.round(leadKpis.quotationToWinRatio * 1000) / 10}%
+              Requirements only
+              {leadKpis.excludedIntake > 0
+                ? ` · ${leadKpis.excludedIntake} junk/skipped not included`
+                : ""}
+              {" · "}conversion {Math.round(leadKpis.conversionRate * 1000) / 10}% ·
+              quote-to-win {Math.round(leadKpis.quotationToWinRatio * 1000) / 10}%
             </p>
           </div>
           <div className="flex gap-2">
             <Link
-              href="/leads/follow-ups"
+              href={links.followUps}
               className="text-xs font-medium text-mid-green hover:underline"
             >
               Follow-ups
@@ -250,27 +274,52 @@ export default async function DashboardPage() {
                 ? ` (${leadKpis.overdueFollowUps} overdue)`
                 : ""}
             </Link>
-            <Link href="/leads" className="text-xs font-medium text-mid-green hover:underline">
-              All leads
+            <Link
+              href={links.totalLeads}
+              className="text-xs font-medium text-mid-green hover:underline"
+            >
+              All requirements
             </Link>
           </div>
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
           {[
-            { label: "Total", value: leadKpis.totalLeads, href: "/leads" },
-            { label: "New", value: leadKpis.newLeads, href: "/leads" },
-            { label: "Hot / Urgent", value: leadKpis.hotUrgent, href: "/leads" },
-            { label: "Won", value: leadKpis.leadsWon, href: "/leads" },
+            {
+              label: "Total",
+              value: leadKpis.totalLeads,
+              href: links.totalLeads,
+              title: "Requirements only — junk and skipped mail are excluded",
+            },
+            {
+              label: "New",
+              value: leadKpis.newLeads,
+              href: links.newLeads,
+              title: "Requirements in the New Lead stage",
+            },
+            {
+              label: "Hot / Urgent",
+              value: leadKpis.hotUrgent,
+              href: links.hotLeads,
+              title: "Hot and high priority requirements",
+            },
+            {
+              label: "Won",
+              value: leadKpis.leadsWon,
+              href: links.wonLeads,
+              title: "Requirements closed won",
+            },
             {
               label: "Pending follow-ups",
               value: leadKpis.pendingFollowUps,
-              href: "/leads/follow-ups",
+              href: links.followUps,
+              title: "Pending and overdue follow-ups",
             },
           ].map((card) => (
             <Link
               key={card.label}
               href={card.href}
+              title={card.title}
               className="rounded-xl bg-dark-primary/[0.03] px-3 py-2.5 hover:bg-dark-primary/[0.06]"
             >
               <p className="text-[11px] text-mid-green">{card.label}</p>
@@ -286,9 +335,11 @@ export default async function DashboardPage() {
             </p>
             <div className="space-y-2">
               {leadKpis.stageDistribution.map((row) => (
-                <div
+                <Link
                   key={row.stage}
-                  className="grid grid-cols-[7.5rem_1fr_2rem] items-center gap-2"
+                  href={`/leads?intakeKind=REQUIREMENT&stage=${row.stage}`}
+                  title={`${LEAD_STAGE_LABELS[row.stage]} requirements`}
+                  className="grid grid-cols-[7.5rem_1fr_2rem] items-center gap-2 rounded-md hover:bg-dark-primary/[0.04]"
                 >
                   <span className="truncate text-xs text-mid-green">
                     {LEAD_STAGE_LABELS[row.stage]}
@@ -307,7 +358,7 @@ export default async function DashboardPage() {
                   <span className="text-right text-xs font-semibold tabular-nums">
                     {row.count}
                   </span>
-                </div>
+                </Link>
               ))}
             </div>
           </div>
@@ -334,12 +385,16 @@ export default async function DashboardPage() {
                   {leadKpis.quotationsSent}
                 </p>
               </div>
-              <div className="rounded-xl border border-dark-primary/8 px-3 py-2.5">
+              <Link
+                href={links.lostLeads}
+                title="Lost and disqualified requirements"
+                className="rounded-xl border border-dark-primary/8 px-3 py-2.5 hover:bg-dark-primary/[0.04]"
+              >
                 <p className="text-[11px] text-mid-green">Lost / DQ</p>
                 <p className="mt-0.5 text-lg font-semibold tabular-nums">
                   {leadKpis.dealsLost + leadKpis.disqualified}
                 </p>
-              </div>
+              </Link>
             </div>
           </div>
         </div>
@@ -426,10 +481,15 @@ export default async function DashboardPage() {
           </div>
 
           <div className="mt-5 grid grid-cols-2 gap-2 border-t border-dark-primary/8 pt-4">
-            <div className="rounded-xl bg-dark-primary/[0.03] px-3 py-2.5">
+            <Link
+              href="/clients"
+              title="Active parties in the clients directory, excluding inactive and other"
+              className="rounded-xl bg-dark-primary/[0.03] px-3 py-2.5 hover:bg-dark-primary/[0.06]"
+            >
               <p className="text-[11px] text-mid-green">Clients</p>
               <p className="mt-0.5 text-lg font-semibold tabular-nums">{clientCount}</p>
-            </div>
+              <p className="text-[10px] text-mid-green/80">Active directory</p>
+            </Link>
             <div className="rounded-xl bg-dark-primary/[0.03] px-3 py-2.5">
               <p className="text-[11px] text-mid-green">Vendors</p>
               <p className="mt-0.5 text-lg font-semibold tabular-nums">{vendorCount}</p>
@@ -453,7 +513,10 @@ export default async function DashboardPage() {
               <h2 className="text-base font-semibold tracking-tight">Needs assistance</h2>
               <p className="text-xs text-mid-green">Buyer replies that need a human touch</p>
             </div>
-            <Link href="/quotes" className="text-xs font-medium text-mid-green hover:underline">
+            <Link
+              href={links.needAssistance}
+              className="text-xs font-medium text-mid-green hover:underline"
+            >
               View all
             </Link>
           </div>

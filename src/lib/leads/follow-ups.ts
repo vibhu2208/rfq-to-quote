@@ -232,7 +232,7 @@ export async function completeFollowUp(input: {
   });
 
   const nextPending = await prisma.leadFollowUp.findFirst({
-    where: { rfqId: existing.rfqId, status: "PENDING" },
+    where: { rfqId: existing.rfqId, status: { in: ["PENDING", "OVERDUE"] } },
     orderBy: { dueAt: "asc" },
   });
 
@@ -250,6 +250,70 @@ export async function completeFollowUp(input: {
     meta: { followUpId: followUp.id },
   });
 
+  return followUp;
+}
+
+async function syncNextFollowUp(rfqId: string) {
+  const nextPending = await prisma.leadFollowUp.findFirst({
+    where: { rfqId, status: { in: ["PENDING", "OVERDUE"] } },
+    orderBy: { dueAt: "asc" },
+  });
+  await prisma.rfq.update({
+    where: { id: rfqId },
+    data: { nextFollowUpAt: nextPending?.dueAt || null },
+  });
+}
+
+export async function cancelFollowUp(input: {
+  id: string;
+  actorId?: string | null;
+}) {
+  const existing = await prisma.leadFollowUp.findUniqueOrThrow({
+    where: { id: input.id },
+  });
+  const followUp = await prisma.leadFollowUp.update({
+    where: { id: input.id },
+    data: { status: "CANCELLED", completedAt: new Date() },
+  });
+  await syncNextFollowUp(existing.rfqId);
+  await logLeadActivity({
+    rfqId: existing.rfqId,
+    type: "OTHER",
+    title: existing.title ? `Cancelled: ${existing.title}` : "Follow-up cancelled",
+    body: existing.notes || "",
+    actorId: input.actorId,
+    meta: { followUpId: followUp.id, action: "cancel" },
+  });
+  return followUp;
+}
+
+export async function rescheduleFollowUp(input: {
+  id: string;
+  dueAt: Date;
+  actorId?: string | null;
+}) {
+  const existing = await prisma.leadFollowUp.findUniqueOrThrow({
+    where: { id: input.id },
+  });
+  const followUp = await prisma.leadFollowUp.update({
+    where: { id: input.id },
+    data: { dueAt: input.dueAt, status: "PENDING", completedAt: null },
+  });
+  await syncNextFollowUp(existing.rfqId);
+  await logLeadActivity({
+    rfqId: existing.rfqId,
+    type: "FOLLOW_UP_SCHEDULED",
+    title: existing.title
+      ? `Rescheduled: ${existing.title}`
+      : "Follow-up rescheduled",
+    body: existing.notes || "",
+    actorId: input.actorId,
+    meta: {
+      followUpId: followUp.id,
+      action: "reschedule",
+      dueAt: input.dueAt.toISOString(),
+    },
+  });
   return followUp;
 }
 

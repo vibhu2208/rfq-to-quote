@@ -51,11 +51,14 @@ import { LeadsTableRow } from "@/components/leads/leads-table-row";
 import {
   COLUMN_CELL_CLASS,
   COLUMN_LABELS,
+  customDateRangeError,
   fixedPopoverCoords,
   isDatePresetFilterActive,
   money,
   recentActivityItems,
   relativeTime,
+  savedViewFiltersMatch,
+  visibleLeadColumns,
 } from "@/components/leads/leads-workbench-helpers";
 import type { LeadRow } from "@/components/leads/types";
 import { AppPageSkeleton } from "@/components/page-skeleton";
@@ -83,12 +86,14 @@ import type { LeadIntakeFilter } from "@/lib/leads/filters";
 import {
   LEADS_PAGE_SIZE,
   buildLeadsWorkbenchSearchParams,
+  decideLeadsUrlSync,
   fetchLeadSavedViews,
   fetchLeadUsers,
   leadsKeys,
   parseLeadsWorkbenchSearchParams,
   type LeadsListFilters,
   type LeadsListResponse,
+  type LeadsWorkbenchUrlState,
 } from "@/lib/leads/query";
 
 type HeaderFilterCol =
@@ -188,6 +193,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   );
   const initialUrl = initialUrlRef.current;
   const urlSyncRef = useRef(searchParams.toString());
+  const urlPendingRef = useRef<string | null>(null);
+  const externalNavRef = useRef(false);
   const prevDrawerLeadIdRef = useRef(initialUrl.leadId);
   const [page, setPage] = useState(initialUrl.page);
   const tableViewActive = !pathname.startsWith("/leads/pipeline");
@@ -204,6 +211,9 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const [datePreset, setDatePreset] = useState(initialUrl.datePreset);
   const [dateFrom, setDateFrom] = useState(initialUrl.dateFrom);
   const [dateTo, setDateTo] = useState(initialUrl.dateTo);
+  const [openRfq, setOpenRfq] = useState(Boolean(initialUrl.openRfq));
+  const [dateRangeError, setDateRangeError] = useState("");
+  const [selectedViewId, setSelectedViewId] = useState("");
   const [slaStatus, setSlaStatus] = useState(initialUrl.slaStatus);
   const [headerFilter, setHeaderFilter] = useState<{
     col: HeaderFilterCol;
@@ -351,24 +361,56 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     presetQuery,
   ]);
 
+  function applyUrlState(parsed: LeadsWorkbenchUrlState) {
+    skipFilterPageReset.current = true;
+    setIntakeKind(parsed.intakeKind);
+    setQ(parsed.q);
+    setDebouncedQ(parsed.q);
+    setStage(parsed.stage);
+    setPriority(parsed.priority);
+    setChannel(parsed.channel);
+    setAssignee(parsed.assignee);
+    setCategory(parsed.category);
+    setDatePreset(parsed.datePreset);
+    setDateFrom(parsed.dateFrom);
+    setDateTo(parsed.dateTo);
+    setDraftDateFrom(parsed.dateFrom);
+    setDraftDateTo(parsed.dateTo);
+    setSlaStatus(parsed.slaStatus);
+    setPage(parsed.page);
+    setOpenRfq(Boolean(parsed.openRfq));
+    setDrawerLeadId(parsed.leadId);
+    prevDrawerLeadIdRef.current = parsed.leadId;
+    setSelectedViewId("");
+  }
+
   // Keep list filters / intake tab / open drawer in the URL so browser back
   // from /rfq/[id] remounts the same sub-view instead of the default list.
   // Opening a drawer uses push so Back closes it; filter tweaks use replace.
-  // If the URL changed externally (Back/Forward), sync drawer from leadId.
+  // Search text is written from the debounced value so a keystroke cannot be
+  // dropped when an older router.replace lands late.
   useEffect(() => {
-    const qs = searchParams.toString();
-    if (qs !== urlSyncRef.current) {
-      urlSyncRef.current = qs;
-      const leadId = searchParams.get("leadId")?.trim() || null;
-      prevDrawerLeadIdRef.current = leadId;
-      setDrawerLeadId(leadId);
+    function onPop() {
+      externalNavRef.current = true;
+    }
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  useEffect(() => {
+    const current = searchParams.toString();
+    if (externalNavRef.current) {
+      externalNavRef.current = false;
+      urlPendingRef.current = null;
+      applyUrlState(parseLeadsWorkbenchSearchParams(searchParams, presetQuery));
+      urlSyncRef.current = current;
       return;
     }
 
-    const next = buildLeadsWorkbenchSearchParams(
+    const desired = buildLeadsWorkbenchSearchParams(
       {
         intakeKind,
-        q,
+        q: debouncedQ,
         stage,
         priority,
         channel,
@@ -380,18 +422,37 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         slaStatus,
         page,
         leadId: drawerLeadId,
+        openRfq,
       },
       presetQuery
     ).toString();
-    if (next === urlSyncRef.current) {
+
+    const decision = decideLeadsUrlSync({
+      currentSearch: current,
+      desiredSearch: desired,
+      lastWrittenSearch: urlSyncRef.current,
+      pendingSearch: urlPendingRef.current,
+    });
+
+    if (decision.type === "idle") {
+      urlPendingRef.current = null;
+      urlSyncRef.current = desired;
       prevDrawerLeadIdRef.current = drawerLeadId;
       return;
     }
+    if (decision.type === "apply-external") {
+      urlPendingRef.current = null;
+      applyUrlState(parseLeadsWorkbenchSearchParams(searchParams, presetQuery));
+      urlSyncRef.current = current;
+      return;
+    }
+
     const openingDrawer =
       Boolean(drawerLeadId) && !prevDrawerLeadIdRef.current;
     prevDrawerLeadIdRef.current = drawerLeadId;
-    urlSyncRef.current = next;
-    const href = next ? `${pathname}?${next}` : pathname;
+    urlSyncRef.current = desired;
+    urlPendingRef.current = desired;
+    const href = desired ? `${pathname}?${desired}` : pathname;
     if (openingDrawer) {
       router.push(href, { scroll: false });
     } else {
@@ -399,7 +460,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     }
   }, [
     intakeKind,
-    q,
+    debouncedQ,
     stage,
     priority,
     channel,
@@ -411,11 +472,15 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     slaStatus,
     page,
     drawerLeadId,
+    openRfq,
     pathname,
     presetQuery,
     router,
     searchParams,
   ]);
+
+  const appliedRangeError =
+    datePreset === "custom" ? customDateRangeError(dateFrom, dateTo) : null;
 
   const listFilters = useMemo<LeadsListFilters>(
     () => ({
@@ -428,10 +493,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       channel,
       assignedToUserId: assignee,
       category,
-      datePreset,
-      dateFrom,
-      dateTo,
+      datePreset: appliedRangeError ? "all" : datePreset,
+      dateFrom: appliedRangeError ? "" : dateFrom,
+      dateTo: appliedRangeError ? "" : dateTo,
       slaStatus,
+      openRfq,
       presetQuery,
     }),
     [
@@ -446,7 +512,9 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       datePreset,
       dateFrom,
       dateTo,
+      appliedRangeError,
       slaStatus,
+      openRfq,
       presetQuery,
     ]
   );
@@ -468,6 +536,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     SKIPPED: 0,
   };
   const loading = isLoading && rows.length === 0;
+  const countsPending = isLoading && !listData;
 
   const { data: users = [] } = useQuery({
     queryKey: leadsKeys.users(),
@@ -1414,8 +1483,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   }
 
   function applySavedView(view: {
+    id: string;
     filters: Record<string, unknown>;
   }) {
+    setSelectedViewId(view.id);
     const f = view.filters || {};
     setQ(String(f.q || ""));
     setStage(String(f.stage || ""));
@@ -1520,14 +1591,23 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     setDateTo("");
     setDraftDateFrom("");
     setDraftDateTo("");
+    setDateRangeError("");
     setSlaStatus("");
+    setOpenRfq(false);
     setShowCustomRange(false);
     setHeaderFilter(null);
+    setSelectedViewId("");
   }
 
   function applyCustomDateRange() {
     const from = draftDateFrom.trim();
     const to = draftDateTo.trim();
+    const error = customDateRangeError(from, to);
+    if (error) {
+      setDateRangeError(error);
+      return;
+    }
+    setDateRangeError("");
     if (from || to) {
       setDateFrom(from);
       setDateTo(to);
@@ -1549,18 +1629,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     { value: "custom", label: "Custom range" },
   ] as const;
 
-  const visibleColumns = useMemo(() => {
-    const cols = DEFAULT_LEAD_COLUMNS.filter((c) => columns.includes(c));
-    // Always keep lead identity + stage visible
-    for (const required of ["leadId", "stage"] as LeadColumnId[]) {
-      if (!cols.includes(required)) {
-        const actionsIdx = cols.indexOf("actions");
-        if (actionsIdx >= 0) cols.splice(actionsIdx, 0, required);
-        else cols.push(required);
-      }
-    }
-    return cols;
-  }, [columns]);
+  const visibleColumns = useMemo(
+    () => visibleLeadColumns(columns),
+    [columns]
+  );
 
   const allStageTotal = useMemo(
     () => Object.values(stageCounts).reduce((a, b) => a + b, 0),
@@ -1605,6 +1677,22 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       icon: SkipForward,
     },
   ];
+
+  const selectedView = savedViews.find((v) => v.id === selectedViewId) || null;
+  const viewModified = selectedView
+    ? !savedViewFiltersMatch(selectedView.filters || {}, {
+        q,
+        stage,
+        priority,
+        channel,
+        assignee,
+        category,
+        datePreset,
+        dateFrom,
+        dateTo,
+        slaStatus,
+      })
+    : false;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -1663,7 +1751,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                           : "bg-dark-secondary/10 text-mid-green"
                       }`}
                     >
-                      {item.count}
+                      {countsPending ? "…" : item.count}
                     </span>
                   </button>
                 );
@@ -1682,7 +1770,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   key={item.id}
                   type="button"
                   onClick={() => setIntakeKind(item.id)}
-                  title={`${item.label} (${item.count})`}
+                  title={`${item.label} (${countsPending ? "…" : item.count})`}
                   className={`flex h-8 w-8 items-center justify-center rounded-xl transition ${
                     active
                       ? "bg-dark-primary text-background"
@@ -1709,7 +1797,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     : "bg-dark-secondary/8 text-dark-primary"
                 }`}
               >
-                {item.label} · {item.count}
+                {item.label} · {countsPending ? "…" : item.count}
               </button>
             ))}
           </div>
@@ -1815,7 +1903,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 <input
                   type="date"
                   value={draftDateFrom}
-                  onChange={(e) => setDraftDateFrom(e.target.value)}
+                  onChange={(e) => {
+                    setDraftDateFrom(e.target.value);
+                    setDateRangeError("");
+                  }}
                   className="h-8 w-full rounded-lg bg-dark-secondary/[0.05] px-2 text-sm"
                 />
               </label>
@@ -1824,10 +1915,18 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                 <input
                   type="date"
                   value={draftDateTo}
-                  onChange={(e) => setDraftDateTo(e.target.value)}
+                  onChange={(e) => {
+                    setDraftDateTo(e.target.value);
+                    setDateRangeError("");
+                  }}
                   className="h-8 w-full rounded-lg bg-dark-secondary/[0.05] px-2 text-sm"
                 />
               </label>
+              {dateRangeError ? (
+                <p role="alert" className="text-xs text-red-700">
+                  {dateRangeError}
+                </p>
+              ) : null}
               <button
                 type="button"
                 onClick={applyCustomDateRange}
@@ -1950,9 +2049,28 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         </button>
       </div>
 
+      {openRfq ? (
+        <p className="text-xs text-mid-green">
+          Showing open RFQs (new, needs review, or parsed).{" "}
+          <button
+            type="button"
+            onClick={() => setOpenRfq(false)}
+            className="font-medium underline"
+          >
+            Show every lead
+          </button>
+        </p>
+      ) : null}
+      {appliedRangeError ? (
+        <p role="alert" className="text-xs text-red-700">
+          {appliedRangeError} The list is not filtered by that range.
+        </p>
+      ) : null}
+
       <LeadProcessBar
         activeStage={stage}
         stageCounts={stageCounts}
+        countsPending={countsPending}
         onSelect={(next) => {
           setStage(next);
           // All = every lead including Email + WhatsApp — clear source filter
@@ -1963,21 +2081,50 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
       <div className="flex flex-wrap items-center gap-2">
         {savedViews.length ? (
-          <select
-            className="h-8 rounded-full bg-dark-secondary/[0.05] px-3 text-xs"
-            defaultValue=""
-            onChange={(e) => {
-              const view = savedViews.find((v) => v.id === e.target.value);
-              if (view) applySavedView(view);
-            }}
-          >
-            <option value="">Saved views…</option>
-            {savedViews.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              className="h-8 rounded-full bg-dark-secondary/[0.05] px-3 text-xs"
+              value={selectedViewId}
+              onChange={(e) => {
+                const view = savedViews.find((v) => v.id === e.target.value);
+                if (!e.target.value) {
+                  setSelectedViewId("");
+                  return;
+                }
+                if (view) applySavedView(view);
+              }}
+            >
+              <option value="">Saved views…</option>
+              {savedViews.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+            {viewModified ? (
+              <span className="text-xs font-medium text-amber-800">Modified</span>
+            ) : null}
+            {selectedViewId ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const view = savedViews.find((v) => v.id === selectedViewId);
+                  if (!view) return;
+                  if (!window.confirm(`Delete saved view "${view.name}"?`)) return;
+                  void (async () => {
+                    await fetch(`/api/leads/saved-views/${view.id}`, {
+                      method: "DELETE",
+                    });
+                    setSelectedViewId("");
+                    await refetchSavedViews();
+                  })();
+                }}
+                className="h-8 rounded-full px-2 text-xs font-medium text-red-700 hover:bg-red-50"
+              >
+                Delete view
+              </button>
+            ) : null}
+          </>
         ) : null}
         <input
           value={saveViewName}
@@ -2287,6 +2434,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           total={total}
           pageSize={LEADS_PAGE_SIZE}
           loading={isFetching}
+          unknownTotal={countsPending}
           onPageChange={setPage}
         />
       </div>
@@ -3199,6 +3347,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   <Link
                     key={q.id}
                     href={`/quotes/${q.id}`}
+                    prefetch={false}
                     onClick={() => setQuotesPopover(null)}
                     className="block rounded-lg px-2 py-1.5 hover:bg-dark-secondary/[0.06]"
                   >

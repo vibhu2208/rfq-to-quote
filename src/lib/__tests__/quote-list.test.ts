@@ -24,4 +24,18 @@ describe("quoteListWhere", () => {
     expect(quoteListHasFilters(filters)).toBe(false);
     expect(quoteListWhere(filters)).toEqual({});
   });
+
+  it("filters a comma-separated status list and an updated-from bound", () => {
+    const filters = parseQuoteListFilters({
+      status: "SENT,VIEWED",
+      updatedFrom: "2026-11-01",
+    });
+    expect(quoteListHasFilters(filters)).toBe(true);
+    expect(quoteListWhere(filters)).toEqual({
+      AND: [
+        { status: { in: ["SENT", "VIEWED"] } },
+        { updatedAt: { gte: new Date("2026-11-01T00:00:00") } },
+      ],
+    });
+  });
 });
