@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
-import { completeFollowUp, createFollowUp } from "@/lib/leads/follow-ups";
+import {
+  FollowUpClosedError,
+  cancelFollowUp,
+  completeFollowUp,
+  createFollowUp,
+  rescheduleFollowUp,
+} from "@/lib/leads/follow-ups";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -65,20 +71,59 @@ export async function POST(req: NextRequest, { params }: Params) {
   return NextResponse.json(result, { status: 201 });
 }
 
-const completeSchema = z.object({
+const patchSchema = z.object({
   followUpId: z.string().min(1),
   notes: z.string().optional(),
+  action: z.enum(["complete", "cancel", "reschedule"]).optional(),
+  dueAt: z.string().optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: Params) {
   const { session, error } = await requireSession();
   if (error) return error;
-  await params;
+  const { id: leadId } = await params;
 
   const body = await req.json();
-  const parsed = completeSchema.safeParse(body);
+  const parsed = patchSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const existing = await prisma.leadFollowUp.findFirst({
+    where: { id: parsed.data.followUpId, rfqId: leadId },
+    select: { id: true },
+  });
+  if (!existing) {
+    return NextResponse.json({ error: "Follow-up not found" }, { status: 404 });
+  }
+
+  const action = parsed.data.action ?? "complete";
+  if (action === "cancel") {
+    const followUp = await cancelFollowUp({
+      id: parsed.data.followUpId,
+      actorId: session?.user?.id,
+    });
+    return NextResponse.json(followUp);
+  }
+
+  if (action === "reschedule") {
+    const due = parsed.data.dueAt ? new Date(parsed.data.dueAt) : null;
+    if (!due || Number.isNaN(due.getTime())) {
+      return NextResponse.json({ error: "A valid due date is required" }, { status: 400 });
+    }
+    try {
+      const followUp = await rescheduleFollowUp({
+        id: parsed.data.followUpId,
+        dueAt: due,
+        actorId: session?.user?.id,
+      });
+      return NextResponse.json(followUp);
+    } catch (err) {
+      if (err instanceof FollowUpClosedError) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      throw err;
+    }
   }
 
   const followUp = await completeFollowUp({

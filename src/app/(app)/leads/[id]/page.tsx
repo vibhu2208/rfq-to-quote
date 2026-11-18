@@ -5,6 +5,11 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { format, formatDistanceToNowStrict } from "date-fns";
 import type { LeadStage } from "@prisma/client";
+import { continueQuoteTarget } from "@/components/leads/leads-workbench-helpers";
+import {
+  parseLocalDateTimeValue,
+  toLocalDateTimeValue,
+} from "@/components/ui/date-time-picker";
 import { LeadStageProcess } from "@/components/leads/lead-stage-process";
 import {
   LEAD_CHANNEL_LABELS,
@@ -143,9 +148,12 @@ export default function LeadDetailPage() {
   const [followDue, setFollowDue] = useState("");
   const [followType, setFollowType] = useState("CALL");
   const [stageReason, setStageReason] = useState("");
+  const [rescheduleFor, setRescheduleFor] = useState<string | null>(null);
+  const [rescheduleDue, setRescheduleDue] = useState("");
+  const [followBusy, setFollowBusy] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const [leadRes, usersRes] = await Promise.all([
         fetch(`/api/leads/${id}`),
@@ -223,6 +231,32 @@ export default function LeadDetailPage() {
     });
     setNote("");
     await load();
+  }
+
+  async function updateFollowUp(
+    followUpId: string,
+    body: Record<string, unknown>
+  ) {
+    setFollowBusy(followUpId);
+    try {
+      const res = await fetch(`/api/leads/${id}/follow-ups`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ followUpId, ...body }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(
+          typeof data.error === "string" ? data.error : "Could not update follow-up"
+        );
+        return;
+      }
+      setRescheduleFor(null);
+      setRescheduleDue("");
+      await load({ silent: true });
+    } finally {
+      setFollowBusy(null);
+    }
   }
 
   async function scheduleFollowUp() {
@@ -334,11 +368,25 @@ export default function LeadDetailPage() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {(() => {
+            const resume = continueQuoteTarget(lead.quotes);
+            if (!resume) return null;
+            return (
+              <Link
+                href={`/quotes/${resume.id}`}
+                prefetch={false}
+                className="rounded-full bg-mid-green px-3 py-1.5 text-sm font-medium text-white"
+              >
+                Continue quote
+              </Link>
+            );
+          })()}
           <Link
             href={`/rfq/${lead.id}`}
+            prefetch={false}
             className="rounded-full bg-dark-secondary/8 px-3 py-1.5 text-sm"
           >
-            Open RFQ workspace
+            Open RFQ
           </Link>
           {lead.customerPhone ? (
             <a
@@ -357,7 +405,7 @@ export default function LeadDetailPage() {
             >
               Promote to lead
             </button>
-          ) : (
+          ) : continueQuoteTarget(lead.quotes) ? null : (
             <button
               type="button"
               disabled={saving}
@@ -800,17 +848,83 @@ export default function LeadDetailPage() {
               </button>
             </div>
             <div className="mt-4 space-y-2">
-              {lead.followUps.map((f) => (
+              {lead.followUps.map((f) => {
+                const open = f.status === "PENDING" || f.status === "OVERDUE";
+                const busy = followBusy === f.id;
+                return (
                 <div key={f.id} className="rounded-lg bg-dark-secondary/[0.04] px-3 py-2 text-xs">
-                  <div className="flex justify-between">
+                  <div className="flex justify-between gap-2">
                     <span className="font-medium">
                       {f.type} · {f.status}
                     </span>
                     <span>{format(new Date(f.dueAt), "dd MMM HH:mm")}</span>
                   </div>
                   <p className="mt-1 text-mid-green">{f.title || f.notes}</p>
+                  {open ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void updateFollowUp(f.id, { action: "complete" })}
+                        className="font-medium text-mid-green hover:underline disabled:opacity-50"
+                      >
+                        Complete
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          setRescheduleFor((current) => (current === f.id ? null : f.id));
+                          const due = new Date(f.dueAt);
+                          setRescheduleDue(
+                            Number.isNaN(due.getTime()) ? "" : toLocalDateTimeValue(due)
+                          );
+                        }}
+                        className="font-medium text-dark-primary hover:underline disabled:opacity-50"
+                      >
+                        Reschedule
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => {
+                          if (!window.confirm("Cancel this follow-up?")) return;
+                          void updateFollowUp(f.id, { action: "cancel" });
+                        }}
+                        className="font-medium text-red-700 hover:underline disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : null}
+                  {open && rescheduleFor === f.id ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        type="datetime-local"
+                        value={rescheduleDue}
+                        onChange={(e) => setRescheduleDue(e.target.value)}
+                        className="h-8 rounded-lg bg-white px-2 text-xs"
+                      />
+                      <button
+                        type="button"
+                        disabled={busy || !rescheduleDue}
+                        onClick={() => {
+                          const due = parseLocalDateTimeValue(rescheduleDue);
+                          if (!due) return;
+                          void updateFollowUp(f.id, {
+                            action: "reschedule",
+                            dueAt: due.toISOString(),
+                          });
+                        }}
+                        className="rounded-full bg-dark-primary px-2 py-1 text-[11px] text-background disabled:opacity-50"
+                      >
+                        Save time
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 

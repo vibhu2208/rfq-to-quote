@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
@@ -105,12 +105,35 @@ async function getDrawerLead(id: string) {
     },
   });
   if (!lead) return null;
-  const activities = await listLeadActivities(id, 40);
-  return { ...lead, activities, invoices: [] as unknown[] };
+  const [activities, draft] = await Promise.all([
+    listLeadActivities(id, 40),
+    prisma.quote.findFirst({
+      where: { rfqId: id, status: "DRAFT" },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        quoteNumber: true,
+        status: true,
+        grandTotal: true,
+        version: true,
+        needsAssistance: true,
+        assistanceReason: true,
+        lastBuyerReplyAt: true,
+        lastReplyIntent: true,
+        lastAnalysisSummary: true,
+      },
+    }),
+  ]);
+  const quotes =
+    draft && !lead.quotes.some((quote) => quote.id === draft.id)
+      ? [...lead.quotes, { ...draft, messages: [] }]
+      : lead.quotes;
+  return { ...lead, quotes, activities, invoices: [] as unknown[] };
 }
 
 async function getFullLead(id: string) {
-  const lead = await prisma.rfq.findUnique({
+  const [lead, activities] = await Promise.all([
+    prisma.rfq.findUnique({
     where: { id },
     include: {
       assignedTo: { select: { id: true, name: true, email: true } },
@@ -120,7 +143,6 @@ async function getFullLead(id: string) {
           contacts: true,
         },
       },
-      messages: { orderBy: { createdAt: "asc" } },
       quotes: {
         orderBy: { createdAt: "desc" },
         include: {
@@ -151,6 +173,7 @@ async function getFullLead(id: string) {
       },
       stageHistory: {
         orderBy: { createdAt: "desc" },
+        take: 40,
         include: {
           actor: { select: { id: true, name: true, email: true } },
         },
@@ -161,20 +184,12 @@ async function getFullLead(id: string) {
           assignedTo: { select: { id: true, name: true, email: true } },
         },
       },
-      ownershipHistory: {
-        orderBy: { createdAt: "desc" },
-        include: {
-          fromUser: { select: { id: true, name: true, email: true } },
-          toUser: { select: { id: true, name: true, email: true } },
-          actor: { select: { id: true, name: true, email: true } },
-        },
-      },
     },
-  });
+  }),
+    listLeadActivities(id, 80),
+  ]);
 
   if (!lead) return null;
-
-  const activities = await listLeadActivities(id, 200);
 
   const proformaIds = lead.quotes.flatMap((q) =>
     q.proformaInvoices.map((p) => p.id)
@@ -214,27 +229,16 @@ async function repairCustomerIdentityFromBody<
     customerEmail: lead.customerEmail,
   });
 
-  let next = {
+  const next = {
     customerName: heuristic.customerName,
     customerCompany: heuristic.customerCompany,
     customerPhone: heuristic.customerPhone,
     customerEmail: heuristic.customerEmail,
   };
 
-  // If heuristics still look weak, ask Gemini Flash Lite (signature only).
-  if (!next.customerCompany.trim() || !next.customerPhone.trim()) {
-    const resolved = await resolveCustomerIdentityFromEmail(
-      lead.rawText || "",
-      next.customerName,
-      next.customerEmail
-    );
-    next = {
-      customerName: resolved.customerName || next.customerName,
-      customerCompany: resolved.customerCompany || next.customerCompany,
-      customerPhone: resolved.customerPhone || next.customerPhone,
-      customerEmail: resolved.customerEmail || next.customerEmail,
-    };
-  }
+  // Gemini is scheduled after the response. Awaiting it made lead detail wait several seconds.
+  const needsRemote = !next.customerCompany.trim() || !next.customerPhone.trim();
+  if (needsRemote) scheduleIdentityRepair({ ...lead, ...next });
 
   const changed =
     next.customerName !== String(lead.customerName || "").trim() ||
@@ -250,6 +254,76 @@ async function repairCustomerIdentityFromBody<
   });
 
   return { ...lead, ...next };
+}
+
+const IDENTITY_FIELDS = [
+  "customerName",
+  "customerCompany",
+  "customerPhone",
+  "customerEmail",
+] as const;
+
+/** One Gemini attempt per lead per process. An empty result is not retried on every GET. */
+const identityRepairAttempted = new Set<string>();
+
+function scheduleIdentityRepair(snapshot: {
+  id: string;
+  rawText?: string | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+}) {
+  if (identityRepairAttempted.has(snapshot.id)) return;
+  identityRepairAttempted.add(snapshot.id);
+  after(async () => {
+    try {
+      await backfillIdentityWithGemini(snapshot);
+    } catch (err) {
+      identityRepairAttempted.delete(snapshot.id);
+      console.warn(
+        "[lead-identity] background repair failed",
+        err instanceof Error ? err.message : err
+      );
+    }
+  });
+}
+
+async function backfillIdentityWithGemini(lead: {
+  id: string;
+  rawText?: string | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+}) {
+  const resolved = await resolveCustomerIdentityFromEmail(
+    lead.rawText || "",
+    String(lead.customerName || ""),
+    String(lead.customerEmail || "")
+  );
+  const current = await prisma.rfq.findUnique({
+    where: { id: lead.id },
+    select: {
+      customerName: true,
+      customerCompany: true,
+      customerPhone: true,
+      customerEmail: true,
+    },
+  });
+  if (!current) return;
+
+  const data: Partial<Record<(typeof IDENTITY_FIELDS)[number], string>> = {};
+  for (const field of IDENTITY_FIELDS) {
+    const proposed = String(resolved[field] || "").trim();
+    const now = String(current[field] || "").trim();
+    const seen = String(lead[field] || "").trim();
+    // Skip a field someone edited after this page loaded.
+    if (!proposed || proposed === now || now !== seen) continue;
+    data[field] = proposed;
+  }
+  if (Object.keys(data).length === 0) return;
+  await prisma.rfq.update({ where: { id: lead.id }, data });
 }
 
 export async function GET(req: NextRequest, { params }: Params) {

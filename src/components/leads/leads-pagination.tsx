@@ -9,6 +9,8 @@ type Props = {
   total: number;
   pageSize?: number;
   loading?: boolean;
+  /** True until the first list response arrives. Do not claim "No leads". */
+  unknownTotal?: boolean;
   onPageChange: (page: number) => void;
 };
 
@@ -17,6 +19,7 @@ export const LeadsPagination = memo(function LeadsPagination({
   total,
   pageSize = LEADS_PAGE_SIZE,
   loading,
+  unknownTotal,
   onPageChange,
 }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
@@ -28,7 +31,11 @@ export const LeadsPagination = memo(function LeadsPagination({
     return (
       <div className="flex items-center justify-between gap-2 border-t border-dark-primary/8 bg-white px-3 py-2 text-[11px] text-mid-green">
         <span>
-          {total === 0 ? "No leads" : `${total} lead${total === 1 ? "" : "s"}`}
+          {unknownTotal
+            ? "Loading leads…"
+            : total === 0
+              ? "No leads"
+              : `${total} lead${total === 1 ? "" : "s"}`}
         </span>
       </div>
     );

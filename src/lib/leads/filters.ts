@@ -39,6 +39,8 @@ export type LeadFilters = {
   hotOnly?: boolean;
   wonOnly?: boolean;
   lostOnly?: boolean;
+  /** Unprocessed inbox RFQs: status NEW, NEEDS_REVIEW, or PARSED. */
+  openRfq?: boolean;
 };
 
 function asArray<T>(value: T | T[] | undefined): T[] | undefined {
@@ -138,6 +140,9 @@ export function buildLeadWhere(filters: LeadFilters): Prisma.RfqWhereInput {
   }
   if (filters.lostOnly) {
     and.push({ leadStage: { in: ["DEAL_LOST", "DISQUALIFIED"] } });
+  }
+  if (filters.openRfq) {
+    and.push({ status: { in: ["NEW", "NEEDS_REVIEW", "PARSED"] } });
   }
 
   if (filters.assignedToUserId === "unassigned") {
@@ -295,5 +300,6 @@ export function parseLeadFiltersFromSearchParams(
     hotOnly: params.get("hotOnly") === "1",
     wonOnly: params.get("wonOnly") === "1",
     lostOnly: params.get("lostOnly") === "1",
+    openRfq: params.get("openRfq") === "1",
   };
 }

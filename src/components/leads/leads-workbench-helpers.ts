@@ -1,6 +1,6 @@
 import { formatDistanceToNowStrict } from "date-fns";
 import type { LeadRow } from "@/components/leads/types";
-import type { LeadColumnId } from "@/lib/leads/constants";
+import { DEFAULT_LEAD_COLUMNS, type LeadColumnId } from "@/lib/leads/constants";
 
 export const COLUMN_LABELS: Record<LeadColumnId, string> = {
   leadId: "Lead / Source",
@@ -107,4 +107,56 @@ export function isDatePresetFilterActive(
     return Boolean(dateFrom.trim() || dateTo.trim());
   }
   return true;
+}
+
+/** Reject a custom range whose From is after To. One-sided ranges are allowed. */
+export function customDateRangeError(from: string, to: string): string | null {
+  const start = from.trim();
+  const end = to.trim();
+  if (!start || !end) return null;
+  if (start > end) return "From date must be on or before the To date.";
+  return null;
+}
+
+/** Column visibility follows the checkbox list. Nothing is forced back in. */
+export function visibleLeadColumns(selected: readonly string[]): LeadColumnId[] {
+  const allowed = new Set(selected);
+  return DEFAULT_LEAD_COLUMNS.filter((col) => allowed.has(col));
+}
+
+const SAVED_VIEW_FILTER_KEYS = [
+  "q",
+  "stage",
+  "priority",
+  "channel",
+  "assignee",
+  "category",
+  "datePreset",
+  "dateFrom",
+  "dateTo",
+  "slaStatus",
+] as const;
+
+function normalizeSavedFilter(key: string, value: unknown): string {
+  const text = String(value ?? "").trim();
+  if (key === "datePreset" && (text === "" || text === "all")) return "all";
+  return text;
+}
+
+/** True when the live toolbar still matches the saved view's filters. */
+export function savedViewFiltersMatch(
+  saved: Record<string, unknown>,
+  current: Record<string, string>
+): boolean {
+  return SAVED_VIEW_FILTER_KEYS.every(
+    (key) => normalizeSavedFilter(key, saved[key]) === normalizeSavedFilter(key, current[key])
+  );
+}
+
+/** Prefer the newest draft so Continue quote does not open a sent revision by mistake. */
+export function continueQuoteTarget<T extends { id: string; status: string }>(
+  quotes: readonly T[]
+): T | null {
+  if (!quotes.length) return null;
+  return quotes.find((q) => q.status === "DRAFT") ?? quotes[0];
 }

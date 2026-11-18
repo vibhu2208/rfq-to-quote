@@ -6,7 +6,6 @@ import {
   Bell,
   Eye,
   FilePlus2,
-  FileText,
   Mail,
   Phone,
   Upload,
@@ -16,6 +15,7 @@ import {
 import type { LeadRow } from "@/components/leads/types";
 import {
   COLUMN_CELL_CLASS,
+  continueQuoteTarget,
   money,
   relativeTime,
   slaLabel,
@@ -363,6 +363,7 @@ export const LeadsTableRow = memo(function LeadsTableRow({
                       <span className="flex items-center justify-between gap-2">
                         <Link
                           href={`/quotes/${latest.id}`}
+                          prefetch={false}
                           onClick={(e) => e.stopPropagation()}
                           className="truncate text-xs font-medium text-dark-primary hover:underline"
                         >
@@ -508,26 +509,47 @@ export const LeadsTableRow = memo(function LeadsTableRow({
                 </button>
               ) : (
                 <>
-                  <button
-                    type="button"
-                    disabled={creatingQuote}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onCreateQuote();
-                    }}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary disabled:opacity-60"
-                    aria-label="Create quote"
-                    title="Create quote"
-                  >
-                    <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.75} />
-                  </button>
+                  {(() => {
+                    const resume = continueQuoteTarget(row.quotes);
+                    if (resume) {
+                      return (
+                        <Link
+                          href={`/quotes/${resume.id}`}
+                          prefetch={false}
+                          onClick={(e) => e.stopPropagation()}
+                          className="inline-flex h-7 items-center rounded-md px-1.5 text-[11px] font-semibold text-dark-primary underline decoration-mid-green/50 underline-offset-2 hover:text-mid-green"
+                          aria-label={`Continue quote ${resume.quoteNumber}`}
+                          title={`Continue quote ${resume.quoteNumber}`}
+                        >
+                          Continue quote
+                        </Link>
+                      );
+                    }
+                    return (
+                      <button
+                        type="button"
+                        disabled={creatingQuote}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCreateQuote();
+                        }}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary disabled:opacity-60"
+                        aria-label="Create quote"
+                        title="Create quote"
+                      >
+                        <FilePlus2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                      </button>
+                    );
+                  })()}
                   <Link
                     href={`/rfq/${row.id}`}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
+                    prefetch={false}
+                    onClick={(e) => e.stopPropagation()}
+                    className="inline-flex h-7 items-center rounded-md px-1.5 text-[11px] font-semibold text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
                     aria-label="Open RFQ"
-                    title="Match / vendors"
+                    title="Open RFQ"
                   >
-                    <FileText className="h-3.5 w-3.5" strokeWidth={1.75} />
+                    Open RFQ
                   </Link>
                 </>
               )}
