@@ -1571,6 +1571,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       if (dateTo) params.set("dateTo", dateTo);
     }
     if (slaStatus) params.set("slaStatus", slaStatus);
+    if (openRfq) params.set("openRfq", "1");
     return `/api/leads/export?${params.toString()}`;
   }
 
