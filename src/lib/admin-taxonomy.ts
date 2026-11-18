@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { PRODUCT_CATEGORIES } from "@/lib/categories";
+import { countNamedSubcategoryRows } from "@/lib/vendor-mapping-counts";
 import { normalizeVendorCategory } from "@/lib/vendor-schema";
 
 export type TaxonomyContact = {
@@ -145,7 +146,7 @@ export async function getAdminTaxonomy(): Promise<TaxonomyCategory[]> {
 
     return {
       category,
-      subcategoryCount: subcategories.length,
+      subcategoryCount: countNamedSubcategoryRows(subcategories),
       vendorCount: categoryVendorIds.size,
       subcategories,
     };

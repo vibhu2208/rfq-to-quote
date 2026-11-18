@@ -8,6 +8,7 @@ import {
   syncVendorsFromIsVendorParties,
 } from "@/lib/sync-vendors-from-parties";
 import type { Prisma } from "@prisma/client";
+import { vendorDirectoryFilters } from "@/lib/vendor-directory-filters";
 
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 50;
@@ -20,8 +21,11 @@ function parsePositiveInt(value: string | null, fallback: number) {
 function vendorSearchWhere(
   q: string,
   active: string | null,
-  includeRelationSearch: boolean
+  includeRelationSearch: boolean,
+  mapped: string | null,
+  poc: string | null
 ): Prisma.VendorWhereInput {
+  const extra = vendorDirectoryFilters({ mapped, poc }) as Prisma.VendorWhereInput[];
   return {
     AND: [
       active === "true"
@@ -83,6 +87,7 @@ function vendorSearchWhere(
             ],
           }
         : {},
+      ...extra,
     ],
   };
 }
@@ -228,11 +233,42 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const where = vendorSearchWhere(q, active, !light);
+  const mapped = request.nextUrl.searchParams.get("mapped");
+  const poc = request.nextUrl.searchParams.get("poc");
+  const where = vendorSearchWhere(q, active, !light, mapped, poc);
   const orderBy: Prisma.VendorOrderByWithRelationInput[] = [
     { active: "desc" },
     { name: "asc" },
   ];
+
+  if (light && paged) {
+    const skip = (page - 1) * pageSize;
+    const [total, vendors] = await Promise.all([
+      prisma.vendor.count({ where }),
+      prisma.vendor.findMany({
+        where,
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          active: true,
+          categories: {
+            select: { id: true, category: true, subcategory: true },
+          },
+        },
+        orderBy,
+        skip,
+        take: pageSize,
+      }),
+    ]);
+    return NextResponse.json({
+      items: vendors.map(serializeLightVendor),
+      total,
+      page,
+      pageSize,
+    });
+  }
 
   if (list || paged) {
     const skip = paged ? (page - 1) * pageSize : 0;
