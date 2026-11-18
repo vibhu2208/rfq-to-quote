@@ -29,6 +29,8 @@ export type LeadKpis = {
   stageDistribution: { stage: LeadStage; count: number }[];
   pendingFollowUps: number;
   overdueFollowUps: number;
+  /** Junk + skipped mail excluded from the requirement totals. */
+  excludedIntake: number;
   sourcePerformance: { channel: string; count: number; won: number }[];
   salespersonPerformance: {
     userId: string;
@@ -40,8 +42,15 @@ export type LeadKpis = {
   }[];
 };
 
-export async function computeLeadKpis(filters: LeadFilters = {}): Promise<LeadKpis> {
-  await refreshOverdueFollowUps();
+export async function computeLeadKpis(
+  filters: LeadFilters = {},
+  options: { refreshOverdue?: boolean; profile?: "full" | "dashboard" } = {}
+): Promise<LeadKpis> {
+  const dashboard = options.profile === "dashboard";
+  // Dashboard reads must not wait on a write that flips overdue rows.
+  if (options.refreshOverdue !== false && !dashboard) {
+    await refreshOverdueFollowUps();
+  }
 
   // KPIs stay on real requirements unless an intake filter is explicit.
   const kpiFilters: LeadFilters = {
@@ -65,6 +74,7 @@ export async function computeLeadKpis(filters: LeadFilters = {}): Promise<LeadKp
     assigneeGroups,
     pendingFollowUps,
     overdueFollowUps,
+    excludedIntake,
   ] = await Promise.all([
     prisma.rfq.count({ where: totalWhere }),
     prisma.rfq.count({ where: filteredWhere }),
@@ -95,29 +105,40 @@ export async function computeLeadKpis(filters: LeadFilters = {}): Promise<LeadKp
         ],
       },
     }),
-    prisma.rfq.findMany({
-      where: {
-        AND: [
-          filteredWhere,
-          { createdAt: { gte: startOfMonth(subMonths(new Date(), 11)) } },
-        ],
-      },
-      select: { createdAt: true },
-    }),
-    prisma.rfq.groupBy({
-      by: ["channel"],
-      where: filteredWhere,
-      _count: { _all: true },
-    }),
-    prisma.rfq.groupBy({
-      by: ["assignedToUserId"],
-      where: filteredWhere,
-      _count: { _all: true },
-    }),
+    dashboard
+      ? Promise.resolve([] as { createdAt: Date }[])
+      : prisma.rfq.findMany({
+          where: {
+            AND: [
+              filteredWhere,
+              { createdAt: { gte: startOfMonth(subMonths(new Date(), 11)) } },
+            ],
+          },
+          select: { createdAt: true },
+        }),
+    dashboard
+      ? Promise.resolve([] as { channel: string; _count: { _all: number } }[])
+      : prisma.rfq.groupBy({
+          by: ["channel"],
+          where: filteredWhere,
+          _count: { _all: true },
+        }),
+    dashboard
+      ? Promise.resolve(
+          [] as { assignedToUserId: string | null; _count: { _all: number } }[]
+        )
+      : prisma.rfq.groupBy({
+          by: ["assignedToUserId"],
+          where: filteredWhere,
+          _count: { _all: true },
+        }),
     prisma.leadFollowUp.count({
       where: { status: { in: ["PENDING", "OVERDUE"] } },
     }),
     prisma.leadFollowUp.count({ where: { status: "OVERDUE" } }),
+    prisma.rfq.count({
+      where: { archivedAt: null, intakeKind: { in: ["JUNK", "SKIPPED"] } },
+    }),
   ]);
 
   const byStage = Object.fromEntries(
@@ -133,6 +154,34 @@ export async function computeLeadKpis(filters: LeadFilters = {}): Promise<LeadKp
   const closedBucket = leadsWon + dealsLost + disqualified;
   const conversionRate = closedBucket > 0 ? leadsWon / closedBucket : 0;
   const quotationToWinRatio = quotedReached > 0 ? leadsWon / quotedReached : 0;
+
+  if (dashboard) {
+    return {
+      totalLeads,
+      filteredLeads,
+      byStage,
+      newLeads: byStage.NEW_LEAD,
+      contacted: byStage.CONTACTED,
+      qualified: byStage.QUALIFIED,
+      quotationsSent: byStage.QUOTE_SENT + byStage.NEGOTIATION,
+      hotUrgent,
+      leadsWon,
+      dealsLost,
+      disqualified,
+      conversionRate,
+      quotationToWinRatio,
+      monthlyAcquisition: [],
+      stageDistribution: LEAD_STAGES.map((stage) => ({
+        stage,
+        count: byStage[stage],
+      })),
+      pendingFollowUps,
+      overdueFollowUps,
+      excludedIntake,
+      sourcePerformance: [],
+      salespersonPerformance: [],
+    };
+  }
 
   const monthMap = new Map<string, number>();
   for (let i = 11; i >= 0; i -= 1) {
@@ -225,6 +274,7 @@ export async function computeLeadKpis(filters: LeadFilters = {}): Promise<LeadKp
     })),
     pendingFollowUps,
     overdueFollowUps,
+    excludedIntake,
     sourcePerformance,
     salespersonPerformance,
   };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import { parseApiJson, userFacingFetchError, userFacingParseError } from "@/lib/fetch-error";
 
 describe("userFacingFetchError", () => {
   it("maps Failed to fetch to a retry message without blaming the internet", () => {
@@ -20,6 +20,22 @@ describe("userFacingFetchError", () => {
   it("uses the fallback for unknown values", () => {
     expect(userFacingFetchError(null, "Could not capture this requirement")).toBe(
       "Could not capture this requirement"
+    );
+  });
+});
+
+describe("userFacingParseError", () => {
+  it("KAN-3: hides an OpenRouter 429 dump", () => {
+    const raw =
+      'OpenRouter error 429: {"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"google/gemini-2.5-flash-lite is temporarily rate-limited"}}}';
+    const message = userFacingParseError(raw);
+    expect(message).toMatch(/temporarily unavailable/i);
+    expect(message).not.toMatch(/OpenRouter|gemini|\{/);
+  });
+
+  it("keeps a short human parse message", () => {
+    expect(userFacingParseError("The email had no product lines.")).toBe(
+      "The email had no product lines."
     );
   });
 });

@@ -9,6 +9,7 @@ import {
   type ClientContact,
 } from "@/components/client-contacts-editor";
 import { ClientGstLookupDialog } from "@/components/client-gst-lookup-dialog";
+import { ClientRelatedWork } from "@/components/client-related-work";
 
 type BillingAddress = {
   id?: string;
@@ -153,7 +154,7 @@ export default function ClientsPage() {
           <div className="flex shrink-0 items-center gap-2">
             <h1 className="text-lg font-semibold tracking-tight text-dark-primary">Clients</h1>
             <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-xs font-medium tabular-nums text-mid-green">
-              {total}
+              {loading && clients.length === 0 ? "…" : total}
             </span>
           </div>
 
@@ -405,6 +406,11 @@ export default function ClientsPage() {
             </button>
           }
         >
+          <ClientRelatedWork
+            key={detail.id}
+            partyId={detail.id}
+            legalName={detail.legalName}
+          />
           <ClientContactsEditor
             partyId={detail.id}
             contacts={detail.contacts || []}

@@ -621,8 +621,12 @@ model QuoteLineItem {
   /// Vendor / last-quoted cost, shown on the quote editor (not on the PDF)
   costPrice      Decimal? @db.Decimal(12, 2)
   costVendorName String   @default("")
-  /// Per-product client discount % (stacks with Quote.discountPercent)
+  /// Per-product client discount % (exclusive with Quote.discountPercent in the editor)
   discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  /// HSN/SAC printed for this line. Blank falls back to the catalog product.
+  hsnCode         String  @default("")
+  /// Intentionally not a catalog product.
+  customItem      Boolean @default(false)
   /// Warranty duration count (0 = not set)
   warrantyQty     Int     @default(0)
   /// years | months | days

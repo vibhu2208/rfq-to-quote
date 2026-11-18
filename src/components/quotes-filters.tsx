@@ -418,6 +418,10 @@ export function QuotesFilters({
           className={`${fieldClass} w-[8.5rem]`}
         >
           <option value="">Status</option>
+          {filters.status &&
+          !(QUOTE_LIST_STATUSES as readonly string[]).includes(filters.status) ? (
+            <option value={filters.status}>Filtered statuses</option>
+          ) : null}
           {QUOTE_LIST_STATUSES.map((s) => (
             <option key={s} value={s}>
               {statusLabel(s)}
@@ -426,6 +430,12 @@ export function QuotesFilters({
         </select>
 
         <DateRangePicker from={dates.from} to={dates.to} onCommit={commitDates} />
+
+        {filters.updatedFrom ? (
+          <span className="shrink-0 text-[11px] text-mid-green">
+            Updated since {filters.updatedFrom}
+          </span>
+        ) : null}
 
         <select
           name="gst"

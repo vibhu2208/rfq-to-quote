@@ -6,6 +6,24 @@ function isRetryableNetworkError(err: unknown): boolean {
   return err instanceof TypeError && /failed to fetch|networkerror|load failed/i.test(err.message);
 }
 
+/**
+ * Provider failures (OpenRouter 429, raw JSON) must not land in the RFQ banner.
+ * Short messages we wrote ourselves are kept.
+ */
+export function userFacingParseError(message: string | null | undefined): string {
+  const raw = String(message || "").trim();
+  if (!raw) return "";
+  const busy = /429|rate[- ]limit|too many requests|temporarily rate-limited|high traffic/i.test(raw);
+  const provider = /openrouter|provider returned error|"error"\s*:/i.test(raw);
+  if (busy) {
+    return "AI parsing is temporarily unavailable because the provider is busy. Wait a moment and use Re-parse.";
+  }
+  if (provider || /^\s*[{[]/.test(raw) || raw.length > 180) {
+    return "AI parsing is temporarily unavailable. Wait a moment and use Re-parse.";
+  }
+  return raw;
+}
+
 /** Turn a thrown fetch/network error into copy the form can show. */
 export function userFacingFetchError(err: unknown, fallback: string): string {
   const message = err instanceof Error ? err.message : "";

@@ -121,6 +121,7 @@ function NavLink({
   return (
     <Link
       href={item.href}
+      prefetch={false}
       onClick={onClick}
       className={`inline-flex shrink-0 items-center gap-2 rounded-lg transition ${
         compact ? "w-full px-3 py-2.5 text-sm" : "px-2.5 py-1.5 text-[13px]"
@@ -242,6 +243,7 @@ function NavDropdown({
                 <Link
                   key={item.href}
                   href={item.href}
+                  prefetch={false}
                   role="menuitem"
                   onClick={() => {
                     setOpen(false);
@@ -378,7 +380,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-visible lg:flex">
+        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto lg:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {desktopLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
@@ -389,7 +391,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="relative z-10 ml-auto flex shrink-0 items-center gap-1.5 bg-dark-secondary pl-1">
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"
@@ -401,7 +403,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold text-background">
                 {initialsFromEmail(userEmail)}
               </span>
-              <span className="hidden max-w-[10rem] truncate text-sm text-light-green md:inline">
+              <span className="hidden max-w-[10rem] truncate text-sm text-light-green xl:inline">
                 {userEmail}
               </span>
               <ChevronDown

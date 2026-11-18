@@ -12,6 +12,7 @@ import { logLeadActivity } from "@/lib/leads/activity";
 import { DEFAULT_SLA_HOURS } from "@/lib/leads/constants";
 import { nextLeadNumber } from "@/lib/leads/numbers";
 import { addHours } from "@/lib/leads/stage";
+import { userFacingParseError } from "@/lib/fetch-error";
 
 function itemLineFingerprint(items: unknown[]): string {
   return items
@@ -167,7 +168,9 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
     try {
       return await parseAndUpdateRfq(rfq.id);
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Parse failed";
+      const message = userFacingParseError(
+        e instanceof Error ? e.message : "Parse failed"
+      );
       return prisma.rfq.update({
         where: { id: rfq.id },
         data: { parseError: message, status: "NEEDS_REVIEW" },

@@ -84,6 +84,20 @@ describe("quoteListWhere", () => {
       "/api/quotes/export?q=panel&sort=buyer&dir=asc"
     );
   });
+
+  it("filters a comma-separated status list and an updated-from bound", () => {
+    const filters = parseQuoteListFilters({
+      status: "SENT,VIEWED",
+      updatedFrom: "2026-11-01",
+    });
+    expect(quoteListHasFilters(filters)).toBe(true);
+    expect(quoteListWhere(filters)).toEqual({
+      AND: [
+        { status: { in: ["SENT", "VIEWED"] } },
+        { updatedAt: { gte: new Date("2026-11-01T00:00:00") } },
+      ],
+    });
+  });
 });
 
 describe("quoteListCsv", () => {

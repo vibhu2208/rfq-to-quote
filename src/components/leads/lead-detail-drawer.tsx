@@ -16,6 +16,7 @@ import {
   LEAD_STAGE_LABELS,
   LEAD_STAGES,
 } from "@/lib/leads/constants";
+import { continueQuoteTarget } from "@/components/leads/leads-workbench-helpers";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
 
@@ -544,6 +545,7 @@ export function LeadDetailDrawer({
   if (!open) return null;
 
   const latestQuote = lead?.quotes[0] || null;
+  const resumeQuote = lead ? continueQuoteTarget(lead.quotes) : null;
   const nextFollowUp = lead?.followUps[0] || null;
   const rfqItems = lead
     ? extractRfqItems(lead.parsedSpecs, lead.rawText)
@@ -660,6 +662,14 @@ export function LeadDetailDrawer({
                 >
                   Promote
                 </button>
+              ) : resumeQuote ? (
+                <Link
+                  href={`/quotes/${resumeQuote.id}`}
+                  prefetch={false}
+                  className="rounded-md bg-mid-green px-2.5 py-1.5 text-sm font-semibold text-background hover:bg-dark-secondary"
+                >
+                  Continue quote
+                </Link>
               ) : (
                 <button
                   type="button"
@@ -672,9 +682,10 @@ export function LeadDetailDrawer({
               )}
               <Link
                 href={`/rfq/${lead.id}`}
+                prefetch={false}
                 className="rounded-md bg-dark-primary/8 px-2.5 py-1.5 text-sm font-semibold text-dark-primary hover:bg-dark-primary/12"
               >
-                RFQ
+                Open RFQ
               </Link>
               <Link
                 href={`/leads/${lead.id}`}

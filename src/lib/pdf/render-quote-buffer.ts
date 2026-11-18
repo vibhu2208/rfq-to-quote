@@ -97,7 +97,7 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
         lineTotal: taxable,
         taxAmount,
         amount: round2(taxable + taxAmount),
-        hsnCode: li.product?.hsnCode ?? undefined,
+        hsnCode: li.hsnCode?.trim() || li.product?.hsnCode || undefined,
         productCode: li.product?.code,
         warrantyLabel: formatWarrantyLabel({
           warrantyQty: li.warrantyQty,

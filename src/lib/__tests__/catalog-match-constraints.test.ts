@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Product } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import {
+  applyRerankOrder,
   catalogBindingLooksMismatched,
   extractMatchConstraints,
   matchProductsToRfqItems,
@@ -142,6 +143,34 @@ const catalog = [
     name: "16GB DDR4 Desktop RAM",
     category: "RAM",
     description: "16 GB DDR4 desktop memory stick",
+  }),
+  fakeProduct({
+    id: "mon24vga",
+    code: "MON-24-VGA",
+    name: "24 inch FHD Monitor HDMI VGA",
+    category: "TFT",
+    description: "24 inch FHD monitor, HDMI + VGA",
+  }),
+  fakeProduct({
+    id: "mon22",
+    code: "MON-22-FHD",
+    name: "22 inch FHD Monitor",
+    category: "TFT",
+    description: "22 inch FHD LED monitor",
+  }),
+  fakeProduct({
+    id: "mon27",
+    code: "MON-27-QHD",
+    name: "27 inch QHD Monitor",
+    category: "TFT",
+    description: "27 inch QHD IPS monitor",
+  }),
+  fakeProduct({
+    id: "mon24uhd",
+    code: "MON-24-4K",
+    name: "24 inch 4K Monitor",
+    category: "TFT",
+    description: "24 inch UHD 4K monitor",
   }),
 ];
 
@@ -352,9 +381,88 @@ describe("catalog auto-match constraints", () => {
           `${line.description} should not suggest ${code}`
         ).toBe(true);
       }
-      expect(
-        shouldAutoBindCatalogMatch(matches[0]?.matches[0], line.description)
-      ).toBe(true);
+    expect(
+      shouldAutoBindCatalogMatch(matches[0]?.matches[0], line.description)
+    ).toBe(true);
     }
+  });
+
+  it("KAN-10: does not bind HDMI+VGA when the RFQ asks for DisplayPort", () => {
+    const matches = matchProductsToRfqItems(catalog, {
+      parsedSpecs: {
+        items: [
+          {
+            description: "24-inch FHD IPS monitor HDMI+DisplayPort",
+            quantity: 15,
+            unit: "pcs",
+          },
+        ],
+      },
+    });
+    expect(matches[0]?.matches[0]?.product.code).toBe("MON-24-DP");
+    expect(matches[0]?.matches.every((m) => m.product.code !== "MON-24-VGA")).toBe(true);
+    expect(
+      catalogBindingLooksMismatched(
+        "24-inch FHD IPS monitor HDMI+DisplayPort",
+        "24 inch FHD monitor, HDMI + VGA"
+      )
+    ).toBe(true);
+  });
+
+  it("KAN-57: flags a 22-inch FHD suggestion against a 27-inch QHD request", () => {
+    const matches = matchProductsToRfqItems(catalog, {
+      parsedSpecs: {
+        items: [
+          {
+            description: "27-inch QHD monitor",
+            quantity: 4,
+            unit: "pcs",
+          },
+        ],
+      },
+    });
+    expect(matches[0]?.matches[0]?.product.code).toBe("MON-27-QHD");
+    expect(matches[0]?.matches.every((m) => m.product.code !== "MON-22-FHD")).toBe(true);
+    expect(
+      catalogBindingLooksMismatched("27-inch QHD monitor", "22 inch FHD LED monitor")
+    ).toBe(true);
+    expect(
+      catalogBindingLooksMismatched("24-inch FHD monitor", "24 inch UHD 4K monitor")
+    ).toBe(true);
+  });
+});
+
+describe("applyRerankOrder", () => {
+  it("KAN-46: orders AI-kept suggestions by the displayed score", () => {
+    const low = {
+      score: 47,
+      matchedTokens: ["lg"],
+      product: {
+        id: "low",
+        code: "LG-A",
+        name: "LG 27 low",
+        description: "",
+        unit: "pcs",
+        offerPrice: 1,
+        lastPrice: null,
+        taxRate: 18,
+      },
+    };
+    const high = {
+      score: 57,
+      matchedTokens: ["lg"],
+      product: {
+        id: "high",
+        code: "LG-B",
+        name: "LG 27 high",
+        description: "",
+        unit: "pcs",
+        offerPrice: 1,
+        lastPrice: null,
+        taxRate: 18,
+      },
+    };
+    const ordered = applyRerankOrder([low, high], ["low", "high"]);
+    expect(ordered.map((match) => match.product.id)).toEqual(["high", "low"]);
   });
 });

@@ -25,6 +25,24 @@ export const QUOTE_LIST_STATUSES = [
   "CLOSED",
 ] as const;
 
+/** Quotes that count toward dashboard pipeline value. */
+export const PIPELINE_QUOTE_STATUSES = [
+  "SENT",
+  "VIEWED",
+  "UNDER_NEGOTIATION",
+  "REVISED",
+] as const satisfies readonly QuoteStatus[];
+
+/** Quotes that count as won on the dashboard. */
+export const WON_QUOTE_STATUSES = [
+  "ACCEPTED",
+  "INVOICE_GENERATED",
+  "PAYMENT_PENDING",
+  "PAYMENT_RECEIVED",
+  "DELIVERED",
+  "CLOSED",
+] as const satisfies readonly QuoteStatus[];
+
 export type QuoteListFilters = {
   q: string;
   client: string;
@@ -38,6 +56,8 @@ export type QuoteListFilters = {
   max: string;
   sort: string;
   dir: "asc" | "desc";
+  /** Inclusive lower bound on quote.updatedAt (YYYY-MM-DD). */
+  updatedFrom: string;
   page: number;
 };
 
@@ -65,13 +85,24 @@ export function parseQuoteListFilters(
     max: one(sp.max),
     sort,
     dir: one(sp.dir) === "asc" ? "asc" : "desc",
+    updatedFrom: one(sp.updatedFrom),
     page,
   };
 }
 
 export function quoteListHasFilters(f: QuoteListFilters): boolean {
   return Boolean(
-    f.q || f.client || f.product || f.from || f.to || f.status || f.gst || f.assist || f.min || f.max
+    f.q ||
+      f.client ||
+      f.product ||
+      f.from ||
+      f.to ||
+      f.status ||
+      f.gst ||
+      f.assist ||
+      f.min ||
+      f.max ||
+      f.updatedFrom
   );
 }
 
@@ -93,6 +124,7 @@ export function quoteListQuery(f: Partial<QuoteListFilters>, page?: number): str
   set("max", f.max);
   set("sort", f.sort);
   if (f.sort) set("dir", f.dir);
+  set("updatedFrom", f.updatedFrom);
   const p = page ?? f.page ?? 1;
   if (p > 1) params.set("page", String(p));
   const qs = params.toString();
@@ -273,9 +305,17 @@ export function quoteListWhere(f: QuoteListFilters): Prisma.QuoteWhereInput {
     });
   }
 
-  if (f.status && (QUOTE_LIST_STATUSES as readonly string[]).includes(f.status)) {
-    and.push({ status: f.status as QuoteStatus });
-  }
+  const statuses = f.status
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is QuoteStatus =>
+      (QUOTE_LIST_STATUSES as readonly string[]).includes(s)
+    );
+  if (statuses.length === 1) and.push({ status: statuses[0] });
+  else if (statuses.length > 1) and.push({ status: { in: statuses } });
+
+  const updatedFrom = f.updatedFrom ? dayStart(f.updatedFrom) : null;
+  if (updatedFrom) and.push({ updatedAt: { gte: updatedFrom } });
 
   if (f.gst === "yes") and.push({ withGst: true });
   if (f.gst === "no") and.push({ withGst: false });

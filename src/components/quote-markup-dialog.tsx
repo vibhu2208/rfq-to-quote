@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { TrendingUp } from "lucide-react";
 import { formatMoney } from "@/lib/tax";
 import { lineSubtotal } from "@/lib/quote-discount";
@@ -9,8 +9,10 @@ import {
   clampMarkupPercent,
   costSubtotal,
   headerMarkupAmount,
+  lineHasCost,
   type MarkupLine,
 } from "@/lib/quote-markup";
+import { formatPercentInput, sanitizePercentDraft } from "@/lib/percent-input";
 
 type Props = {
   percent: number;
@@ -18,7 +20,7 @@ type Props = {
   hasExistingMarkup?: boolean;
   onPercentChange: (percent: number) => void;
   onCancel: () => void;
-  onApply: () => void;
+  onApply: (opts: { allowSellFallback: boolean }) => void;
   onClear?: () => void;
 };
 
@@ -32,19 +34,30 @@ export function QuoteMarkupDialog({
   onClear,
 }: Props) {
   const [percentText, setPercentText] = useState(formatPercentInput(percent));
-
-  useEffect(() => {
+  const [focused, setFocused] = useState(false);
+  const [allowSellFallback, setAllowSellFallback] = useState(false);
+  const [seenPercent, setSeenPercent] = useState(percent);
+  if (!focused && percent !== seenPercent) {
+    setSeenPercent(percent);
     setPercentText(formatPercentInput(percent));
-  }, [percent]);
+  }
 
-  const base = costSubtotal(lines);
+  const missingCost = lines.filter((line) => !lineHasCost(line)).length;
+  const withCost = lines.length - missingCost;
+  const pricedForPreview = allowSellFallback
+    ? lines.map((line) =>
+        lineHasCost(line) ? line : { ...line, costPrice: line.unitPrice }
+      )
+    : lines;
+  const base = costSubtotal(pricedForPreview);
   const amount = headerMarkupAmount(base, percent);
-  const marked = applyMarkupPercentToLines(lines, percent);
+  const marked = applyMarkupPercentToLines(lines, percent, {
+    allowSellFallback,
+  });
   const sellSubtotal = lineSubtotal(marked);
-  const withCost = lines.filter(
-    (line) => line.costPrice != null && Number(line.costPrice) > 0
-  ).length;
   const clearing = !(percent > 0);
+  const blocked =
+    !clearing && withCost === 0 && !allowSellFallback;
 
   function commitPercentText(raw: string) {
     const trimmed = raw.trim();
@@ -99,15 +112,14 @@ export function QuoteMarkupDialog({
         <label className="mt-5 block text-sm">
           <span className="mb-1 block text-mid-green">Markup %</span>
           <input
-            type="number"
-            min={0}
-            max={1000}
-            step="0.01"
+            type="text"
+            inputMode="decimal"
             value={percentText}
+            onFocus={() => setFocused(true)}
             onChange={(e) => {
-              const raw = e.target.value;
+              const raw = sanitizePercentDraft(e.target.value);
               setPercentText(raw);
-              if (raw.trim() === "") {
+              if (raw.trim() === "" || raw === ".") {
                 onPercentChange(0);
                 return;
               }
@@ -116,14 +128,17 @@ export function QuoteMarkupDialog({
                 onPercentChange(clampMarkupPercent(next));
               }
             }}
-            onBlur={() => commitPercentText(percentText)}
+            onBlur={() => {
+              setFocused(false);
+              commitPercentText(percentText);
+            }}
             className="h-9 w-28 rounded-lg border border-light-green/40 bg-white/60 px-3 text-right tabular-nums outline-none focus:border-mid-green"
           />
         </label>
 
         <div className="mt-4 rounded-xl border border-light-green/40 bg-light-green/10 px-4 py-3 text-sm">
           <div className="flex justify-between gap-3 text-mid-green">
-            <span>Cost / base subtotal</span>
+            <span>{allowSellFallback && missingCost > 0 ? "Base subtotal" : "Cost subtotal"}</span>
             <span className="tabular-nums font-medium text-dark-primary">
               {formatMoney(base)}
             </span>
@@ -141,10 +156,32 @@ export function QuoteMarkupDialog({
         </div>
 
         <p className="mt-3 text-xs leading-relaxed text-mid-green">
-          Lines with a vendor cost use that as the base. Other lines mark up the
-          current sell price. Cost stays internal — only sell prices appear on the
-          PDF.
+          Markup is (sell − cost) / cost. Margin on each line is (sell − cost) /
+          sell. Cost stays internal — only sell prices appear on the PDF.
+          {missingCost > 0
+            ? ` ${missingCost} line${missingCost === 1 ? "" : "s"} have no cost and are not marked up unless you choose to use the sell price.`
+            : ""}
         </p>
+        {missingCost > 0 ? (
+          <label className="mt-3 flex items-start gap-2 text-xs text-dark-primary">
+            <input
+              type="checkbox"
+              checked={allowSellFallback}
+              onChange={(e) => setAllowSellFallback(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              Use the current sell price as the base where cost is missing. This
+              is not procurement cost.
+            </span>
+          </label>
+        ) : null}
+        {blocked ? (
+          <p className="mt-2 text-xs text-red-700" role="alert">
+            No vendor cost on these lines. Enter a cost, or tick the option to
+            use sell price as the base.
+          </p>
+        ) : null}
 
         <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
           {hasExistingMarkup && onClear ? (
@@ -165,7 +202,8 @@ export function QuoteMarkupDialog({
           </button>
           <button
             type="button"
-            onClick={onApply}
+            onClick={() => onApply({ allowSellFallback })}
+            disabled={blocked}
             className="rounded-lg bg-mid-green px-4 py-2 text-sm font-medium text-background hover:bg-dark-secondary"
           >
             {clearing
@@ -180,7 +218,3 @@ export function QuoteMarkupDialog({
   );
 }
 
-function formatPercentInput(percent: number) {
-  if (!Number.isFinite(percent) || percent <= 0) return "";
-  return String(percent);
-}

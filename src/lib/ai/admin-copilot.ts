@@ -38,6 +38,7 @@ const TOOL_THINKING: Record<string, string> = {
   trial_balance: "Pulling the trial balance",
   ar_ageing: "Checking receivables ageing",
   stock_balances: "Checking stock balances",
+  catalog_search: "Searching the product catalog",
   gst_summary: "Summarising GST from the books",
   draft_quote_email: "Drafting a follow-up email",
   send_quote_email: "Sending the follow-up email",
@@ -79,6 +80,11 @@ Quote data (critical — this caused wrong answers before):
 - assistance_queue is ONLY needsAssistance=true (human must reply). It is NOT the same as status UNDER_NEGOTIATION.
 - If quote_stats shows a status count > 0, you MUST call quote_list with that status before saying there are none.
 - "Under negotiation" means status UNDER_NEGOTIATION. Call quote_list with status "UNDER_NEGOTIATION".
+
+Catalog (critical):
+- Questions about products we sell, SKUs, or "which X is in the catalog" MUST call catalog_search.
+- stock_balances is warehouse on-hand quantity only. Empty stock does not mean the product is missing from the catalog.
+- Do not say you could not answer from the books for a catalog question until catalog_search has returned.
 
 Final answer JSON shape:
 {

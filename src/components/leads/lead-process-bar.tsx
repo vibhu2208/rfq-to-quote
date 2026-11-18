@@ -20,6 +20,8 @@ type Props = {
   stageCounts: Record<string, number>;
   onSelect: (stage: string) => void;
   totalAll: number;
+  /** Hide numeric counts until the list request has resolved. */
+  countsPending?: boolean;
 };
 
 export function LeadProcessBar({
@@ -27,6 +29,7 @@ export function LeadProcessBar({
   stageCounts,
   onSelect,
   totalAll,
+  countsPending = false,
 }: Props) {
   const allSelected = !activeStage;
 
@@ -41,7 +44,7 @@ export function LeadProcessBar({
           first
           selected={allSelected}
           label="All"
-          count={totalAll}
+          count={countsPending ? null : totalAll}
           title="All leads"
           onClick={() => onSelect("")}
         />
@@ -53,7 +56,7 @@ export function LeadProcessBar({
               last={index === FUNNEL_STEPS.length - 1}
               selected={selected}
               label={LEAD_STAGE_LABELS[stage]}
-              count={stageCounts[stage] || 0}
+              count={countsPending ? null : stageCounts[stage] || 0}
               title={LEAD_STAGE_HINTS[stage]}
               onClick={() => onSelect(selected ? "" : stage)}
             />
@@ -74,7 +77,7 @@ function ChevronStep({
   onClick,
 }: {
   label: string;
-  count: number;
+  count: number | null;
   selected: boolean;
   first?: boolean;
   last?: boolean;
@@ -109,7 +112,7 @@ function ChevronStep({
             : "bg-dark-primary/[0.08] text-dark-primary"
         }`}
       >
-        {count}
+        {count == null ? "–" : count}
       </span>
     </button>
   );

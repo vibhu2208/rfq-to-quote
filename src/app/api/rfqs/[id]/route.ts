@@ -131,6 +131,17 @@ const productSelectionsSchema = z.object({
     )
     .optional()
     .default([]),
+  addedLines: z
+    .array(
+      z.object({
+        lineNumber: z.number().int().positive(),
+        description: z.string().min(1).max(300),
+        quantity: z.number().positive().optional(),
+        unit: z.string().max(20).optional(),
+      })
+    )
+    .optional()
+    .default([]),
 });
 
 const patchSchema = z.object({

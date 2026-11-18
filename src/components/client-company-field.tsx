@@ -38,6 +38,9 @@ type Props = {
   email?: string;
   phone?: string;
   placeholder?: string;
+  inputClassName?: string;
+  fieldId?: string;
+  invalid?: boolean;
   required?: boolean;
 };
 
@@ -87,6 +90,9 @@ export function ClientCompanyField({
   phone,
   placeholder = "Type company name or initials",
   required,
+  inputClassName,
+  fieldId,
+  invalid,
 }: Props) {
   const listId = useId();
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -99,11 +105,7 @@ export function ClientCompanyField({
 
   useEffect(() => {
     const q = value.trim();
-    if (!open || q.length < 1) {
-      setHits([]);
-      setSearching(false);
-      return;
-    }
+    if (!open || q.length < 1) return;
 
     const ac = new AbortController();
     const t = setTimeout(async () => {
@@ -222,7 +224,12 @@ export function ClientCompanyField({
           setAddError("");
         }}
         onKeyDown={onKeyDown}
-        className="w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
+        data-buyer-field={fieldId}
+        aria-invalid={invalid || undefined}
+        className={
+          inputClassName ||
+          "w-full rounded-lg border border-light-green/40 bg-background px-3 py-2 outline-none focus:border-mid-green"
+        }
         placeholder={placeholder}
       />
       {open && q.length >= 1 ? (

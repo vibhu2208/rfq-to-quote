@@ -156,8 +156,50 @@ export async function GET(req: NextRequest) {
     intakeKindCounts[row.intakeKind] = row._count._all;
   }
 
+  const leadIds = items.map((row) => row.id);
+  const drafts = leadIds.length
+    ? await prisma.quote.findMany({
+        where: { rfqId: { in: leadIds }, status: "DRAFT" },
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          rfqId: true,
+          quoteNumber: true,
+          status: true,
+          grandTotal: true,
+          version: true,
+          createdAt: true,
+          sentAt: true,
+        },
+      })
+    : [];
+  const newestDraft = new Map<string, (typeof drafts)[number]>();
+  for (const draft of drafts) {
+    if (!newestDraft.has(draft.rfqId)) newestDraft.set(draft.rfqId, draft);
+  }
+
   return NextResponse.json({
-    items: items.map(slimListItem),
+    items: items.map((row) => {
+      const slim = slimListItem(row);
+      const draft = newestDraft.get(row.id);
+      if (!draft || slim.quotes.some((quote) => quote.id === draft.id)) return slim;
+      // The five newest quotes can hide an older draft. Keep that draft so Continue quote opens it.
+      return {
+        ...slim,
+        quotes: [
+          ...slim.quotes,
+          {
+            id: draft.id,
+            quoteNumber: draft.quoteNumber,
+            status: draft.status,
+            grandTotal: draft.grandTotal,
+            version: draft.version,
+            createdAt: draft.createdAt,
+            sentAt: draft.sentAt,
+          },
+        ],
+      };
+    }),
     total,
     stageCounts,
     intakeKindCounts,
