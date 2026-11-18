@@ -56,6 +56,12 @@ export function openPrintWindow(): PrintPopupHandle {
   return { blocked: false, win };
 }
 
+function isHtmlIframe(el: Element): el is HTMLIFrameElement {
+  // The iframe lives in the popup document. instanceof HTMLIFrameElement uses
+  // the opener's constructor and does not match it; tagName does.
+  return el.tagName === "IFRAME";
+}
+
 function mountPrintFrame(win: Window, url: string) {
   const doc = win.document;
   doc.open();
@@ -64,9 +70,7 @@ function mountPrintFrame(win: Window, url: string) {
   );
   doc.close();
   const frame = doc.getElementById("qpdf");
-  // The iframe was created in the popup document, so the opener's
-  // HTMLIFrameElement constructor does not match it.
-  if (!frame || !(frame instanceof win.HTMLIFrameElement)) {
+  if (!frame || !isHtmlIframe(frame)) {
     win.location.replace(url);
     window.setTimeout(() => {
       try {
