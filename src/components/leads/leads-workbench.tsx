@@ -211,7 +211,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const [datePreset, setDatePreset] = useState(initialUrl.datePreset);
   const [dateFrom, setDateFrom] = useState(initialUrl.dateFrom);
   const [dateTo, setDateTo] = useState(initialUrl.dateTo);
-  const [openRfq, setOpenRfq] = useState(Boolean(initialUrl.openRfq));
+  const [openRfq, setOpenRfq] = useState(
+    () =>
+      parseLeadsWorkbenchSearchParams(searchParams, presetQuery).openRfq ===
+      true
+  );
   const [dateRangeError, setDateRangeError] = useState("");
   const [selectedViewId, setSelectedViewId] = useState("");
   const [slaStatus, setSlaStatus] = useState(initialUrl.slaStatus);
