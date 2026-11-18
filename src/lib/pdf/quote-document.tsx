@@ -41,7 +41,7 @@ const styles = StyleSheet.create({
     fontFamily: "Helvetica",
     fontSize: 9,
     paddingTop: 88,
-    paddingBottom: 118,
+    paddingBottom: 108,
     paddingLeft: 36,
     paddingRight: 18,
     backgroundColor: "#FFFFFF",
@@ -290,15 +290,15 @@ const styles = StyleSheet.create({
     paddingTop: 5,
   },
   footerLine: {
-    fontSize: 10,
+    fontSize: 7.5,
     textAlign: "center",
-    marginBottom: 2,
-    lineHeight: 1.35,
+    marginBottom: 1.5,
+    lineHeight: 1.3,
   },
   pageNumber: {
-    fontSize: 9,
+    fontSize: 8,
     textAlign: "right",
-    marginTop: 3,
+    marginTop: 2,
   },
 });
 

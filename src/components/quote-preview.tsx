@@ -530,7 +530,7 @@ export function QuotePreviewModal({
 
           </div>
 
-          <div className="mt-auto border-t border-black py-3 pb-8 pl-9 pr-5 text-[14px] leading-relaxed sm:pl-14 sm:pr-7">
+          <div className="mt-auto border-t border-black py-2.5 pb-8 pl-9 pr-5 text-[11px] leading-snug sm:pl-14 sm:pr-7">
             {bankLines.line1 ? (
               <p className="text-center">{bankLines.line1}</p>
             ) : null}
@@ -543,7 +543,7 @@ export function QuotePreviewModal({
             {contactLines.line2 ? (
               <p className="text-center">{contactLines.line2}</p>
             ) : null}
-            <p className="mt-1 text-right text-[12px]">Page 1 of 1</p>
+            <p className="mt-1 text-right text-[10px]">Page 1 of 1</p>
           </div>
         </div>
         </div>

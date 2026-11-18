@@ -12,6 +12,7 @@ import {
   quoteIntro,
   QUOTE_CLOSING,
 } from "@/lib/quote-format";
+import { sanitizeFileName } from "@/lib/quote-attachments";
 
 type QuoteForPdf = Quote & {
   lineItems: Array<
@@ -107,5 +108,7 @@ export async function buildQuotePdfBuffer(quote: QuoteForPdf): Promise<{
     }),
   });
 
-  return { buffer, filename: `${quote.quoteNumber}.pdf` };
+  // Quote numbers like "Q/26-27/151" must not become nested paths on disk.
+  const filename = sanitizeFileName(`${quote.quoteNumber || "quote"}.pdf`);
+  return { buffer, filename: filename.toLowerCase().endsWith(".pdf") ? filename : `${filename}.pdf` };
 }

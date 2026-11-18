@@ -32,16 +32,22 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
   try {
     const { buffer, filename } = await buildQuotePdfBuffer(quote);
+    const safeName = path.basename(filename);
 
-    const dir = path.join(process.cwd(), "generated", "quotes");
-    await mkdir(dir, { recursive: true });
-    await writeFile(path.join(dir, filename), buffer);
+    try {
+      const dir = path.join(process.cwd(), "generated", "quotes");
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, safeName), buffer);
+    } catch (persistErr) {
+      // Serving the PDF must not depend on local disk (e.g. ephemeral hosts).
+      console.warn("Quote PDF cache write skipped", persistErr);
+    }
 
     return new NextResponse(new Uint8Array(buffer), {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Content-Disposition": `attachment; filename="${safeName}"`,
       },
     });
   } catch (e) {
