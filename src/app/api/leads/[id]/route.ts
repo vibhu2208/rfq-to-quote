@@ -216,19 +216,7 @@ async function repairCustomerIdentityFromBody<
 
   // Gemini is scheduled after the response. Awaiting it made lead detail wait several seconds.
   const needsRemote = !next.customerCompany.trim() || !next.customerPhone.trim();
-  if (needsRemote) {
-    const snapshot = { ...lead, ...next };
-    after(async () => {
-      try {
-        await backfillIdentityWithGemini(snapshot);
-      } catch (err) {
-        console.warn(
-          "[lead-identity] background repair failed",
-          err instanceof Error ? err.message : err
-        );
-      }
-    });
-  }
+  if (needsRemote) scheduleIdentityRepair({ ...lead, ...next });
 
   const changed =
     next.customerName !== String(lead.customerName || "").trim() ||
@@ -246,35 +234,74 @@ async function repairCustomerIdentityFromBody<
   return { ...lead, ...next };
 }
 
-async function backfillIdentityWithGemini<
-  T extends {
-    id: string;
-    rawText?: string | null;
-    customerName?: string | null;
-    customerCompany?: string | null;
-    customerPhone?: string | null;
-    customerEmail?: string | null;
-  },
->(lead: T) {
+const IDENTITY_FIELDS = [
+  "customerName",
+  "customerCompany",
+  "customerPhone",
+  "customerEmail",
+] as const;
+
+/** One Gemini attempt per lead per process. An empty result is not retried on every GET. */
+const identityRepairAttempted = new Set<string>();
+
+function scheduleIdentityRepair(snapshot: {
+  id: string;
+  rawText?: string | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+}) {
+  if (identityRepairAttempted.has(snapshot.id)) return;
+  identityRepairAttempted.add(snapshot.id);
+  after(async () => {
+    try {
+      await backfillIdentityWithGemini(snapshot);
+    } catch (err) {
+      identityRepairAttempted.delete(snapshot.id);
+      console.warn(
+        "[lead-identity] background repair failed",
+        err instanceof Error ? err.message : err
+      );
+    }
+  });
+}
+
+async function backfillIdentityWithGemini(lead: {
+  id: string;
+  rawText?: string | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
+  customerPhone?: string | null;
+  customerEmail?: string | null;
+}) {
   const resolved = await resolveCustomerIdentityFromEmail(
     lead.rawText || "",
     String(lead.customerName || ""),
     String(lead.customerEmail || "")
   );
-  const next = {
-    customerName: resolved.customerName || String(lead.customerName || "").trim(),
-    customerCompany:
-      resolved.customerCompany || String(lead.customerCompany || "").trim(),
-    customerPhone: resolved.customerPhone || String(lead.customerPhone || "").trim(),
-    customerEmail: resolved.customerEmail || String(lead.customerEmail || "").trim(),
-  };
-  const changed =
-    next.customerName !== String(lead.customerName || "").trim() ||
-    next.customerCompany !== String(lead.customerCompany || "").trim() ||
-    next.customerPhone !== String(lead.customerPhone || "").trim() ||
-    next.customerEmail !== String(lead.customerEmail || "").trim();
-  if (!changed) return;
-  await prisma.rfq.update({ where: { id: lead.id }, data: next });
+  const current = await prisma.rfq.findUnique({
+    where: { id: lead.id },
+    select: {
+      customerName: true,
+      customerCompany: true,
+      customerPhone: true,
+      customerEmail: true,
+    },
+  });
+  if (!current) return;
+
+  const data: Partial<Record<(typeof IDENTITY_FIELDS)[number], string>> = {};
+  for (const field of IDENTITY_FIELDS) {
+    const proposed = String(resolved[field] || "").trim();
+    const now = String(current[field] || "").trim();
+    const seen = String(lead[field] || "").trim();
+    // Skip a field someone edited after this page loaded.
+    if (!proposed || proposed === now || now !== seen) continue;
+    data[field] = proposed;
+  }
+  if (Object.keys(data).length === 0) return;
+  await prisma.rfq.update({ where: { id: lead.id }, data });
 }
 
 export async function GET(req: NextRequest, { params }: Params) {

@@ -132,12 +132,7 @@ export default async function DashboardPage() {
     {
       key: "ACCEPTED",
       label: "Won",
-      count:
-        (statusCount.ACCEPTED ?? 0) +
-        (statusCount.INVOICE_GENERATED ?? 0) +
-        (statusCount.PAYMENT_PENDING ?? 0) +
-        (statusCount.PAYMENT_RECEIVED ?? 0) +
-        (statusCount.DELIVERED ?? 0),
+      count: WON_STATUSES.reduce((sum, status) => sum + (statusCount[status] ?? 0), 0),
     },
   ];
   const pipelineMax = Math.max(...pipelineSteps.map((s) => s.count), 1);
