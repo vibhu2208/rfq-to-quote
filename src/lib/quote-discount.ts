@@ -2,10 +2,27 @@ import { round2 } from "@/lib/accounting/money";
 
 export type QuoteDiscountMethod = "header" | "lines";
 
+/** Exclusive discount scope for the quote discount dialog (never both). */
 export type QuoteDiscountMethods = {
-  header: boolean;
-  lines: boolean;
+  method: QuoteDiscountMethod;
 };
+
+export function exclusiveDiscountMethods(
+  method: QuoteDiscountMethod
+): QuoteDiscountMethods {
+  return { method };
+}
+
+/** Prefer an existing applied scope; default to whole-quote. */
+export function inferDiscountMethods(input: {
+  headerPercent?: number | null;
+  hasLineDiscount?: boolean;
+}): QuoteDiscountMethods {
+  const header = clampDiscountPercent(input.headerPercent ?? 0) > 0;
+  const lines = Boolean(input.hasLineDiscount);
+  if (lines && !header) return { method: "lines" };
+  return { method: "header" };
+}
 
 export type PricedLine = {
   qty: number;
@@ -142,4 +159,81 @@ export function uniformLineDiscountPercent(
     if (clampDiscountPercent(line.discountPercent ?? 0) !== first) return null;
   }
   return first > 0 ? first : null;
+}
+
+/**
+ * Resolve header + line percents for the discount dialog Apply/Clear action.
+ * Methods are mutually exclusive: only one scope receives the percent; the
+ * other is always cleared. Percent 0 clears both.
+ */
+export function resolveDiscountApplication(
+  percent: number,
+  methods: QuoteDiscountMethods
+): { headerPercent: number; linePercent: number } {
+  const nextPercent = clampDiscountPercent(percent);
+  if (nextPercent <= 0) {
+    return { headerPercent: 0, linePercent: 0 };
+  }
+  if (methods.method === "lines") {
+    return { headerPercent: 0, linePercent: nextPercent };
+  }
+  return { headerPercent: nextPercent, linePercent: 0 };
+}
+
+/** Preview subtotal after applying an exclusive discount scope. */
+export function previewDiscountedSubtotal(
+  lines: PricedLine[],
+  percent: number,
+  methods: QuoteDiscountMethods
+): number {
+  const { headerPercent, linePercent } = resolveDiscountApplication(
+    percent,
+    methods
+  );
+  const afterLines = lineSubtotal(
+    applyPercentToLineDiscounts(
+      lines.map((line) => ({ ...line, discountPercent: 0 })),
+      linePercent
+    )
+  );
+  return round2(
+    Math.max(0, afterLines - headerDiscountAmount(afterLines, headerPercent))
+  );
+}
+
+export type DiscountValidation = {
+  ok: boolean;
+  reason?: string;
+};
+
+/**
+ * Guard stacked / excessive discounts: max 100% and non-negative subtotal.
+ */
+export function validateDiscountApplication(input: {
+  percent: number;
+  methods: QuoteDiscountMethods;
+  lines: PricedLine[];
+}): DiscountValidation {
+  const raw = Number(input.percent);
+  if (Number.isFinite(raw) && raw > 100) {
+    return {
+      ok: false,
+      reason: "Discount cannot exceed 100%.",
+    };
+  }
+  const nextPercent = clampDiscountPercent(input.percent);
+  if (nextPercent <= 0) return { ok: true };
+
+  const finalSubtotal = previewDiscountedSubtotal(
+    input.lines,
+    nextPercent,
+    input.methods
+  );
+  if (finalSubtotal < 0) {
+    return {
+      ok: false,
+      reason: "Discount would make the subtotal negative.",
+    };
+  }
+  return { ok: true };
 }

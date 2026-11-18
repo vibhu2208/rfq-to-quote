@@ -13,8 +13,8 @@ import {
   formatQuoteQty,
   quoteLineDetails,
   formatTaxAnalysis,
-  quoteBankDetailsLine,
-  quoteContactFooterLine,
+  quoteBankDetailsLines,
+  quoteContactFooterLines,
   quoteIntro,
   quoteSignatoryName,
 } from "@/lib/quote-format";
@@ -41,7 +41,7 @@ const styles = StyleSheet.create({
     fontFamily: "Helvetica",
     fontSize: 9,
     paddingTop: 88,
-    paddingBottom: 96,
+    paddingBottom: 118,
     paddingLeft: 36,
     paddingRight: 18,
     backgroundColor: "#FFFFFF",
@@ -284,19 +284,21 @@ const styles = StyleSheet.create({
     position: "absolute",
     left: 36,
     right: 18,
-    bottom: 24,
+    bottom: 18,
     borderTopWidth: 0.5,
     borderTopColor: BORDER,
     paddingTop: 5,
   },
   footerLine: {
-    fontSize: 8,
+    fontSize: 10,
+    textAlign: "center",
     marginBottom: 2,
+    lineHeight: 1.35,
   },
   pageNumber: {
     fontSize: 9,
     textAlign: "right",
-    marginTop: 2,
+    marginTop: 3,
   },
 });
 
@@ -375,8 +377,8 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   const taxableAmount = Math.max(0, round2(data.subtotal - data.discountAmount));
   const withGst = data.withGst;
   const showHsn = data.showHsn !== false;
-  const bankLine = quoteBankDetailsLine(data.company);
-  const contactLine = quoteContactFooterLine(data.company);
+  const bankLines = quoteBankDetailsLines(data.company);
+  const contactLines = quoteContactFooterLines(data.company);
 
   const gstBuckets = new Map<number, number>();
   for (const line of data.lineItems) {
@@ -568,8 +570,14 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
         </View>
 
         <View style={styles.footer} fixed wrap={false}>
-          {bankLine ? <Text style={styles.footerLine}>{bankLine}</Text> : null}
-          {contactLine ? <Text style={styles.footerLine}>{contactLine}</Text> : null}
+          {bankLines.line1 ? <Text style={styles.footerLine}>{bankLines.line1}</Text> : null}
+          {bankLines.line2 ? <Text style={styles.footerLine}>{bankLines.line2}</Text> : null}
+          {contactLines.line1 ? (
+            <Text style={styles.footerLine}>{contactLines.line1}</Text>
+          ) : null}
+          {contactLines.line2 ? (
+            <Text style={styles.footerLine}>{contactLines.line2}</Text>
+          ) : null}
           <Text
             style={styles.pageNumber}
             render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`}

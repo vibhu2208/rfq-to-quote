@@ -747,7 +747,15 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         title: "Draft quote created from matching",
         tone: "success",
       });
+      // Do not clear drawerLeadId before push — URL sync would
+      // router.replace(/leads) and race away from the quote page.
       router.push(`/quotes/${data.id}`);
+    } catch (err) {
+      window.alert(
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Could not create quote"
+      );
     } finally {
       setCreatingQuoteId(null);
     }

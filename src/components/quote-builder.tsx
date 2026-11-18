@@ -95,7 +95,10 @@ import {
   applyPercentToLineDiscounts,
   clampDiscountPercent,
   effectiveUnitPrice,
+  inferDiscountMethods,
+  resolveDiscountApplication,
   uniformLineDiscountPercent,
+  validateDiscountApplication,
   type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
 import { applyMarkupPercentToLines } from "@/lib/quote-markup";
@@ -527,6 +530,7 @@ export function QuoteBuilder({
   const [discountDialog, setDiscountDialog] = useState<{
     percent: number;
     methods: QuoteDiscountMethods;
+    hasExistingDiscount: boolean;
   } | null>(null);
   const [markupDialog, setMarkupDialog] = useState<{ percent: number } | null>(
     null
@@ -1193,37 +1197,62 @@ export function QuoteBuilder({
         if (patch.costPrice != null && patch.costPrice > 0) {
           next.costPrice = clampQuoteUnitPrice(patch.costPrice);
         }
+        if (patch.discountPercent != null) {
+          next.discountPercent = clampDiscountPercent(patch.discountPercent);
+        }
         return next;
       });
-      return { ...f, lineItems };
+      // Line Disc% and whole-quote discount are mutually exclusive.
+      const touchedLineDiscount =
+        patch.discountPercent != null &&
+        clampDiscountPercent(patch.discountPercent) > 0;
+      return {
+        ...f,
+        lineItems,
+        ...(touchedLineDiscount && f.discountPercent > 0
+          ? {
+              discountPercent: 0,
+              discountAmount: 0,
+              manualOverrides: { ...f.manualOverrides, discountAmount: false },
+            }
+          : null),
+      };
     });
-  }
-
-  function applyHeaderDiscount(percent: number) {
-    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
-    setForm((f) => ({
-      ...f,
-      discountPercent: nextPercent,
-      discountAmount: 0,
-      manualOverrides: { ...f.manualOverrides, discountAmount: false },
-    }));
-  }
-
-  function applyLineDiscount(percent: number) {
-    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
-    setForm((f) => ({
-      ...f,
-      lineItems: applyPercentToLineDiscounts(f.lineItems, nextPercent),
-    }));
   }
 
   function applyDiscountSelection(
     percent: number,
     methods: QuoteDiscountMethods
   ) {
-    const nextPercent = Number.isFinite(percent) && percent > 0 ? percent : 0;
-    if (methods.lines) applyLineDiscount(nextPercent);
-    if (methods.header) applyHeaderDiscount(nextPercent);
+    const pricedLines = formRef.current.lineItems.map((line) => ({
+      qty: line.qty,
+      unitPrice: line.unitPrice,
+      discountPercent: line.discountPercent ?? 0,
+    }));
+    const validation = validateDiscountApplication({
+      percent,
+      methods,
+      lines: pricedLines,
+    });
+    if (percent > 0 && !validation.ok) {
+      toast(validation.reason || "Discount is not allowed.", "error");
+      return;
+    }
+    const { headerPercent, linePercent } = resolveDiscountApplication(
+      percent,
+      methods
+    );
+    setForm((f) => ({
+      ...f,
+      discountPercent: headerPercent,
+      discountAmount: 0,
+      manualOverrides: { ...f.manualOverrides, discountAmount: false },
+      lineItems: applyPercentToLineDiscounts(f.lineItems, linePercent),
+    }));
+  }
+
+  function clearAllDiscounts() {
+    applyDiscountSelection(0, { method: "header" });
   }
 
   function closeDiscountDialog() {
@@ -1233,13 +1262,17 @@ export function QuoteBuilder({
   function openDiscountDialog() {
     const linePct = appliedLineDiscountPercent ?? 0;
     const headerPct = form.discountPercent ?? 0;
-    setDiscountDialog({
-      percent: headerPct || linePct || 0,
-      methods: {
-        header: headerPct > 0 || (!hasAnyLineDiscount && !headerPct),
-        lines: hasAnyLineDiscount || (!headerPct && !hasAnyLineDiscount),
-      },
+    const methods = inferDiscountMethods({
+      headerPercent: headerPct,
+      hasLineDiscount: hasAnyLineDiscount,
     });
+    const hasExistingDiscount = headerPct > 0 || hasAnyLineDiscount;
+    const percent = hasExistingDiscount
+      ? methods.method === "lines"
+        ? linePct || headerPct
+        : headerPct || linePct
+      : 0;
+    setDiscountDialog({ percent, methods, hasExistingDiscount });
   }
 
   function openMarkupDialog() {
@@ -1271,6 +1304,13 @@ export function QuoteBuilder({
       };
     });
   }
+
+  function clearMarkup() {
+    applyMarkup(0);
+  }
+
+  const hasAppliedMarkup =
+    appliedMarkupPercent != null && appliedMarkupPercent > 0;
 
   function addLine() {
     const key = newKey();
@@ -2264,6 +2304,7 @@ export function QuoteBuilder({
         <QuoteDiscountDialog
           percent={discountDialog.percent}
           methods={discountDialog.methods}
+          hasExistingDiscount={discountDialog.hasExistingDiscount}
           lines={form.lineItems.map((line) => ({
             qty: line.qty,
             unitPrice: line.unitPrice,
@@ -2280,6 +2321,10 @@ export function QuoteBuilder({
             )
           }
           onCancel={closeDiscountDialog}
+          onClearAll={() => {
+            clearAllDiscounts();
+            closeDiscountDialog();
+          }}
           onApply={() => {
             applyDiscountSelection(discountDialog.percent, discountDialog.methods);
             closeDiscountDialog();
@@ -2290,6 +2335,7 @@ export function QuoteBuilder({
       {markupDialog ? (
         <QuoteMarkupDialog
           percent={markupDialog.percent}
+          hasExistingMarkup={hasAppliedMarkup}
           lines={form.lineItems.map((line) => ({
             qty: line.qty,
             unitPrice: line.unitPrice,
@@ -2301,6 +2347,10 @@ export function QuoteBuilder({
             )
           }
           onCancel={closeMarkupDialog}
+          onClear={() => {
+            clearMarkup();
+            closeMarkupDialog();
+          }}
           onApply={() => {
             applyMarkup(markupDialog.percent);
             closeMarkupDialog();
@@ -2873,16 +2923,26 @@ export function QuoteBuilder({
                             min={0}
                             max={100}
                             step="0.01"
-                            value={line.discountPercent ?? 0}
-                            onChange={(e) =>
-                              updateLine(idx, {
-                                discountPercent: clampDiscountPercent(
-                                  Number(e.target.value)
-                                ),
-                              })
+                            value={
+                              clampDiscountPercent(line.discountPercent ?? 0) > 0
+                                ? line.discountPercent ?? 0
+                                : ""
                             }
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw.trim() === "") {
+                                updateLine(idx, { discountPercent: 0 });
+                                return;
+                              }
+                              const next = Number(raw);
+                              if (!Number.isFinite(next)) return;
+                              updateLine(idx, {
+                                discountPercent: clampDiscountPercent(next),
+                              });
+                            }}
                             className={numInput}
-                            title="Per-product discount %"
+                            title="Per-product discount % (editable)"
+                            placeholder="0"
                           />
                         </td>
                         <td className="w-[6.5rem] px-1 py-1.5 align-top">
@@ -2979,24 +3039,37 @@ export function QuoteBuilder({
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Markup
                     </span>
-                    <button
-                      type="button"
-                      onClick={openMarkupDialog}
-                      className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
-                      title="Apply trader markup on cost into sell prices"
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        <TrendingUp className="h-3 w-3 text-mid-green" strokeWidth={2} />
-                        <span className="tabular-nums">
-                          {appliedMarkupPercent && appliedMarkupPercent > 0
-                            ? `${appliedMarkupPercent}%`
-                            : "Select"}
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={openMarkupDialog}
+                        className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
+                        title="Edit trader markup on cost into sell prices"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <TrendingUp className="h-3 w-3 text-mid-green" strokeWidth={2} />
+                          <span className="tabular-nums">
+                            {hasAppliedMarkup
+                              ? `${appliedMarkupPercent}%`
+                              : "Select"}
+                          </span>
                         </span>
-                      </span>
-                    </button>
-                    {appliedMarkupPercent && appliedMarkupPercent > 0 ? (
+                      </button>
+                      {hasAppliedMarkup ? (
+                        <button
+                          type="button"
+                          onClick={clearMarkup}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-light-green/35 text-mid-green hover:bg-light-green/20"
+                          title="Clear markup"
+                          aria-label="Clear markup"
+                        >
+                          <X className="h-3.5 w-3.5" strokeWidth={2} />
+                        </button>
+                      ) : null}
+                    </div>
+                    {hasAppliedMarkup ? (
                       <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
-                        Built into sell prices
+                        Built into sell prices · click to edit
                       </span>
                     ) : null}
                   </div>
@@ -3004,43 +3077,45 @@ export function QuoteBuilder({
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Discount
                     </span>
-                    <button
-                      type="button"
-                      onClick={openDiscountDialog}
-                      className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
-                      title="Whole quote and/or per-product discount"
-                    >
-                      <span className="inline-flex items-center gap-1">
-                        <Percent className="h-3 w-3 text-mid-green" strokeWidth={2} />
-                        <span className="tabular-nums">
-                          {form.discountPercent > 0 || hasAnyLineDiscount
-                            ? [
-                                form.discountPercent > 0
-                                  ? `${form.discountPercent}% quote`
-                                  : null,
-                                hasAnyLineDiscount
-                                  ? appliedLineDiscountPercent
-                                    ? `${appliedLineDiscountPercent}% lines`
-                                    : "Mixed lines"
-                                  : null,
-                              ]
-                                .filter(Boolean)
-                                .join(" · ")
-                            : "Select"}
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={openDiscountDialog}
+                        className={`${chargeInput} inline-flex min-w-[7.25rem] items-center justify-between gap-1.5 px-2.5 hover:border-mid-green`}
+                        title="Edit whole quote and/or per-product discount"
+                      >
+                        <span className="inline-flex items-center gap-1">
+                          <Percent className="h-3 w-3 text-mid-green" strokeWidth={2} />
+                          <span className="tabular-nums">
+                            {form.discountPercent > 0
+                              ? `${form.discountPercent}% quote`
+                              : hasAnyLineDiscount
+                                ? appliedLineDiscountPercent
+                                  ? `${appliedLineDiscountPercent}% lines`
+                                  : "Mixed lines"
+                                : "Select"}
+                          </span>
                         </span>
-                      </span>
-                    </button>
-                    {form.discountPercent > 0 && hasAnyLineDiscount ? (
-                      <span className="mt-0.5 block max-w-[12rem] text-[10px] leading-snug text-mid-green">
-                        Whole + per product
-                      </span>
-                    ) : form.discountPercent > 0 ? (
+                      </button>
+                      {form.discountPercent > 0 || hasAnyLineDiscount ? (
+                        <button
+                          type="button"
+                          onClick={clearAllDiscounts}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-light-green/35 text-mid-green hover:bg-light-green/20"
+                          title="Remove discount"
+                          aria-label="Remove discount"
+                        >
+                          <X className="h-3.5 w-3.5" strokeWidth={2} />
+                        </button>
+                      ) : null}
+                    </div>
+                    {form.discountPercent > 0 ? (
                       <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
-                        Shown on the quote
+                        Whole quote only · click to edit
                       </span>
                     ) : hasAnyLineDiscount ? (
                       <span className="mt-0.5 block max-w-[11rem] text-[10px] leading-snug text-mid-green">
-                        Per product Disc%
+                        Per product only · click to edit
                       </span>
                     ) : null}
                   </div>
@@ -3106,7 +3181,7 @@ export function QuoteBuilder({
                         <span>Vendor cost</span>
                         <span className="tabular-nums font-medium">{formatMoney(vendorCostTotal)}</span>
                       </div>
-                      {appliedMarkupPercent && appliedMarkupPercent > 0 ? (
+                      {hasAppliedMarkup ? (
                         <div className="flex justify-between text-mid-green">
                           <span>Markup {appliedMarkupPercent}%</span>
                           <span className="tabular-nums font-medium">

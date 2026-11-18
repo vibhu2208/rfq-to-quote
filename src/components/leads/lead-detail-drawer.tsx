@@ -403,18 +403,34 @@ export function LeadDetailDrawer({
       const res = await fetch(`/api/rfqs/${leadId}/convert-quote`, {
         method: "POST",
       });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        error?: string;
+      };
       if (!res.ok) {
-        window.alert(data.error || "Could not create quote");
+        window.alert(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not create quote"
+        );
         return;
       }
-      onChanged?.();
-      if (data.id) {
-        onClose();
-        router.push(`/quotes/${data.id}`);
-      } else {
+      if (!data.id) {
+        window.alert("Could not create quote");
         await load();
+        return;
       }
+      // Navigate first — do not onClose() before push. Closing clears
+      // drawerLeadId and the workbench URL sync can router.replace(/leads)
+      // after this push, which looks like a silent no-op.
+      onChanged?.();
+      router.push(`/quotes/${data.id}`);
+    } catch (err) {
+      window.alert(
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Could not create quote"
+      );
     } finally {
       setSaving(false);
     }
@@ -651,7 +667,7 @@ export function LeadDetailDrawer({
                   onClick={() => void createQuote()}
                   className="rounded-md bg-mid-green px-2.5 py-1.5 text-sm font-semibold text-background hover:bg-dark-secondary disabled:opacity-60"
                 >
-                  Create quote
+                  {saving ? "Creating…" : "Create quote"}
                 </button>
               )}
               <Link

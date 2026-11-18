@@ -24,6 +24,9 @@ type SourceRow = Record<string, unknown>;
 const NAME_KEYS = [
   "product description",
   "item description",
+  // Typo-only: real "description" stays in NOTES so Item Name wins when both exist.
+  "discription",
+  "descripion",
   "product name",
   "productname",
   "item name",
@@ -39,6 +42,8 @@ const NAME_KEYS = [
 
 const NOTES_KEYS = [
   "description",
+  "discription",
+  "descripion",
   "item description",
   "product description",
   "remarks",
@@ -53,6 +58,8 @@ const CODE_KEYS = [
   "code",
   "product code",
   "productcode",
+  "product id",
+  "productid",
   "item code",
   "itemcode",
   "part",
@@ -76,20 +83,33 @@ const QTY_KEYS = [
   "units",
 ];
 
-const UNIT_KEYS = ["unit", "uom", "uom name", "unit name", "nos", "no s"];
+const UNIT_KEYS = ["unit", "uom", "uom name", "unit name", "unitname", "nos", "no s"];
 const PRICE_KEYS = [
   "est unit price",
   "unit price",
   "unitprice",
+  // Common spreadsheet typos seen in RFQs (e.g. "Unit Prce")
+  "unit prce",
+  "unit prise",
+  "unit prize",
   "unit rate",
   "basic rate",
+  "basic price",
   "list price",
   "offer price",
   "selling price",
+  "sale price",
+  "saleprice",
+  "dealer price",
+  "dealerprice",
+  "last price",
+  "lastprice",
   "rate",
   "price",
   "mrp",
 ];
+/** Wholesale/ERP cost — only used when no sell/list/MRP column has a value. */
+const COST_PRICE_KEYS = ["cost", "cost price", "costprice"];
 const AMOUNT_KEYS = [
   "est amount",
   "amount ex gst",
@@ -98,6 +118,7 @@ const AMOUNT_KEYS = [
   "line total",
   "line amount",
   "amount",
+  "total",
   "value",
 ];
 const TAX_KEYS = ["gst %", "gst%", "gst rate", "tax %", "tax%", "tax rate", "taxrate", "gst", "tax"];
@@ -161,8 +182,25 @@ function pick(
   return String(value).trim();
 }
 
+/** True for unit-price headers including typos like "Unit Prce". */
+function looksLikeUnitPriceHeader(header: string): boolean {
+  if (!header) return false;
+  if (header.includes("amount") || (header.includes("total") && !header.includes("unit"))) {
+    return false;
+  }
+  if (header.includes("unit price") || header === "unitprice") return true;
+  if (headerMatchesAny(header, ["unit prce", "unit prise", "unit prize", "unit rate"])) {
+    return true;
+  }
+  const compact = header.replace(/\s+/g, "");
+  // unitprce / unitprise / unitprize / untprice
+  if (/^u(ni)?t?pr[a-z]{2,}$/.test(compact)) return true;
+  if (/\bunit\b/.test(header) && /pr[cei]{2,}|prise|prize|prate/.test(header)) return true;
+  return false;
+}
+
 function isTotalHeader(header: string): boolean {
-  if (header.includes("unit price")) return false;
+  if (looksLikeUnitPriceHeader(header)) return false;
   if (/\brate\b/.test(header) && !header.includes("amount") && !header.includes("total")) {
     return false;
   }
@@ -172,13 +210,17 @@ function isTotalHeader(header: string): boolean {
 /** Price/amount columns must never be treated as UOM — "unit" matches "EST. UNIT PRICE". */
 function isNotUomHeader(header: string): boolean {
   return (
+    looksLikeUnitPriceHeader(header) ||
     header.includes("price") ||
+    header.includes("prce") ||
+    header.includes("prise") ||
     header.includes("amount") ||
     header.includes("total") ||
     header.includes("rate") ||
     header.includes("gst") ||
     header.includes("tax") ||
     header.includes("mrp") ||
+    header.includes("cost") ||
     header.includes("value") ||
     header.includes("qty") ||
     header.includes("quantity")
@@ -199,7 +241,15 @@ function sheetScore(keys: string[]): number {
   const headers = keys.map(normKey).filter(Boolean);
   let score = 0;
   if (headers.some((h) => headerMatchesAny(h, QTY_KEYS))) score += 3;
-  if (headers.some((h) => headerMatchesAny(h, PRICE_KEYS) && !isTotalHeader(h))) score += 5;
+  if (
+    headers.some(
+      (h) =>
+        (headerMatchesAny(h, PRICE_KEYS) || headerMatchesAny(h, COST_PRICE_KEYS)) &&
+        !isTotalHeader(h)
+    )
+  ) {
+    score += 5;
+  }
   if (headers.some((h) => headerMatchesAny(h, NAME_KEYS) || headerMatchesAny(h, NOTES_KEYS))) {
     score += 2;
   }
@@ -257,7 +307,8 @@ function recognizedHeader(keys: string[]): boolean {
       headerMatchesAny(k, NOTES_KEYS) ||
       headerMatchesAny(k, CODE_KEYS) ||
       headerMatchesAny(k, QTY_KEYS) ||
-      headerMatchesAny(k, PRICE_KEYS)
+      headerMatchesAny(k, PRICE_KEYS) ||
+      headerMatchesAny(k, COST_PRICE_KEYS)
   );
 }
 
@@ -334,9 +385,15 @@ function rowToItem(row: SourceRow): QuoteCsvItem | null {
 
   const qtyRaw = pick(row, QTY_KEYS);
   const quantity = Math.max(1, num(qtyRaw, 1));
-  const unitPriceRaw = num(pick(row, PRICE_KEYS, isTotalHeader), 0);
+  const sellPriceRaw = num(pick(row, PRICE_KEYS, isTotalHeader), 0);
+  const costPriceRaw = num(pick(row, COST_PRICE_KEYS, isTotalHeader), 0);
+  const unitPriceRaw = sellPriceRaw > 0 ? sellPriceRaw : costPriceRaw;
   const lineAmount = num(
-    pick(row, AMOUNT_KEYS, (header) => header.includes("unit price") || header.includes("incl")),
+    pick(
+      row,
+      AMOUNT_KEYS,
+      (header) => looksLikeUnitPriceHeader(header) || header.includes("incl")
+    ),
     0
   );
   const unitPrice =

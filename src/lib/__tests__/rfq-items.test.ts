@@ -146,6 +146,27 @@ describe("extractRfqItems", () => {
     expect(items[0].quantity).toBe(10);
     expect(items[7].quantity).toBe(20);
   });
+
+  it("keeps spreadsheet unit prices on structured items", () => {
+    const items = extractRfqItems({
+      items: [
+        {
+          productName: "AERO Panel",
+          code: "153002",
+          quantity: 2,
+          unit: "NOS",
+          unitPrice: 42000,
+        },
+      ],
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      description: "AERO Panel",
+      code: "153002",
+      quantity: 2,
+      unitPrice: 42000,
+    });
+  });
 });
 
 describe("looksLikeMergedSummary", () => {

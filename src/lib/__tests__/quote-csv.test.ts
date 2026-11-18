@@ -195,6 +195,75 @@ Cat6 UTP Cable,30,45000`;
       unitPrice: 1500,
     });
   });
+
+  it("reads LastPrice and falls back to Cost on ERP-style product sheets", () => {
+    const withLast = parseQuoteSpreadsheet(
+      Buffer.from(`ProductID,ProductName,UnitName,LastPrice,MRP,Cost
+153002,AERO Panel,NOS,42000,45000,38000`),
+      "glass-audio.csv"
+    );
+    expect(withLast.items[0]).toMatchObject({
+      productName: "AERO Panel",
+      code: "153002",
+      unit: "NOS",
+      unitPrice: 42000,
+    });
+
+    const costOnly = parseQuoteSpreadsheet(
+      Buffer.from(`ProductID,ProductName,UnitName,MRP,Cost
+147446,100AH Battery,NOS,0,7168`),
+      "glass-audio.csv"
+    );
+    expect(costOnly.items[0]).toMatchObject({
+      productName: "100AH Battery",
+      unitPrice: 7168,
+    });
+  });
+
+  it("prefers MRP over Cost when LastPrice is missing", () => {
+    const parsed = parseQuoteSpreadsheet(
+      Buffer.from(`ProductName,MRP,Cost
+Scanner,3500,1825`),
+      "products.csv"
+    );
+    expect(parsed.items[0].unitPrice).toBe(3500);
+  });
+
+  it("reads Unit Prce + Discription typos from audio RFQ workbooks", () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.aoa_to_sheet([
+        ["S.no.", "Discription", "Make /Model", "Qty", "Unit Prce", "Total"],
+        [1, "Ceiling Speaker 10 Watt", "JBL 8128", 20, 8500, 170000],
+        ["", "Ceiling Speaker 20 Watt", "Control 412C/T 20W", 1, "", ""],
+        [2, "Amplifier", "Ahuja SSB-120DP", 4, 24500, 98000],
+        ["", "", "", "", "Total ", 268000],
+      ]),
+      "Sheet1"
+    );
+    const parsed = parseQuoteSpreadsheet(
+      Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" })),
+      "gla_audio.xlsx"
+    );
+    expect(parsed.items).toHaveLength(3);
+    expect(parsed.items[0]).toMatchObject({
+      productName: "Ceiling Speaker 10 Watt",
+      code: "JBL 8128",
+      quantity: 20,
+      unitPrice: 8500,
+    });
+    expect(parsed.items[1]).toMatchObject({
+      productName: "Ceiling Speaker 20 Watt",
+      quantity: 1,
+      unitPrice: 0,
+    });
+    expect(parsed.items[2]).toMatchObject({
+      productName: "Amplifier",
+      code: "Ahuja SSB-120DP",
+      unitPrice: 24500,
+    });
+  });
 });
 
 describe("csv catalog matching", () => {

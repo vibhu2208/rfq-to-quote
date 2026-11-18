@@ -172,15 +172,25 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           extraNotes: requirement?.extraNotes,
           catalogName: req.aliasName || requirement?.description || "From RFQ",
         });
+        const unitPrice =
+          req.unitPrice != null && req.unitPrice > 0
+            ? req.unitPrice
+            : requirement?.unitPrice != null && requirement.unitPrice > 0
+              ? requirement.unitPrice
+              : 0;
+        const taxRate =
+          requirement?.taxRate != null && requirement.taxRate >= 0
+            ? requirement.taxRate
+            : 18;
         return {
           productId: null,
           description: presented.description,
           aliasName: presented.aliasName,
           qty,
           unit: presented.unit,
-          unitPrice: 0,
-          taxRate: 18,
-          lineTotal: 0,
+          unitPrice,
+          taxRate,
+          lineTotal: Math.round(qty * unitPrice * 100) / 100,
           sortOrder: i,
         } satisfies LineCreate;
       }
@@ -245,15 +255,19 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
         extraNotes: item.extraNotes,
         catalogName: item.description,
       });
+      const unitPrice =
+        item.unitPrice != null && item.unitPrice > 0 ? item.unitPrice : 0;
+      const taxRate =
+        item.taxRate != null && item.taxRate >= 0 ? item.taxRate : 18;
       return {
         productId: null,
         description: presented.description,
         aliasName: presented.aliasName,
         qty: item.quantity,
         unit: presented.unit,
-        unitPrice: 0,
-        taxRate: 18,
-        lineTotal: 0,
+        unitPrice,
+        taxRate,
+        lineTotal: Math.round(item.quantity * unitPrice * 100) / 100,
         sortOrder: i,
       };
     });
@@ -376,6 +390,10 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
     const qty = item.requirement.quantity > 0 ? item.requirement.quantity : 1;
     const aliasName = item.requirement.description;
     const unit = item.requirement.unit;
+    const unitPrice =
+      item.requirement.unitPrice != null && item.requirement.unitPrice > 0
+        ? item.requirement.unitPrice
+        : undefined;
     const reqText = [item.requirement.brand, item.requirement.description]
       .filter(Boolean)
       .join(" ");
@@ -386,7 +404,7 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
       shouldAutoBindCatalogMatch(top, reqText)
     ) {
       used.add(top.product.id);
-      lines.push({ productId: top.product.id, qty, aliasName, unit });
+      lines.push({ productId: top.product.id, qty, aliasName, unit, unitPrice });
       continue;
     }
 
@@ -396,6 +414,7 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
       qty,
       aliasName,
       unit,
+      unitPrice,
       matchWeak: Boolean(top),
     });
   }
@@ -436,6 +455,9 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
       extraNotes: item.extraNotes,
       quantity: item.quantity,
       unit: item.unit,
+      ...(item.unitPrice != null && item.unitPrice > 0
+        ? { unitPrice: item.unitPrice }
+        : {}),
     })),
   };
   const rawText = items
@@ -466,9 +488,14 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
       catalogUnit: top?.product.unit,
     });
 
+    const sheetPrice =
+      item.unitPrice != null && item.unitPrice > 0 ? item.unitPrice : 0;
+
     if (top && top.score >= 6) {
       const full = products.find((p) => p.id === top.product.id);
-      const unitPrice = full ? catalogSellPrice(full) : top.product.offerPrice;
+      const catalogPrice = full ? catalogSellPrice(full) : top.product.offerPrice;
+      // Spreadsheet / document rate wins over catalog when present.
+      const unitPrice = sheetPrice > 0 ? sheetPrice : catalogPrice;
       return {
         productId: top.product.id,
         description: presented.description,
@@ -486,7 +513,7 @@ export async function catalogLinesFromExtractedItems(items: ExtractedQuoteItem[]
       aliasName: presented.aliasName,
       qty,
       unit: presented.unit,
-      unitPrice: item.unitPrice && item.unitPrice > 0 ? item.unitPrice : 0,
+      unitPrice: sheetPrice,
       taxRate: 18,
     };
   });

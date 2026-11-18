@@ -14,8 +14,8 @@ import {
   formatQuoteQty,
   quoteLineDetails,
   formatTaxAnalysis,
-  quoteBankDetailsLine,
-  quoteContactFooterLine,
+  quoteBankDetailsLines,
+  quoteContactFooterLines,
   quoteIntro,
   quoteSignatoryName,
   quoteShowHsn,
@@ -200,8 +200,8 @@ export function QuotePreviewModal({
   }
   const signatory = quoteSignatoryName(company.signatory);
   const signPhone = (company.mobile || company.phone || "").replace(/^\+91\s*/, "").trim();
-  const bankLine = quoteBankDetailsLine(company);
-  const contactLine = quoteContactFooterLine(company);
+  const bankLines = quoteBankDetailsLines(company);
+  const contactLines = quoteContactFooterLines(company);
   const words = amountInWords(calc.grandTotal, "").replace(/\s+/g, " ").trim();
   const taxAnalysis = formatTaxAnalysis({
     taxable: calc.taxable,
@@ -530,10 +530,20 @@ export function QuotePreviewModal({
 
           </div>
 
-          <div className="mt-auto border-t border-black py-3 pb-8 pl-9 pr-5 text-[12px] leading-relaxed sm:pl-14 sm:pr-7">
-            {bankLine ? <p>{bankLine}</p> : null}
-            {contactLine ? <p className="mt-1">{contactLine}</p> : null}
-            <p className="mt-1 text-right">Page 1 of 1</p>
+          <div className="mt-auto border-t border-black py-3 pb-8 pl-9 pr-5 text-[14px] leading-relaxed sm:pl-14 sm:pr-7">
+            {bankLines.line1 ? (
+              <p className="text-center">{bankLines.line1}</p>
+            ) : null}
+            {bankLines.line2 ? (
+              <p className="text-center">{bankLines.line2}</p>
+            ) : null}
+            {contactLines.line1 ? (
+              <p className="mt-1 text-center">{contactLines.line1}</p>
+            ) : null}
+            {contactLines.line2 ? (
+              <p className="text-center">{contactLines.line2}</p>
+            ) : null}
+            <p className="mt-1 text-right text-[12px]">Page 1 of 1</p>
           </div>
         </div>
         </div>

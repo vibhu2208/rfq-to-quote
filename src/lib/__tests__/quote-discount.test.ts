@@ -4,9 +4,13 @@ import {
   applyPercentToLinePrices,
   effectiveUnitPrice,
   headerDiscountAmount,
+  inferDiscountMethods,
   lineSubtotal,
+  previewDiscountedSubtotal,
+  resolveDiscountApplication,
   shouldChooseQuoteDiscountMethod,
   uniformLineDiscountPercent,
+  validateDiscountApplication,
 } from "@/lib/quote-discount";
 
 describe("shouldChooseQuoteDiscountMethod", () => {
@@ -36,17 +40,15 @@ describe("effectiveUnitPrice + line discounts", () => {
     expect(lineSubtotal(lines)).toBe(900);
   });
 
-  it("stacks with a whole-quote header discount on the reduced subtotal", () => {
-    const lines = applyPercentToLineDiscounts(
-      [
-        { qty: 1, unitPrice: 600 },
-        { qty: 1, unitPrice: 400 },
-      ],
-      10
-    );
-    const afterLines = lineSubtotal(lines);
-    expect(afterLines).toBe(900);
-    expect(headerDiscountAmount(afterLines, 5)).toBe(45);
+  it("computes whole-quote discount from list subtotal when exclusive", () => {
+    const lines = [
+      { qty: 1, unitPrice: 600 },
+      { qty: 1, unitPrice: 400 },
+    ];
+    expect(lineSubtotal(lines)).toBe(1000);
+    expect(headerDiscountAmount(1000, 5)).toBe(50);
+    expect(previewDiscountedSubtotal(lines, 5, { method: "header" })).toBe(950);
+    expect(previewDiscountedSubtotal(lines, 10, { method: "lines" })).toBe(900);
   });
 
   it("reports a uniform line discount percent", () => {
@@ -62,6 +64,69 @@ describe("effectiveUnitPrice + line discounts", () => {
         { discountPercent: 5 },
       ])
     ).toBeNull();
+  });
+});
+
+describe("resolveDiscountApplication", () => {
+  it("clears header and lines when percent is 0", () => {
+    expect(resolveDiscountApplication(0, { method: "header" })).toEqual({
+      headerPercent: 0,
+      linePercent: 0,
+    });
+    expect(resolveDiscountApplication(0, { method: "lines" })).toEqual({
+      headerPercent: 0,
+      linePercent: 0,
+    });
+  });
+
+  it("applies only the selected exclusive method", () => {
+    expect(resolveDiscountApplication(10, { method: "header" })).toEqual({
+      headerPercent: 10,
+      linePercent: 0,
+    });
+    expect(resolveDiscountApplication(12, { method: "lines" })).toEqual({
+      headerPercent: 0,
+      linePercent: 12,
+    });
+  });
+});
+
+describe("inferDiscountMethods", () => {
+  it("prefers lines when only line discounts exist", () => {
+    expect(
+      inferDiscountMethods({ headerPercent: 0, hasLineDiscount: true })
+    ).toEqual({ method: "lines" });
+  });
+
+  it("defaults to header when both or neither are set", () => {
+    expect(
+      inferDiscountMethods({ headerPercent: 8, hasLineDiscount: true })
+    ).toEqual({ method: "header" });
+    expect(
+      inferDiscountMethods({ headerPercent: 0, hasLineDiscount: false })
+    ).toEqual({ method: "header" });
+  });
+});
+
+describe("validateDiscountApplication", () => {
+  it("rejects percents above 100", () => {
+    const result = validateDiscountApplication({
+      percent: 120,
+      methods: { method: "header" },
+      lines: [{ qty: 1, unitPrice: 100 }],
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/100/);
+  });
+
+  it("allows a normal exclusive discount", () => {
+    expect(
+      validateDiscountApplication({
+        percent: 15,
+        methods: { method: "lines" },
+        lines: [{ qty: 2, unitPrice: 50 }],
+      }).ok
+    ).toBe(true);
   });
 });
 

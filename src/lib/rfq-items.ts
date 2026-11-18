@@ -9,6 +9,9 @@ export type RfqRequirementItem = {
   category?: string | null;
   code?: string | null;
   extraNotes?: string | null;
+  /** Unit price from spreadsheet / document when present. */
+  unitPrice?: number | null;
+  taxRate?: number | null;
 };
 
 function asString(v: unknown): string {
@@ -40,6 +43,9 @@ function normalizeItem(raw: unknown, lineNumber: number): RfqRequirementItem | n
   const quantity = asNumber(item.quantity, 1);
   const unit = asString(item.unit);
   const category = asString(item.category) || null;
+  const unitPrice = asNumber(item.unitPrice, 0) || asNumber(item.rate, 0) || null;
+  const taxRateRaw = asNumber(item.taxRate, 0);
+  const taxRate = taxRateRaw > 0 ? taxRateRaw : null;
   const extraNotes =
     asString(item.extraNotes) ||
     asString(item.notes) ||
@@ -61,6 +67,8 @@ function normalizeItem(raw: unknown, lineNumber: number): RfqRequirementItem | n
     category,
     code,
     extraNotes: extraNotes || null,
+    unitPrice: unitPrice && unitPrice > 0 ? unitPrice : null,
+    taxRate,
   };
 }
 

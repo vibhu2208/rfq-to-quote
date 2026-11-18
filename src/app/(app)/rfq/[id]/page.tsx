@@ -3457,7 +3457,12 @@ export default function RfqDetailPage() {
             const offer = picked?.product.offerPrice;
             const catalogPrice =
               last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
-            const unitPrice = catalogPrice ?? vendorLineCost?.unitPrice;
+            const sheetPrice =
+              item.requirement.unitPrice != null && item.requirement.unitPrice > 0
+                ? item.requirement.unitPrice
+                : undefined;
+            // Spreadsheet / document rate wins over catalog (same as CSV import).
+            const unitPrice = sheetPrice ?? catalogPrice ?? vendorLineCost?.unitPrice;
             lines.push({
               productId: selectedPid,
               qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
