@@ -66,6 +66,10 @@ describe("quoteListWhere", () => {
       { grandTotal: "asc" },
       { updatedAt: "desc" },
     ]);
+    expect(quoteListOrderBy(parseQuoteListFilters({ sort: "updated", dir: "desc" }))).toEqual([
+      { issuedAt: { sort: "desc", nulls: "last" } },
+      { updatedAt: "desc" },
+    ]);
   });
 
   it("builds sort and export links without dropping filters", () => {
@@ -96,5 +100,22 @@ describe("quoteListCsv", () => {
     expect(csv.split("\n")[0]).toBe("Quote,Name,Buyer,Status,Updated,Total,GST");
     expect(csv).toContain('"Acme, Indore"');
     expect(csv).toContain("106023");
+  });
+
+  it("neutralizes spreadsheet formulas in text cells", () => {
+    const csv = quoteListCsv([
+      {
+        quoteNumber: "Q-1",
+        quoteName: "=1+1",
+        buyer: "+cmd|' /C calc'!A0",
+        status: "DRAFT",
+        updated: "2026-11-12",
+        grandTotal: 10,
+        withGst: false,
+      },
+    ]);
+    expect(csv).toContain("'=1+1");
+    expect(csv).toContain("'+cmd");
+    expect(csv).not.toContain(",=1+1,");
   });
 });

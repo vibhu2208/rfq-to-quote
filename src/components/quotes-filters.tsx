@@ -3,6 +3,7 @@
 import {
   startTransition,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -266,6 +267,11 @@ export function QuotesFilters({
     to: dates.to,
   });
 
+  const snapshotRef = useRef({ filters, dates, q, client, minAmount, maxAmount });
+  useLayoutEffect(() => {
+    snapshotRef.current = { filters, dates, q, client, minAmount, maxAmount };
+  });
+
   useEffect(() => {
     setQ(filters.q);
     setClient(filters.client);
@@ -275,24 +281,33 @@ export function QuotesFilters({
   }, [filters.q, filters.client, filters.min, filters.max, filters.from, filters.to]);
 
   function navigate(next: Partial<QuoteListFilters>) {
-    const href = quoteListQuery({
-      ...filters,
-      q: next.q ?? q,
-      client: next.client ?? client,
-      min: next.min ?? minAmount,
-      max: next.max ?? maxAmount,
-      from: next.from ?? dates.from,
-      to: next.to ?? dates.to,
-      product: filters.product,
-      status: next.status ?? filters.status,
-      gst: next.gst ?? filters.gst,
-      assist: next.assist ?? filters.assist,
-      sort: next.sort ?? filters.sort,
-      dir: next.dir ?? filters.dir,
+    const base = snapshotRef.current;
+    const merged: QuoteListFilters = {
+      ...base.filters,
+      q: next.q ?? base.q,
+      client: next.client ?? base.client,
+      min: next.min ?? base.minAmount,
+      max: next.max ?? base.maxAmount,
+      from: next.from ?? base.dates.from,
+      to: next.to ?? base.dates.to,
+      product: base.filters.product,
+      status: next.status ?? base.filters.status,
+      gst: next.gst ?? base.filters.gst,
+      assist: next.assist ?? base.filters.assist,
+      sort: next.sort ?? base.filters.sort,
+      dir: next.dir ?? base.filters.dir,
       page: 1,
-    });
+    };
+    snapshotRef.current = {
+      filters: merged,
+      dates: { from: merged.from, to: merged.to },
+      q: merged.q,
+      client: merged.client,
+      minAmount: merged.min,
+      maxAmount: merged.max,
+    };
     startTransition(() => {
-      router.push(href);
+      router.push(quoteListQuery(merged));
     });
   }
 
@@ -305,10 +320,15 @@ export function QuotesFilters({
     ) {
       return;
     }
-    const t = window.setTimeout(
-      () => navigate({ q, client, min: minAmount, max: maxAmount }),
-      300
-    );
+    const t = window.setTimeout(() => {
+      const latest = snapshotRef.current;
+      navigate({
+        q: latest.q,
+        client: latest.client,
+        min: latest.minAmount,
+        max: latest.maxAmount,
+      });
+    }, 300);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- debounce text filters only
   }, [q, client, minAmount, maxAmount]);

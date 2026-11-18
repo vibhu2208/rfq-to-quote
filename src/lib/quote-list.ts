@@ -117,7 +117,9 @@ export function quoteListOrderBy(
     case "total":
       return [{ grandTotal: dir }, { updatedAt: "desc" }];
     case "updated":
-      return [{ updatedAt: dir }];
+      // Rows show issuedAt when set, otherwise updatedAt. Null issue dates sort last
+      // so a filled quotation date is not ordered by a later edit timestamp.
+      return [{ issuedAt: { sort: dir, nulls: "last" } }, { updatedAt: dir }];
     default:
       return [{ needsAssistance: "desc" }, { updatedAt: "desc" }];
   }
@@ -145,8 +147,9 @@ export function quoteListExportHref(f: Partial<QuoteListFilters>): string {
   return `/api/quotes/export${qs}`;
 }
 
-function csvCell(value: unknown): string {
-  const s = value == null ? "" : String(value);
+function csvCell(value: unknown, neutralize = false): string {
+  let s = value == null ? "" : String(value);
+  if (neutralize && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
@@ -167,16 +170,14 @@ export function quoteListCsv(rows: QuoteListCsvRow[]): string {
     header.join(","),
     ...rows.map((row) =>
       [
-        row.quoteNumber,
-        row.quoteName,
-        row.buyer,
-        row.status,
-        row.updated,
-        row.grandTotal,
-        row.withGst ? "Yes" : "No",
-      ]
-        .map(csvCell)
-        .join(",")
+        csvCell(row.quoteNumber, true),
+        csvCell(row.quoteName, true),
+        csvCell(row.buyer, true),
+        csvCell(row.status, true),
+        csvCell(row.updated, true),
+        csvCell(row.grandTotal),
+        csvCell(row.withGst ? "Yes" : "No", true),
+      ].join(",")
     ),
   ];
   return lines.join("\n");
