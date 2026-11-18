@@ -1489,8 +1489,12 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   function applySavedView(view: {
     id: string;
     filters: Record<string, unknown>;
+    columns?: unknown;
   }) {
     setSelectedViewId(view.id);
+    if (Array.isArray(view.columns) && view.columns.length) {
+      setColumns(normalizeLeadColumns(view.columns));
+    }
     const f = view.filters || {};
     setQ(String(f.q || ""));
     setStage(String(f.stage || ""));

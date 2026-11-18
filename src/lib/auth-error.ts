@@ -12,6 +12,6 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
 /** Human copy for NextAuth's `?error=` code. Unknown codes stay actionable. */
 export function authErrorMessage(code: string | null | undefined): string {
   const key = (code || "").trim();
-  if (!key) return AUTH_ERROR_MESSAGES.Default;
-  return AUTH_ERROR_MESSAGES[key] || AUTH_ERROR_MESSAGES.Default;
+  if (!Object.hasOwn(AUTH_ERROR_MESSAGES, key)) return AUTH_ERROR_MESSAGES.Default;
+  return AUTH_ERROR_MESSAGES[key];
 }

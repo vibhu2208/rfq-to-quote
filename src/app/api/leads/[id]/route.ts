@@ -105,8 +105,30 @@ async function getDrawerLead(id: string) {
     },
   });
   if (!lead) return null;
-  const activities = await listLeadActivities(id, 40);
-  return { ...lead, activities, invoices: [] as unknown[] };
+  const [activities, draft] = await Promise.all([
+    listLeadActivities(id, 40),
+    prisma.quote.findFirst({
+      where: { rfqId: id, status: "DRAFT" },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        quoteNumber: true,
+        status: true,
+        grandTotal: true,
+        version: true,
+        needsAssistance: true,
+        assistanceReason: true,
+        lastBuyerReplyAt: true,
+        lastReplyIntent: true,
+        lastAnalysisSummary: true,
+      },
+    }),
+  ]);
+  const quotes =
+    draft && !lead.quotes.some((quote) => quote.id === draft.id)
+      ? [...lead.quotes, { ...draft, messages: [] }]
+      : lead.quotes;
+  return { ...lead, quotes, activities, invoices: [] as unknown[] };
 }
 
 async function getFullLead(id: string) {

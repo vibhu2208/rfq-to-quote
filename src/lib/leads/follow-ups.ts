@@ -231,15 +231,7 @@ export async function completeFollowUp(input: {
     },
   });
 
-  const nextPending = await prisma.leadFollowUp.findFirst({
-    where: { rfqId: existing.rfqId, status: { in: ["PENDING", "OVERDUE"] } },
-    orderBy: { dueAt: "asc" },
-  });
-
-  await prisma.rfq.update({
-    where: { id: existing.rfqId },
-    data: { nextFollowUpAt: nextPending?.dueAt || null },
-  });
+  await syncNextFollowUp(existing.rfqId);
 
   await logLeadActivity({
     rfqId: existing.rfqId,
@@ -253,14 +245,34 @@ export async function completeFollowUp(input: {
   return followUp;
 }
 
+const OPEN_FOLLOW_UP = ["PENDING", "OVERDUE"] as const;
+
+export function canRescheduleFollowUp(status: string) {
+  return status === "PENDING" || status === "OVERDUE";
+}
+
+export class FollowUpClosedError extends Error {
+  constructor() {
+    super("This follow-up is already closed");
+  }
+}
+
 async function syncNextFollowUp(rfqId: string) {
-  const nextPending = await prisma.leadFollowUp.findFirst({
-    where: { rfqId, status: { in: ["PENDING", "OVERDUE"] } },
-    orderBy: { dueAt: "asc" },
-  });
-  await prisma.rfq.update({
-    where: { id: rfqId },
-    data: { nextFollowUpAt: nextPending?.dueAt || null },
+  await prisma.$transaction(async (tx) => {
+    // Lock the next open row so a cancel cannot commit between the read and the pointer write.
+    const locked = await tx.$queryRaw<Array<{ dueAt: Date }>>`
+      SELECT "dueAt"
+      FROM "LeadFollowUp"
+      WHERE "rfqId" = ${rfqId}
+        AND status IN ('PENDING'::"FollowUpStatus", 'OVERDUE'::"FollowUpStatus")
+      ORDER BY "dueAt" ASC
+      LIMIT 1
+      FOR UPDATE
+    `;
+    await tx.rfq.update({
+      where: { id: rfqId },
+      data: { nextFollowUpAt: locked[0]?.dueAt ?? null },
+    });
   });
 }
 
@@ -295,9 +307,13 @@ export async function rescheduleFollowUp(input: {
   const existing = await prisma.leadFollowUp.findUniqueOrThrow({
     where: { id: input.id },
   });
-  const followUp = await prisma.leadFollowUp.update({
-    where: { id: input.id },
+  const updated = await prisma.leadFollowUp.updateMany({
+    where: { id: input.id, status: { in: [...OPEN_FOLLOW_UP] } },
     data: { dueAt: input.dueAt, status: "PENDING", completedAt: null },
+  });
+  if (updated.count === 0) throw new FollowUpClosedError();
+  const followUp = await prisma.leadFollowUp.findUniqueOrThrow({
+    where: { id: input.id },
   });
   await syncNextFollowUp(existing.rfqId);
   await logLeadActivity({

@@ -291,7 +291,12 @@ export async function fetchLeadUsers(): Promise<LeadUser[]> {
 }
 
 export async function fetchLeadSavedViews(): Promise<
-  { id: string; name: string; filters: Record<string, unknown> }[]
+  {
+    id: string;
+    name: string;
+    filters: Record<string, unknown>;
+    columns?: unknown;
+  }[]
 > {
   const res = await fetch("/api/leads/saved-views");
   if (!res.ok) return [];

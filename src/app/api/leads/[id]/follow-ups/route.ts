@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
 import {
+  FollowUpClosedError,
   cancelFollowUp,
   completeFollowUp,
   createFollowUp,
@@ -110,12 +111,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     if (!due || Number.isNaN(due.getTime())) {
       return NextResponse.json({ error: "A valid due date is required" }, { status: 400 });
     }
-    const followUp = await rescheduleFollowUp({
-      id: parsed.data.followUpId,
-      dueAt: due,
-      actorId: session?.user?.id,
-    });
-    return NextResponse.json(followUp);
+    try {
+      const followUp = await rescheduleFollowUp({
+        id: parsed.data.followUpId,
+        dueAt: due,
+        actorId: session?.user?.id,
+      });
+      return NextResponse.json(followUp);
+    } catch (err) {
+      if (err instanceof FollowUpClosedError) {
+        return NextResponse.json({ error: err.message }, { status: 409 });
+      }
+      throw err;
+    }
   }
 
   const followUp = await completeFollowUp({
