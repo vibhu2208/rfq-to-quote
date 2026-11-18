@@ -65,7 +65,7 @@ describe("formatTaxAnalysis", () => {
 });
 
 describe("quote footer lines", () => {
-  it("puts A/C no and type on the second bank line", () => {
+  it("keeps all bank details on one line", () => {
     expect(
       quoteBankDetailsLines({
         bankName: "HDFC Bank",
@@ -75,8 +75,9 @@ describe("quote footer lines", () => {
         bankAccountType: "Current",
       })
     ).toEqual({
-      line1: "Bank Details: HDFC Bank  Branch: Noida  IFSC Code: HDFC0001234",
-      line2: "A/C No: 1234567890  A/C Type: Current",
+      line1:
+        "Bank Details: HDFC Bank  Branch: Noida  IFSC Code: HDFC0001234  A/C No: 1234567890  A/C Type: Current",
+      line2: null,
     });
   });
 
