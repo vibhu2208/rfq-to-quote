@@ -635,6 +635,7 @@ export async function matchVendorsToRfq(
     productHistory: {
       where: { productKey: { in: productKeys } },
       orderBy: { lastQuotedAt: "desc" as const },
+      take: 12,
     },
   };
 

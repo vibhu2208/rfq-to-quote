@@ -1,4 +1,4 @@
-import { extractKeywords } from "@/lib/product-match";
+import { extractRfqItems } from "@/lib/rfq-items";
 
 type RfqInput = {
   parsedCategory?: string | null;
@@ -12,42 +12,60 @@ function specsRecord(parsedSpecs: unknown): Record<string, unknown> {
   return parsedSpecs as Record<string, unknown>;
 }
 
-function nestedSpecsString(specs: Record<string, unknown>): string {
-  const nested = specs.specs;
-  if (!nested || typeof nested !== "object") return "";
-  return Object.entries(nested as Record<string, unknown>)
-    .filter(([, v]) => v != null && v !== "")
-    .map(([k, v]) => `${k} ${v}`)
-    .join(" ");
+export type MarketplaceLineQuery = {
+  lineNumber: number;
+  label: string;
+  query: string;
+};
+
+function compactQuery(parts: Array<string | null | undefined>, max = 100): string {
+  return [...new Set(parts.join(" ").split(/\s+/).filter(Boolean))].join(" ").trim().slice(0, max);
+}
+
+function lineQueryText(item: {
+  brand?: string | null;
+  description?: string | null;
+  model?: string | null;
+}): string {
+  return compactQuery([item.brand, item.description, item.model]);
+}
+
+/**
+ * One marketplace search per requested line.
+ * The query is the buyer's line wording — not a bag of tokens from the whole email,
+ * which was pulling mounts and displays into an access-point comparison.
+ */
+export function buildMarketplaceLineQueries(input: RfqInput): MarketplaceLineQuery[] {
+  const items = extractRfqItems(input.parsedSpecs, input.rawText);
+  const lines: MarketplaceLineQuery[] = [];
+  for (const item of items) {
+    const query = lineQueryText(item);
+    if (query.length < 3) continue;
+    lines.push({
+      lineNumber: item.lineNumber,
+      label: (item.description || query).trim(),
+      query,
+    });
+  }
+  if (lines.length > 0) return lines.slice(0, 4);
+
+  const specs = specsRecord(input.parsedSpecs);
+  const fallback = compactQuery([
+    typeof specs.brand === "string" ? specs.brand : "",
+    typeof specs.description === "string" ? specs.description : "",
+    input.parsedCategory,
+  ]);
+  if (fallback.length < 3) return [];
+  return [{ lineNumber: 1, label: fallback, query: fallback }];
 }
 
 export function buildMarketplaceQuery(input: RfqInput): string | null {
-  if (!input.parsedCategory && !input.parsedSpecs) return null;
-
-  const specs = specsRecord(input.parsedSpecs);
-  const parts: string[] = [];
-
-  if (typeof specs.brand === "string" && specs.brand.trim()) {
-    parts.push(specs.brand.trim());
-  }
-  if (typeof specs.description === "string" && specs.description.trim()) {
-    parts.push(specs.description.trim());
-  }
-  if (input.parsedCategory) {
-    parts.push(input.parsedCategory);
-  }
-
-  const nested = nestedSpecsString(specs);
-  if (nested) parts.push(nested);
-
-  const keywords = extractKeywords(input);
-  if (keywords.length > 0) {
-    parts.push(keywords.slice(0, 6).join(" "));
-  }
-
-  const query = [...new Set(parts.join(" ").split(/\s+/).filter(Boolean))].join(" ").trim();
-  if (query.length < 3) return null;
-  return query.slice(0, 120);
+  const lines = buildMarketplaceLineQueries(input);
+  if (lines.length === 0) return null;
+  return lines
+    .map((line) => line.query)
+    .join(" | ")
+    .slice(0, 240);
 }
 
 export function extractBudget(parsedSpecs: unknown): number | null {

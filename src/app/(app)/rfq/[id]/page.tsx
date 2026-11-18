@@ -28,6 +28,7 @@ import {
   type PickableProduct,
 } from "@/components/rfq-product-picker";
 import { extractRfqItems } from "@/lib/rfq-items";
+import { catalogBindingLooksMismatched } from "@/lib/product-match";
 import {
   vendorCostTotal,
   vendorPricedLineNumbers,
@@ -35,7 +36,24 @@ import {
   vendorsWithPriceForLine,
 } from "@/lib/vendor-line-price";
 import type { CatalogRequirementInput } from "@/lib/catalog-product-draft";
-import { parseApiJson, userFacingFetchError } from "@/lib/fetch-error";
+import { parseApiJson, userFacingFetchError, userFacingParseError } from "@/lib/fetch-error";
+import {
+  displayCatalogComparator,
+  listingRelevantToQuery,
+  lowestPositivePrice,
+  relevantListings,
+} from "@/lib/marketplace/relevance";
+import {
+  MATCH_SCORE_TITLE,
+  acceptHighConfidenceSelections,
+  extractCommercialAsks,
+  mergeAddedRequirementLines,
+  reconcileSettledLineSelection,
+  requirementMatchText,
+  restoreVisibleLineSelection,
+  sortMatchesByScore,
+  visibleSuggestions,
+} from "@/lib/rfq-workspace";
 import { structureEmailBodyForDisplay } from "@/lib/email-text";
 import {
   clearRecoreDraft,
@@ -80,6 +98,12 @@ type ProductSelections = {
   extras?: Array<{
     lineNumber?: number;
     product: ProductMatch["product"];
+  }>;
+  addedLines?: Array<{
+    lineNumber: number;
+    description: string;
+    quantity?: number;
+    unit?: string;
   }>;
 };
 
@@ -452,6 +476,16 @@ type MarketplaceComparison = {
   cached?: boolean;
   needsFetch?: boolean;
   errors?: string[];
+  lines?: Array<{
+    lineNumber: number;
+    label: string;
+    query: string;
+    catalogPrice: number | null;
+    catalogProductName: string | null;
+    amazon: MarketplaceListing[];
+    flipkart: MarketplaceListing[];
+    indiamart: MarketplaceListing[];
+  }>;
 };
 
 function PriceDelta({ value }: { value: number }) {
@@ -694,7 +728,7 @@ function VendorPriceDetailModal({
               type="button"
               onClick={onClose}
               className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
-              aria-label="Close"
+              aria-label="Close" title="Close"
             >
               <X className="h-4 w-4" />
             </button>
@@ -981,7 +1015,7 @@ function VendorNegotiateModal({
             type="button"
             onClick={onClose}
             className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
-            aria-label="Close"
+            aria-label="Close" title="Close"
           >
             <X className="h-4 w-4" />
           </button>
@@ -1744,7 +1778,7 @@ function VendorRecoreLinePickerModal({
             type="button"
             onClick={handleClose}
             className="rounded-lg p-2 text-mid-green transition hover:bg-dark-secondary/8 hover:text-dark-primary"
-            aria-label="Close"
+            aria-label="Close" title="Close"
           >
             <X className="h-4 w-4" />
           </button>
@@ -2198,7 +2232,7 @@ function VendorThreadModal({
             type="button"
             onClick={onClose}
             className="rounded-md p-1 text-mid-green hover:bg-dark-secondary/10"
-            aria-label="Close"
+            aria-label="Close" title="Close"
           >
             <X className="h-4 w-4" />
           </button>
@@ -2264,29 +2298,55 @@ function rowPrices(
 function MarketplaceComparisonGrid({
   marketplace,
   vendorMatches,
+  query,
 }: {
   marketplace: MarketplaceComparison;
   vendorMatches: VendorMatch[];
+  query?: string;
 }) {
-  const amazon = marketplace.amazon ?? [];
-  const flipkart = marketplace.flipkart ?? [];
-  const indiamart = marketplace.indiamart ?? [];
+  const searchQuery = (query || marketplace.query || "").split(" | ")[0] || marketplace.query;
+  const amazon = relevantListings(marketplace.amazon ?? [], searchQuery);
+  const flipkart = relevantListings(marketplace.flipkart ?? [], searchQuery);
+  const indiamart = relevantListings(marketplace.indiamart ?? [], searchQuery);
+  const comparableVendors = vendorMatches.filter((match) =>
+    listingRelevantToQuery(
+      `${match.vendor.name} ${match.category} ${match.subcategory || ""}`,
+      searchQuery
+    )
+  );
+  const catalog = displayCatalogComparator({
+    query: searchQuery,
+    catalogPrice: marketplace.catalogPrice,
+    catalogProductName: marketplace.catalogProductName,
+  });
+  const globalBest = lowestPositivePrice([
+    ...amazon.map((listing) => listing.price),
+    ...flipkart.map((listing) => listing.price),
+    ...indiamart.map((listing) => listing.price),
+    ...comparableVendors.map((match) => vendorDisplayPrice(match).amount),
+  ]);
+  const comparableVendorIds = new Set(comparableVendors.map((match) => match.vendor.id));
+  const pricedMarketplace: MarketplaceComparison = {
+    ...marketplace,
+    catalogPrice: catalog.price,
+    catalogProductName: catalog.name,
+  };
   const rows = Array.from({ length: MARKETPLACE_ROW_COUNT }, (_, index) => index);
   const hasAny =
     amazon.length > 0 || flipkart.length > 0 || indiamart.length > 0 || vendorMatches.length > 0;
 
   return (
     <div className="space-y-2">
-      {(marketplace.catalogPrice != null || marketplace.budget != null) && (
+      {(catalog.price != null || marketplace.budget != null) && (
         <div className="flex flex-wrap gap-3 text-xs">
-          {marketplace.catalogPrice != null ? (
+          {catalog.price != null ? (
             <span className="rounded-md bg-dark-secondary/5 px-2 py-1">
               Catalog:{" "}
               <span className="font-semibold tabular-nums text-dark-primary">
-                <Money value={marketplace.catalogPrice} />
+                <Money value={catalog.price} />
               </span>
-              {marketplace.catalogProductName ? (
-                <span className="text-mid-green"> · {marketplace.catalogProductName}</span>
+              {catalog.name ? (
+                <span className="text-mid-green"> · {catalog.name}</span>
               ) : null}
             </span>
           ) : null}
@@ -2320,7 +2380,9 @@ function MarketplaceComparisonGrid({
                 indiamart[index],
                 vendorMatches[index]
               );
-              const best = prices.best;
+              const vendorIsComparable = vendorMatches[index]
+                ? comparableVendorIds.has(vendorMatches[index].vendor.id)
+                : false;
 
               return (
                 <tr
@@ -2333,29 +2395,33 @@ function MarketplaceComparisonGrid({
                   <td className="px-1 py-1 align-top">
                     <MarketplaceListingCell
                       listing={amazon[index]}
-                      marketplace={marketplace}
-                      best={best != null && prices.amazon === best}
+                      marketplace={pricedMarketplace}
+                      best={globalBest != null && prices.amazon === globalBest}
                     />
                   </td>
                   <td className="px-1 py-1 align-top">
                     <MarketplaceListingCell
                       listing={flipkart[index]}
-                      marketplace={marketplace}
-                      best={best != null && prices.flipkart === best}
+                      marketplace={pricedMarketplace}
+                      best={globalBest != null && prices.flipkart === globalBest}
                     />
                   </td>
                   <td className="px-1 py-1 align-top">
                     <MarketplaceListingCell
                       listing={indiamart[index]}
-                      marketplace={marketplace}
-                      best={best != null && prices.indiamart === best}
+                      marketplace={pricedMarketplace}
+                      best={globalBest != null && prices.indiamart === globalBest}
                     />
                   </td>
                   <td className="px-1 py-1 align-top">
                     <VendorListingCell
                       match={vendorMatches[index]}
-                      marketplace={marketplace}
-                      best={best != null && prices.vendor === best}
+                      marketplace={pricedMarketplace}
+                      best={
+                        vendorIsComparable &&
+                        globalBest != null &&
+                        prices.vendor === globalBest
+                      }
                     />
                   </td>
                 </tr>
@@ -2453,8 +2519,36 @@ export default function RfqDetailPage() {
     lineNumber?: number;
     requirement: CatalogRequirementInput;
   } | null>(null);
+  const [addedLines, setAddedLines] = useState<RfqRequirementItem[]>([]);
+  const [acceptUndo, setAcceptUndo] = useState<Record<number, string> | null>(null);
+  const [acceptNotice, setAcceptNotice] = useState("");
+  const [missingItemText, setMissingItemText] = useState("");
   const selectionsHydrated = useRef(false);
   const skipNextSave = useRef(true);
+  const addedLinesRef = useRef<RfqRequirementItem[]>([]);
+  const touchedLinesRef = useRef<Set<number>>(new Set());
+  const lineSelectionRef = useRef(lineSelection);
+  const itemMatchesRef = useRef(itemMatches);
+  const extrasRef = useRef(extraMatchesByLine);
+  useEffect(() => {
+    lineSelectionRef.current = lineSelection;
+    itemMatchesRef.current = itemMatches;
+    extrasRef.current = extraMatchesByLine;
+    addedLinesRef.current = addedLines;
+  }, [lineSelection, itemMatches, extraMatchesByLine, addedLines]);
+
+  function asAddedLines(
+    rows: ProductSelections["addedLines"] | undefined
+  ): RfqRequirementItem[] {
+    return (rows || [])
+      .filter((row) => row.description?.trim())
+      .map((row) => ({
+        lineNumber: row.lineNumber,
+        description: row.description.trim(),
+        quantity: row.quantity && row.quantity > 0 ? row.quantity : 1,
+        unit: row.unit?.trim() || "pcs",
+      }));
+  }
 
   const applySavedSelections = useCallback((
     saved: ProductSelections | null | undefined,
@@ -2466,19 +2560,21 @@ export default function RfqDetailPage() {
       ((saved!.selectedIds?.length ?? 0) > 0 ||
         Object.keys(saved!.lineSelection || {}).length > 0 ||
         Object.keys(saved!.lineVendorSelection || {}).length > 0 ||
-        (saved!.extras?.length ?? 0) > 0);
+        (saved!.extras?.length ?? 0) > 0 ||
+        (saved!.addedLines?.length ?? 0) > 0);
     if (!hasSaved) {
-      const auto = new Set<string>();
-      const autoLines: Record<number, string> = {};
-      if (perItem.length > 0) {
-        for (const item of perItem) {
-          const top = item.matches[0];
-          if (top && top.score >= 10) {
-            auto.add(top.product.id);
-            autoLines[item.lineNumber] = top.product.id;
-          }
-        }
-      } else if (list[0] && list[0].score >= 10) {
+      const autoLines = restoreVisibleLineSelection({
+        saved: null,
+        items: perItem.map((item) => ({
+          lineNumber: item.lineNumber,
+          requirementText: requirementMatchText(item.requirement),
+          matches: item.matches,
+        })),
+        extraIdsByLine: {},
+        autoWhenEmpty: true,
+      });
+      const auto = new Set<string>(Object.values(autoLines));
+      if (perItem.length === 0 && list[0] && list[0].score >= 22) {
         auto.add(list[0].product.id);
       }
       setSelected(auto);
@@ -2486,12 +2582,6 @@ export default function RfqDetailPage() {
       setLineVendorSelection({});
       setExtraMatchesByLine({});
       return;
-    }
-
-    const lineSel: Record<number, string> = {};
-    for (const [k, v] of Object.entries(saved!.lineSelection || {})) {
-      const n = Number(k);
-      if (Number.isFinite(n) && v) lineSel[n] = v;
     }
 
     const vendorSel: Record<number, string> = {};
@@ -2542,6 +2632,26 @@ export default function RfqDetailPage() {
       });
     }
 
+    const savedMap: Record<number, string> = {};
+    for (const [k, v] of Object.entries(saved!.lineSelection || {})) {
+      const n = Number(k);
+      if (Number.isFinite(n) && v) savedMap[n] = v;
+    }
+    const extraIdsByLine: Record<number, string[]> = {};
+    for (const [line, rows] of Object.entries(extrasByLine)) {
+      extraIdsByLine[Number(line)] = rows.map((row) => row.product.id);
+    }
+    const lineSel = restoreVisibleLineSelection({
+      saved: savedMap,
+      items: perItem.map((item) => ({
+        lineNumber: item.lineNumber,
+        requirementText: requirementMatchText(item.requirement),
+        matches: [...(extrasByLine[item.lineNumber] || []), ...item.matches],
+      })),
+      extraIdsByLine,
+      autoWhenEmpty: false,
+    });
+
     setExtraMatchesByLine(extrasByLine);
     setLineSelection(lineSel);
     setLineVendorSelection(vendorSel);
@@ -2579,10 +2689,16 @@ export default function RfqDetailPage() {
       const list: ProductMatch[] = data.matches || [];
       const perItem: RequirementMatch[] = data.itemMatches || [];
       const reqs: RfqRequirementItem[] = data.requirements || [];
+      const added = saved?.addedLines
+        ? asAddedLines(saved.addedLines)
+        : addedLinesRef.current;
+      addedLinesRef.current = added;
+      setAddedLines(added);
+      const merged = mergeAddedRequirementLines(perItem, reqs, added);
       setMatches(list);
-      setItemMatches(perItem);
-      setRequirements(reqs);
-      applySavedSelections(saved, list, perItem);
+      setItemMatches(merged.items);
+      setRequirements(merged.requirements);
+      applySavedSelections(saved, list, merged.items);
       setExpandedSearchLine(null);
       selectionsHydrated.current = true;
     } catch (err) {
@@ -3114,6 +3230,11 @@ export default function RfqDetailPage() {
     setMarketplaceError("");
     selectionsHydrated.current = false;
     skipNextSave.current = true;
+    touchedLinesRef.current = new Set();
+    addedLinesRef.current = [];
+    setAddedLines([]);
+    setAcceptUndo(null);
+    setAcceptNotice("");
 
     const rfqPromise = fetch(`/api/rfqs/${id}`, { signal: controller.signal });
     // Weighted-only first so the Products pane can populate before AI re-rank.
@@ -3137,15 +3258,57 @@ export default function RfqDetailPage() {
       const list: ProductMatch[] = matchData.matches || [];
       const perItem: RequirementMatch[] = matchData.itemMatches || [];
       const reqs: RfqRequirementItem[] = matchData.requirements || [];
+      let added = addedLinesRef.current;
+      if (opts?.hydrateSelections !== false) {
+        added = asAddedLines(selections?.addedLines);
+        addedLinesRef.current = added;
+        setAddedLines(added);
+      }
+      const merged = mergeAddedRequirementLines(perItem, reqs, added);
       setKeywords(matchData.keywords || []);
       setMatches(list);
-      setItemMatches(perItem);
-      setRequirements(reqs);
+      setItemMatches(merged.items);
+      setRequirements(merged.requirements);
       if (opts?.hydrateSelections !== false) {
-        applySavedSelections(selections ?? null, list, perItem);
+        applySavedSelections(selections ?? null, list, merged.items);
         setExpandedSearchLine(null);
         selectionsHydrated.current = true;
+        return;
       }
+
+      const reconciled = reconcileSettledLineSelection({
+        previousSelection: lineSelectionRef.current,
+        previousItems: itemMatchesRef.current.map((item) => ({
+          lineNumber: item.lineNumber,
+          matches: [...(extrasRef.current[item.lineNumber] || []), ...item.matches],
+        })),
+        nextItems: merged.items.map((item) => ({
+          lineNumber: item.lineNumber,
+          requirementText: requirementMatchText(item.requirement),
+          matches: item.matches,
+        })),
+        extraIdsByLine: Object.fromEntries(
+          Object.entries(extrasRef.current).map(([key, rows]) => [
+            Number(key),
+            rows.map((row) => row.product.id),
+          ])
+        ),
+        touchedLines: [...touchedLinesRef.current],
+      });
+      if (reconciled.pinFromPrevious.length > 0) {
+        setExtraMatchesByLine((prev) => {
+          const next = { ...prev };
+          for (const pin of reconciled.pinFromPrevious) {
+            const rows = next[pin.lineNumber] ?? [];
+            if (!rows.some((row) => row.product.id === pin.match.product.id)) {
+              next[pin.lineNumber] = [pin.match, ...rows];
+            }
+          }
+          return next;
+        });
+      }
+      setLineSelection(reconciled.lineSelection);
+      setSelected(new Set(Object.values(reconciled.lineSelection)));
     }
 
     async function bootRfq() {
@@ -3333,6 +3496,12 @@ export default function RfqDetailPage() {
       lineVendorSelection: lineVendorPayload,
       selectedIds: [...selected],
       extras,
+      addedLines: addedLines.map((line) => ({
+        lineNumber: line.lineNumber,
+        description: line.description,
+        quantity: line.quantity,
+        unit: line.unit,
+      })),
     };
 
     const timeout = setTimeout(() => {
@@ -3352,13 +3521,14 @@ export default function RfqDetailPage() {
     }, 450);
 
     return () => clearTimeout(timeout);
-  }, [id, selected, lineSelection, lineVendorSelection, extraMatchesByLine, matches]);
+  }, [id, selected, lineSelection, lineVendorSelection, extraMatchesByLine, matches, addedLines]);
 
   useEffect(() => {
     if (
       rfq?.parsedCategory &&
       !marketplaceFetched &&
       !marketplaceLoading &&
+      !matchesLoading &&
       !rfq.parseError
     ) {
       const timeout = setTimeout(() => void loadMarketplacePrices(), 0);
@@ -3367,6 +3537,7 @@ export default function RfqDetailPage() {
   }, [
     rfq?.parsedCategory,
     rfq?.parseError,
+    matchesLoading,
     marketplaceFetched,
     marketplaceLoading,
     loadMarketplacePrices,
@@ -3402,6 +3573,8 @@ export default function RfqDetailPage() {
         setLineSelection({});
         setLineVendorSelection({});
         setExtraMatchesByLine({});
+        setAddedLines([]);
+        addedLinesRef.current = [];
       }
       clearRecoreDraftsForRfq(id);
       await Promise.all([
@@ -3446,7 +3619,7 @@ export default function RfqDetailPage() {
             ? allLineMatches.find((m) => m.product.id === selectedPid)
             : undefined;
 
-          if (selectedPid) {
+          if (selectedPid && picked) {
             const vendorIdSelected = lineVendorSelection[lineNum];
             const vendorMatch = vendorIdSelected
               ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
@@ -3623,6 +3796,7 @@ export default function RfqDetailPage() {
     };
 
     if (lineNumber != null) {
+      touchedLinesRef.current.add(lineNumber);
       setExtraMatchesByLine((prev) => {
         const existing = (prev[lineNumber] ?? []).filter((m) => m.product.id !== product.id);
         // Newest manual pick stays at the front so it appears in the visible top row.
@@ -3649,6 +3823,7 @@ export default function RfqDetailPage() {
   }
 
   function toggleProductForLine(lineNumber: number, productId: string) {
+    touchedLinesRef.current.add(lineNumber);
     setLineSelection((prev) => {
       const current = prev[lineNumber];
       if (current === productId) {
@@ -3684,12 +3859,7 @@ export default function RfqDetailPage() {
       seen.add(m.product.id);
       return true;
     });
-    const selectedId = lineSelection[item.lineNumber];
-    if (!selectedId) return all;
-    const selectedIdx = all.findIndex((m) => m.product.id === selectedId);
-    if (selectedIdx <= 0) return all;
-    const selected = all[selectedIdx];
-    return [selected, ...all.slice(0, selectedIdx), ...all.slice(selectedIdx + 1)];
+    return sortMatchesByScore(all);
   }
 
   function pickCatalogProduct(product: PickableProduct) {
@@ -3904,6 +4074,69 @@ export default function RfqDetailPage() {
     }
   }
 
+  function addMissingItem(description: string) {
+    const text = description.trim();
+    if (text.length < 2) return;
+    const lineNumber =
+      Math.max(
+        0,
+        ...itemMatches.map((item) => item.lineNumber),
+        ...requirements.map((item) => item.lineNumber),
+        ...addedLines.map((item) => item.lineNumber)
+      ) + 1;
+    const line: RfqRequirementItem = {
+      lineNumber,
+      description: text,
+      quantity: 1,
+      unit: "pcs",
+    };
+    const nextAdded = [...addedLines, line];
+    addedLinesRef.current = nextAdded;
+    setAddedLines(nextAdded);
+    setRequirements((prev) => [...prev, line]);
+    setItemMatches((prev) => [
+      ...prev,
+      { lineNumber, requirement: line, keywords: [], matches: [] },
+    ]);
+    setExpandedSearchLine(lineNumber);
+    setMissingItemText("");
+    touchedLinesRef.current.add(lineNumber);
+  }
+
+  function acceptStrongMatches() {
+    const { next, acceptedLines } = acceptHighConfidenceSelections(
+      itemMatches.map((item) => ({
+        lineNumber: item.lineNumber,
+        requirementText: requirementMatchText(item.requirement),
+        matches: lineMatches(item),
+      })),
+      lineSelection
+    );
+    if (acceptedLines.length === 0) {
+      setAcceptUndo(null);
+      setAcceptNotice(
+        "No high-confidence matches to accept. Low-confidence and spec-mismatched lines stay for review."
+      );
+      return;
+    }
+    setAcceptUndo({ ...lineSelection });
+    setLineSelection(next);
+    setSelected(new Set(Object.values(next)));
+    setAcceptNotice(
+      `Accepted ${acceptedLines.length} high-confidence match${
+        acceptedLines.length === 1 ? "" : "es"
+      }. Undo if a line should stay open. Low-confidence lines were not changed.`
+    );
+  }
+
+  function undoAccept() {
+    if (!acceptUndo) return;
+    setLineSelection(acceptUndo);
+    setSelected(new Set(Object.values(acceptUndo)));
+    setAcceptUndo(null);
+    setAcceptNotice("Restored the previous selections.");
+  }
+
   if (loading) {
     return (
       <div className="w-full space-y-5 animate-pulse">
@@ -3981,6 +4214,15 @@ export default function RfqDetailPage() {
   const linesMappedCount = Object.keys(lineSelection).length;
   const quoteProductCount =
     itemMatches.length > 0 ? linesMappedCount : selected.size;
+  const unmappedCount = itemMatches.filter((item) => !lineSelection[item.lineNumber]).length;
+  const unpricedCount = itemMatches.filter((item) => {
+    if (!lineSelection[item.lineNumber]) return false;
+    const chosen = selectedProductForLine(item.lineNumber);
+    return !chosen || !(chosen.offerPrice > 0);
+  }).length;
+  const commercialAsks = extractCommercialAsks(rfq.rawText || "");
+  const draftQuote =
+    (rfq.quotes ?? []).find((quote) => quote.status === "DRAFT") ?? null;
 
   return (
     <div className="w-full space-y-4">
@@ -4008,9 +4250,19 @@ export default function RfqDetailPage() {
               </span>
             ) : null}
           </button>
+          {draftQuote ? (
+            <Link
+              href={`/quotes/${draftQuote.id}`}
+              title={`Open draft ${draftQuote.quoteNumber}`}
+              className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20"
+            >
+              Open draft
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={() => setLinkedQuotesOpen(true)}
+            title="View linked quotes"
             className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20"
           >
             Quotes
@@ -4032,13 +4284,14 @@ export default function RfqDetailPage() {
             type="button"
             onClick={convertToQuote}
             disabled={!!busy}
+            title="Create another quotation from the selected matches"
             className="inline-flex h-8 items-center rounded-full bg-mid-green px-3 text-xs font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
           >
             {busy === "quote"
               ? "Creating…"
               : quoteProductCount > 0
-                ? `Quote (${quoteProductCount})`
-                : "Generate quote"}
+                ? `New quote · ${quoteProductCount} lines`
+                : "New quote"}
           </button>
           <button
             type="button"
@@ -4068,7 +4321,7 @@ export default function RfqDetailPage() {
       ) : null}
       {rfq.parseError ? (
         <p className="rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
-          Parse error: {rfq.parseError}
+          {userFacingParseError(rfq.parseError)}
         </p>
       ) : null}
 
@@ -4107,8 +4360,11 @@ export default function RfqDetailPage() {
               <p className="mt-1.5 text-sm font-semibold text-dark-primary">
                 {rfq.parsedCategory || "Not parsed yet"}
                 {rfq.parseConfidence != null ? (
-                  <span className="ml-2 text-xs font-normal text-mid-green">
-                    {Math.round(rfq.parseConfidence * 100)}%
+                  <span
+                    className="ml-2 text-xs font-normal text-mid-green"
+                    title="How sure the parser was about the email. This is not catalog match confidence."
+                  >
+                    Parse confidence {Math.round(rfq.parseConfidence * 100)}%
                   </span>
                 ) : null}
               </p>
@@ -4182,13 +4438,13 @@ export default function RfqDetailPage() {
                 )}
               </p>
               <p className="mt-1 truncate text-xs text-mid-green">
-                {quoteProductCount > 0
-                  ? itemMatches.length > 0
-                    ? `${quoteProductCount}/${itemMatches.length} lines mapped to catalog`
-                    : `${quoteProductCount} product${quoteProductCount === 1 ? "" : "s"} for quote`
-                  : keywords.length > 0
-                    ? `${keywords.length} keywords`
-                    : "Select products to generate quote"}
+                {itemMatches.length > 0
+                  ? `${quoteProductCount}/${itemMatches.length} selected · ${unmappedCount} unmapped · ${unpricedCount} unpriced`
+                  : quoteProductCount > 0
+                    ? `${quoteProductCount} product${quoteProductCount === 1 ? "" : "s"} for quote`
+                    : keywords.length > 0
+                      ? `${keywords.length} keywords`
+                      : "Select products to generate quote"}
               </p>
               <p className="mt-2 truncate text-xs text-dark-primary/80">
                 {rfq.subject || rfq.rawText || "No raw message"}
@@ -4206,15 +4462,47 @@ export default function RfqDetailPage() {
       </div>
       ) : null}
 
-      <div className="grid w-full gap-4 lg:grid-cols-2">
+      <div className="grid w-full items-start gap-4 xl:grid-cols-[minmax(16rem,22rem)_minmax(0,1fr)]">
+        <aside className="max-h-[40rem] overflow-y-auto rounded-2xl border border-light-green/25 bg-white/70 p-4 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
+          <h2 className="text-sm font-semibold tracking-tight text-dark-primary">
+            Original RFQ
+          </h2>
+          <p className="mt-1 text-xs text-mid-green">
+            Source email stays beside the matches. Thread still has the full conversation.
+          </p>
+          {rfq.subject ? (
+            <p className="mt-3 text-sm font-medium text-dark-primary">{rfq.subject}</p>
+          ) : null}
+          {commercialAsks.length > 0 ? (
+            <ul className="mt-3 space-y-1">
+              {commercialAsks.map((ask) => (
+                <li
+                  key={ask}
+                  className="rounded-lg bg-light-green/15 px-2.5 py-1.5 text-xs text-dark-primary"
+                >
+                  {ask}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <pre className="mt-3 whitespace-pre-wrap font-sans text-xs leading-relaxed text-dark-primary">
+            {rfq.rawText?.trim() || "No message content."}
+          </pre>
+        </aside>
+        <div className="grid min-w-0 gap-4 lg:grid-cols-2">
         <section className="min-w-0 overflow-hidden rounded-2xl border border-light-green/25 bg-white/60 shadow-[0_8px_24px_rgba(11,43,38,0.04)]">
           <div className="flex items-center gap-2 border-b border-light-green/20 px-3 py-2.5">
             <h2 className="text-sm font-semibold tracking-tight text-dark-primary">
               Products
             </h2>
             {itemMatches.length > 0 ? (
-              <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
-                {linesMappedCount}/{itemMatches.length} lines
+              <span
+                className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green"
+                title="Selected lines. This is not proof the catalog product matches the request."
+              >
+                {linesMappedCount}/{itemMatches.length} selected
+                {unmappedCount > 0 ? ` · ${unmappedCount} unmapped` : ""}
+                {unpricedCount > 0 ? ` · ${unpricedCount} unpriced` : ""}
               </span>
             ) : matches.length > 0 ? (
               <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
@@ -4227,16 +4515,59 @@ export default function RfqDetailPage() {
             )}
             <button
               type="button"
+              onClick={acceptStrongMatches}
+              className="ml-auto rounded-full bg-mid-green/15 px-2.5 py-1 text-[11px] font-medium text-dark-primary hover:bg-mid-green/25"
+              title="Select every strong, spec-compatible match. Low-confidence and mismatched lines are skipped."
+            >
+              Accept strong matches
+            </button>
+            <button
+              type="button"
               onClick={() => void loadMatches(rfq.productSelections)}
-              className="ml-auto rounded-full p-1.5 text-mid-green hover:bg-light-green/20"
+              className="rounded-full p-1.5 text-mid-green hover:bg-light-green/20"
               aria-label="Refresh suggested products"
-              title="Refresh"
+              title="Refresh suggested products"
             >
               <RefreshCw className="h-3.5 w-3.5" />
             </button>
           </div>
 
           <div className="border-b border-light-green/15 px-3 py-2">
+            {acceptNotice ? (
+              <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-light-green/15 px-2.5 py-2 text-xs text-dark-primary">
+                <span className="min-w-0 flex-1">{acceptNotice}</span>
+                {acceptUndo ? (
+                  <button
+                    type="button"
+                    onClick={undoAccept}
+                    className="rounded-full bg-white px-2.5 py-1 font-medium text-mid-green hover:bg-light-green/30"
+                  >
+                    Undo
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            <form
+              className="mb-2 flex gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                addMissingItem(missingItemText);
+              }}
+            >
+              <input
+                value={missingItemText}
+                onChange={(event) => setMissingItemText(event.target.value)}
+                placeholder="Add a line the parser missed"
+                aria-label="Missing item description"
+                className="h-8 min-w-0 flex-1 rounded-full border border-light-green/40 bg-white px-3 text-xs text-dark-primary outline-none focus:border-mid-green"
+              />
+              <button
+                type="submit"
+                className="h-8 shrink-0 rounded-full bg-mid-green px-3 text-[11px] font-medium text-background hover:bg-dark-secondary"
+              >
+                Add missing item
+              </button>
+            </form>
             <RfqProductSearch
               inventoryMap={inventoryMap}
               onSelect={pickCatalogProduct}
@@ -4269,7 +4600,12 @@ export default function RfqDetailPage() {
               <ul className="divide-y divide-light-green/15">
                 {itemMatches.map((item) => {
                   const combinedMatches = lineMatches(item);
-                  const visible = combinedMatches.slice(0, 4);
+                  const visible = visibleSuggestions(
+                    combinedMatches,
+                    lineSelection[item.lineNumber],
+                    4
+                  );
+                  const requirementText = requirementMatchText(item.requirement);
                   return (
                     <li key={item.lineNumber} className="px-3 py-3">
                       <div className="mb-2 flex items-start justify-between gap-2">
@@ -4294,7 +4630,7 @@ export default function RfqDetailPage() {
                             className="rounded-full px-2 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
                           >
                             <Plus className="mr-0.5 inline h-3 w-3" strokeWidth={1.75} />
-                            Add
+                            Add alternative
                           </button>
                           <button
                             type="button"
@@ -4303,9 +4639,10 @@ export default function RfqDetailPage() {
                                 current === item.lineNumber ? null : item.lineNumber
                               )
                             }
+                            title="Search the catalog to replace the selected product"
                             className="rounded-full px-2 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
                           >
-                            {expandedSearchLine === item.lineNumber ? "Close" : "Change"}
+                            {expandedSearchLine === item.lineNumber ? "Close" : "Replace match"}
                           </button>
                         </div>
                       </div>
@@ -4356,13 +4693,19 @@ export default function RfqDetailPage() {
                               item.lineNumber,
                               m.product.id
                             );
+                            const specMismatch = catalogBindingLooksMismatched(
+                              requirementText,
+                              `${m.product.name} ${m.product.description || ""}`
+                            );
                             return (
                               <li
                                 key={m.product.id}
                                 className={`flex items-center gap-2 rounded-xl px-2.5 py-2 ${
-                                  chosen
-                                    ? "bg-mid-green/15 ring-1 ring-mid-green/30"
-                                    : "hover:bg-light-green/15"
+                                  specMismatch
+                                    ? "bg-amber-50 ring-1 ring-amber-300"
+                                    : chosen
+                                      ? "bg-mid-green/15 ring-1 ring-mid-green/30"
+                                      : "hover:bg-light-green/15"
                                 }`}
                               >
                                 <button
@@ -4388,7 +4731,14 @@ export default function RfqDetailPage() {
                                       {m.product.code} — {m.product.name}
                                     </span>
                                     <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-mid-green">
-                                      {m.score > 0 ? <span>Score {m.score}</span> : null}
+                                      {m.score > 0 ? (
+                                        <span title={MATCH_SCORE_TITLE}>Match {m.score}</span>
+                                      ) : null}
+                                      {specMismatch ? (
+                                        <span className="font-medium text-amber-800">
+                                          Spec mismatch
+                                        </span>
+                                      ) : null}
                                       <ProductStockCell
                                         productId={m.product.id}
                                         unit={m.product.unit}
@@ -4489,8 +4839,8 @@ export default function RfqDetailPage() {
                           <span className="block truncate text-sm font-medium text-dark-primary">
                             {m.product.code} — {m.product.name}
                           </span>
-                          <span className="text-[11px] text-mid-green">
-                            {m.score > 0 ? `Score ${m.score}` : "Match"}
+                          <span className="text-[11px] text-mid-green" title={MATCH_SCORE_TITLE}>
+                            {m.score > 0 ? `Match ${m.score}` : "Match"}
                           </span>
                         </span>
                       </button>
@@ -4550,7 +4900,7 @@ export default function RfqDetailPage() {
                 onClick={() => void loadVendorMatches({ soft: true })}
                 className="rounded-full p-1.5 text-mid-green hover:bg-light-green/20"
                 aria-label="Refresh suggested vendors"
-                title="Refresh"
+                title="Refresh suggested vendors"
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
@@ -4906,6 +5256,7 @@ export default function RfqDetailPage() {
             </div>
           ) : null}
         </section>
+        </div>
       </div>
 
       {priceDetailVendor ? (
@@ -4974,7 +5325,8 @@ export default function RfqDetailPage() {
           <div>
             <h2 className="text-sm font-medium text-mid-green">Marketplace prices</h2>
             <p className="mt-1 text-xs text-mid-green">
-              Compare Amazon, Flipkart, IndiaMART, and vendors — lowest price marked Best.
+              Each requested line is searched on its own. Best is the lowest price among
+              comparable offers, not the cheapest cell in a row.
             </p>
           </div>
           <button
@@ -4983,7 +5335,7 @@ export default function RfqDetailPage() {
             disabled={marketplaceLoading || !rfq.parsedCategory}
             className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-1.5 text-xs hover:bg-light-green/20 disabled:opacity-60"
           >
-            {marketplaceLoading ? "Fetching…" : "Refresh prices"}
+            {marketplaceLoading ? "Fetching… up to 12s" : "Refresh prices"}
           </button>
         </div>
 
@@ -4992,7 +5344,10 @@ export default function RfqDetailPage() {
             Parse the RFQ first to search Amazon, Flipkart, and IndiaMART.
           </p>
         ) : marketplaceLoading && !marketplace ? (
-          <p className="mt-3 text-sm text-mid-green">Searching marketplaces…</p>
+          <p className="mt-3 text-sm text-mid-green">
+            Searching marketplaces. A source that is still running after 12 seconds is skipped
+            so the rest of the prices can show.
+          </p>
         ) : marketplaceError ? (
           <p className="mt-3 text-sm text-dark-primary">{marketplaceError}</p>
         ) : marketplace ? (
@@ -5027,10 +5382,41 @@ export default function RfqDetailPage() {
               </ul>
             ) : null}
 
-            <MarketplaceComparisonGrid
-              marketplace={marketplace}
-              vendorMatches={vendorMatches.slice(0, MARKETPLACE_ROW_COUNT)}
-            />
+            {(marketplace.lines && marketplace.lines.length > 0
+              ? marketplace.lines
+              : [
+                  {
+                    lineNumber: 1,
+                    label: marketplace.query,
+                    query: marketplace.query,
+                    catalogPrice: marketplace.catalogPrice,
+                    catalogProductName: marketplace.catalogProductName,
+                    amazon: marketplace.amazon,
+                    flipkart: marketplace.flipkart,
+                    indiamart: marketplace.indiamart,
+                  },
+                ]
+            ).map((line) => (
+              <div key={`${line.lineNumber}-${line.query}`} className="space-y-2">
+                <p className="text-xs text-mid-green">
+                  Line {line.lineNumber}:{" "}
+                  <span className="font-medium text-dark-primary">{line.label}</span>
+                </p>
+                <MarketplaceComparisonGrid
+                  marketplace={{
+                    ...marketplace,
+                    query: line.query,
+                    catalogPrice: line.catalogPrice,
+                    catalogProductName: line.catalogProductName,
+                    amazon: line.amazon,
+                    flipkart: line.flipkart,
+                    indiamart: line.indiamart,
+                  }}
+                  query={line.query}
+                  vendorMatches={vendorMatches.slice(0, MARKETPLACE_ROW_COUNT)}
+                />
+              </div>
+            ))}
               </>
             )}
           </div>
@@ -5124,12 +5510,35 @@ export default function RfqDetailPage() {
                   {parsedRequirements.length} line
                   {parsedRequirements.length === 1 ? "" : "s"} extracted from this RFQ
                 </p>
+                <form
+                  className="mt-3 flex gap-2"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const input = event.currentTarget.elements.namedItem("missing");
+                    const value = input instanceof HTMLInputElement ? input.value : "";
+                    addMissingItem(value);
+                    if (input instanceof HTMLInputElement) input.value = "";
+                  }}
+                >
+                  <input
+                    name="missing"
+                    placeholder="Product the email asked for but parsing missed"
+                    aria-label="Add missing requested product"
+                    className="h-8 min-w-0 flex-1 rounded-full border border-light-green/40 bg-white px-3 text-xs outline-none focus:border-mid-green"
+                  />
+                  <button
+                    type="submit"
+                    className="h-8 shrink-0 rounded-full bg-mid-green px-3 text-[11px] font-medium text-background"
+                  >
+                    Add missing item
+                  </button>
+                </form>
               </div>
               <button
                 type="button"
                 onClick={() => setRequestedProductsOpen(false)}
                 className="rounded-lg p-1.5 text-mid-green hover:bg-dark-secondary/8 hover:text-dark-primary"
-                aria-label="Close"
+                aria-label="Close" title="Close"
               >
                 <X className="h-5 w-5" />
               </button>

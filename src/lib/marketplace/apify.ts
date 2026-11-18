@@ -12,7 +12,11 @@ function getToken(): string | null {
   return process.env.APIFY_TOKEN?.trim() || null;
 }
 
-async function runActorSync(actorId: string, input: Record<string, unknown>): Promise<ApifyResult<unknown[]>> {
+async function runActorSync(
+  actorId: string,
+  input: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<ApifyResult<unknown[]>> {
   const token = getToken();
   if (!token) {
     return { data: [], error: "APIFY_TOKEN is not configured" };
@@ -26,6 +30,7 @@ async function runActorSync(actorId: string, input: Record<string, unknown>): Pr
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
       cache: "no-store",
+      signal,
     });
 
     if (!res.ok) {
@@ -208,12 +213,19 @@ function toIndiaMartListing(item: unknown): MarketplaceListing | null {
   };
 }
 
-export async function searchFlipkartApify(query: string): Promise<ApifyResult<MarketplaceListing[]>> {
+export async function searchFlipkartApify(
+  query: string,
+  signal?: AbortSignal
+): Promise<ApifyResult<MarketplaceListing[]>> {
   const startUrl = `https://www.flipkart.com/search?q=${encodeURIComponent(query)}`;
-  const { data, error } = await runActorSync(FLIPKART_ACTOR, {
-    startUrl,
-    results_wanted: TOP_RESULTS,
-  });
+  const { data, error } = await runActorSync(
+    FLIPKART_ACTOR,
+    {
+      startUrl,
+      results_wanted: TOP_RESULTS,
+    },
+    signal
+  );
 
   const listings = data
     .map(toFlipkartListing)
@@ -227,12 +239,19 @@ export async function searchFlipkartApify(query: string): Promise<ApifyResult<Ma
   return { data: listings, ...(error ? { error } : {}) };
 }
 
-export async function searchIndiaMartApify(query: string): Promise<ApifyResult<MarketplaceListing[]>> {
+export async function searchIndiaMartApify(
+  query: string,
+  signal?: AbortSignal
+): Promise<ApifyResult<MarketplaceListing[]>> {
   const searchUrl = `https://dir.indiamart.com/search.mp?ss=${encodeURIComponent(query)}`;
-  const { data, error } = await runActorSync(INDIAMART_ACTOR, {
-    startUrls: [{ url: searchUrl }],
-    proxySettings: { useApifyProxy: true },
-  });
+  const { data, error } = await runActorSync(
+    INDIAMART_ACTOR,
+    {
+      startUrls: [{ url: searchUrl }],
+      proxySettings: { useApifyProxy: true },
+    },
+    signal
+  );
 
   const listings = flattenApifyItems(data)
     .map(toIndiaMartListing)
