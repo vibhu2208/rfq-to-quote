@@ -33,6 +33,16 @@ describe("marketplace line queries", () => {
       "ceiling-mount Wi-Fi 6 access point",
       "24-port gigabit switch",
     ]);
+    const many = buildMarketplaceLineQueries({
+      parsedSpecs: {
+        items: [1, 2, 3, 4, 5].map((n) => ({
+          description: `Product line ${n}`,
+          quantity: 1,
+          unit: "pcs",
+        })),
+      },
+    });
+    expect(many).toHaveLength(5);
     expect(
       buildMarketplaceQuery({
         parsedSpecs: {

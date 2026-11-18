@@ -88,7 +88,7 @@ export async function GET(req: NextRequest, { params }: Params) {
     return NextResponse.json(emptyComparison(query, rfq));
   }
 
-  const lineQueries = buildMarketplaceLineQueries(input).slice(0, 4);
+  const lineQueries = buildMarketplaceLineQueries(input);
   const products = await prisma.product.findMany({
     where: { active: true },
     select: CATALOG_MATCH_SELECT,

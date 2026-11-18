@@ -12,7 +12,6 @@ export type MarketplaceSearchResult = {
 const SOURCE_TIMEOUT_MS = 12_000;
 
 async function withSourceTimeout<T>(
-  label: string,
   run: (signal: AbortSignal) => Promise<{ data: T; error?: string }>,
   empty: T,
   timeoutMs: number
@@ -24,7 +23,7 @@ async function withSourceTimeout<T>(
       controller.abort();
       resolve({
         data: empty,
-        error: `${label}: timed out after ${Math.round(timeoutMs / 1000)}s`,
+        error: `timed out after ${Math.round(timeoutMs / 1000)}s`,
       });
     }, timeoutMs);
   });
@@ -33,7 +32,7 @@ async function withSourceTimeout<T>(
   } catch (err) {
     return {
       data: empty,
-      error: err instanceof Error ? err.message : `${label} failed`,
+      error: err instanceof Error ? err.message : "request failed",
     };
   } finally {
     if (timer) clearTimeout(timer);
@@ -46,9 +45,9 @@ export async function searchMarketplaces(
 ): Promise<MarketplaceSearchResult> {
   const timeoutMs = options?.timeoutMs ?? SOURCE_TIMEOUT_MS;
   const [amazonResult, flipkartResult, indiamartResult] = await Promise.all([
-    withSourceTimeout("Amazon", (signal) => searchAmazonIndia(query, signal), [], timeoutMs),
-    withSourceTimeout("Flipkart", (signal) => searchFlipkartApify(query, signal), [], timeoutMs),
-    withSourceTimeout("IndiaMART", (signal) => searchIndiaMartApify(query, signal), [], timeoutMs),
+    withSourceTimeout((signal) => searchAmazonIndia(query, signal), [], timeoutMs),
+    withSourceTimeout((signal) => searchFlipkartApify(query, signal), [], timeoutMs),
+    withSourceTimeout((signal) => searchIndiaMartApify(query, signal), [], timeoutMs),
   ]);
 
   const errors: string[] = [];

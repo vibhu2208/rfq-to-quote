@@ -47,7 +47,7 @@ export function buildMarketplaceLineQueries(input: RfqInput): MarketplaceLineQue
       query,
     });
   }
-  if (lines.length > 0) return lines.slice(0, 4);
+  if (lines.length > 0) return lines;
 
   const specs = specsRecord(input.parsedSpecs);
   const fallback = compactQuery([
@@ -62,10 +62,7 @@ export function buildMarketplaceLineQueries(input: RfqInput): MarketplaceLineQue
 export function buildMarketplaceQuery(input: RfqInput): string | null {
   const lines = buildMarketplaceLineQueries(input);
   if (lines.length === 0) return null;
-  return lines
-    .map((line) => line.query)
-    .join(" | ")
-    .slice(0, 240);
+  return lines.map((line) => line.query).join(" | ");
 }
 
 export function extractBudget(parsedSpecs: unknown): number | null {
