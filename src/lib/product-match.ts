@@ -489,6 +489,23 @@ function constraintScorePenalty(req: MatchConstraints, product: MatchConstraints
   if (req.wantsPoe == null && product.wantsPoe === true && req.typeFamily === "switch") {
     score *= 0.45;
   }
+  if (
+    req.screenInches != null &&
+    product.screenInches != null &&
+    Math.abs(req.screenInches - product.screenInches) >= 1
+  ) {
+    score *= 0.15;
+  }
+  if (
+    req.portCount != null &&
+    product.portCount != null &&
+    req.portCount !== product.portCount
+  ) {
+    score *= 0.35;
+  }
+  if (req.resolution && product.resolution && req.resolution !== product.resolution) {
+    score *= 0.4;
+  }
   return score;
 }
 

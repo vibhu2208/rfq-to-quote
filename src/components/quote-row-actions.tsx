@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import {
   Download,
   Eye,
@@ -30,14 +29,8 @@ import {
   type ZeroPricedLineInput,
 } from "@/lib/quote-zero-price";
 
-const QuotePdfPreviewModal = dynamic(
-  () => import("@/components/quote-pdf-preview-modal").then((m) => m.QuotePdfPreviewModal),
-  { ssr: false },
-);
-const QuoteAttachmentsDialog = dynamic(
-  () => import("@/components/quote-attachments-dialog").then((m) => m.QuoteAttachmentsDialog),
-  { ssr: false },
-);
+import { QuotePdfPreviewModal } from "@/components/quote-pdf-preview-modal";
+import { QuoteAttachmentsDialog } from "@/components/quote-attachments-dialog";
 
 export type QuoteRowActionQuote = {
   id: string;

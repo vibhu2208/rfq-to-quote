@@ -399,6 +399,24 @@ export function LeadDetailDrawer({
 
   async function createQuote() {
     if (!leadId) return;
+    const draft = lead ? continueQuoteTarget(lead.quotes) : null;
+    const sentQuotes = (lead?.quotes || []).filter((q) => q.status !== "DRAFT");
+    if (sentQuotes.length > 0 && draft) {
+      const ok = window.confirm(
+        `This lead already has quote ${draft.quoteNumber}. Open that draft instead of creating another quote?`
+      );
+      if (ok) {
+        router.push(`/quotes/${draft.id}`);
+        return;
+      }
+      if (
+        !window.confirm(
+          "Create another quote for this lead anyway? You can keep multiple drafts."
+        )
+      ) {
+        return;
+      }
+    }
     setSaving(true);
     try {
       const res = await fetch(`/api/rfqs/${leadId}/convert-quote`, {

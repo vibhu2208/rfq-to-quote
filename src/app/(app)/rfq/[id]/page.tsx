@@ -46,6 +46,8 @@ import {
 import {
   MATCH_SCORE_TITLE,
   acceptHighConfidenceSelections,
+  previewStrongMatchesForAccept,
+  type StrongMatchPreviewRow,
   extractCommercialAsks,
   mergeAddedRequirementLines,
   reconcileSettledLineSelection,
@@ -2522,6 +2524,9 @@ export default function RfqDetailPage() {
   const [addedLines, setAddedLines] = useState<RfqRequirementItem[]>([]);
   const [acceptUndo, setAcceptUndo] = useState<Record<number, string> | null>(null);
   const [acceptNotice, setAcceptNotice] = useState("");
+  const [acceptReview, setAcceptReview] = useState<StrongMatchPreviewRow[] | null>(
+    null
+  );
   const [missingItemText, setMissingItemText] = useState("");
   const selectionsHydrated = useRef(false);
   const skipNextSave = useRef(true);
@@ -4103,7 +4108,28 @@ export default function RfqDetailPage() {
     touchedLinesRef.current.add(lineNumber);
   }
 
-  function acceptStrongMatches() {
+  function openAcceptStrongReview() {
+    const preview = previewStrongMatchesForAccept(
+      itemMatches.map((item) => ({
+        lineNumber: item.lineNumber,
+        requirementText: requirementMatchText(item.requirement),
+        matches: lineMatches(item),
+      })),
+      lineSelection
+    );
+    if (preview.length === 0) {
+      setAcceptReview(null);
+      setAcceptUndo(null);
+      setAcceptNotice(
+        "No high-confidence matches to accept. Low-confidence and spec-mismatched lines stay for review."
+      );
+      return;
+    }
+    setAcceptReview(preview);
+  }
+
+  function confirmAcceptStrongMatches() {
+    if (!acceptReview?.length) return;
     const { next, acceptedLines } = acceptHighConfidenceSelections(
       itemMatches.map((item) => ({
         lineNumber: item.lineNumber,
@@ -4112,13 +4138,8 @@ export default function RfqDetailPage() {
       })),
       lineSelection
     );
-    if (acceptedLines.length === 0) {
-      setAcceptUndo(null);
-      setAcceptNotice(
-        "No high-confidence matches to accept. Low-confidence and spec-mismatched lines stay for review."
-      );
-      return;
-    }
+    setAcceptReview(null);
+    if (acceptedLines.length === 0) return;
     setAcceptUndo({ ...lineSelection });
     setLineSelection(next);
     setSelected(new Set(Object.values(next)));
@@ -4515,7 +4536,7 @@ export default function RfqDetailPage() {
             )}
             <button
               type="button"
-              onClick={acceptStrongMatches}
+              onClick={openAcceptStrongReview}
               className="ml-auto rounded-full bg-mid-green/15 px-2.5 py-1 text-[11px] font-medium text-dark-primary hover:bg-mid-green/25"
               title="Select every strong, spec-compatible match. Low-confidence and mismatched lines are skipped."
             >
@@ -4533,6 +4554,39 @@ export default function RfqDetailPage() {
           </div>
 
           <div className="border-b border-light-green/15 px-3 py-2">
+            {acceptReview && acceptReview.length > 0 ? (
+              <div className="mb-2 rounded-xl border border-mid-green/25 bg-white px-2.5 py-2 text-xs text-dark-primary">
+                <p className="font-medium">
+                  Accept {acceptReview.length} strong match
+                  {acceptReview.length === 1 ? "" : "es"}?
+                </p>
+                <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                  {acceptReview.map((row) => (
+                    <li key={row.lineNumber} className="rounded-lg bg-light-green/10 px-2 py-1">
+                      <span className="font-medium">Line {row.lineNumber}</span> →{" "}
+                      {row.productName}
+                      <span className="text-mid-green"> · score {row.score}</span>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={confirmAcceptStrongMatches}
+                    className="rounded-full bg-mid-green px-2.5 py-1 font-medium text-background hover:bg-dark-secondary"
+                  >
+                    Accept listed matches
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAcceptReview(null)}
+                    className="rounded-full bg-white px-2.5 py-1 font-medium text-mid-green ring-1 ring-light-green/40"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {acceptNotice ? (
               <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-light-green/15 px-2.5 py-2 text-xs text-dark-primary">
                 <span className="min-w-0 flex-1">{acceptNotice}</span>
@@ -4618,8 +4672,37 @@ export default function RfqDetailPage() {
                           <p className="mt-0.5 truncate text-sm font-medium text-dark-primary">
                             {item.requirement.description}
                           </p>
+                          {(() => {
+                            const selectedId = lineSelection[item.lineNumber];
+                            const picked = selectedId
+                              ? combinedMatches.find((m) => m.product.id === selectedId)
+                              : undefined;
+                            if (!picked) return null;
+                            const mismatch = catalogBindingLooksMismatched(
+                              requirementText,
+                              `${picked.product.name} ${picked.product.description || ""}`
+                            );
+                            return mismatch ? (
+                              <p className="mt-1 text-[11px] font-medium text-amber-800">
+                                Selected product may not match size/ports — review before quoting.
+                              </p>
+                            ) : picked.score < 45 ? (
+                              <p className="mt-1 text-[11px] text-mid-green">
+                                Low-confidence match (score {picked.score}).
+                              </p>
+                            ) : null;
+                          })()}
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                          <Link
+                            href={`/admin/vendors?tab=category&q=${encodeURIComponent(
+                              item.requirement.description.slice(0, 80)
+                            )}`}
+                            className="rounded-full px-2 py-1 text-[11px] font-medium text-mid-green hover:bg-light-green/20"
+                            title="Open vendor mappings for this category"
+                          >
+                            Vendors
+                          </Link>
                           <button
                             type="button"
                             onClick={() =>

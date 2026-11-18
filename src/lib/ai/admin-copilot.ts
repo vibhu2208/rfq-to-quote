@@ -1,5 +1,11 @@
 import { getMembershipForUser, userHasPermission } from "@/lib/accounting/context";
 import { ADMIN_TOOL_DEFINITIONS, executeAdminTool } from "@/lib/ai/admin-tools";
+import {
+  looksLikeCatalogQuestion,
+  userFacingCopilotError,
+} from "@/lib/copilot-error";
+import { rankProductsByQuery, searchTokens } from "@/lib/product-search";
+import { prisma } from "@/lib/prisma";
 
 export type CopilotMessage = {
   role: "user" | "assistant";
@@ -104,6 +110,70 @@ Formatting:
 
 const FORMAT_HINT = `Return ONLY the JSON object described in the system prompt. No markdown fences.`;
 
+const COPILOT_MAX_TOKENS = 1200;
+
+function providerFailureMessage(status: number, errText: string): string {
+  if (status === 402 || /requires more credits/i.test(errText)) {
+    return "OpenRouter returned 402: requires more credits";
+  }
+  if (status === 429) {
+    return "OpenRouter returned 429: rate limited";
+  }
+  return `OpenRouter error (${status})`;
+}
+
+async function directCatalogAnswer(userQuestion: string): Promise<CopilotResult | null> {
+  const q = userQuestion.trim();
+  if (q.length < 3) return null;
+  const tokens = searchTokens(q).slice(0, 6);
+  const or = tokens.flatMap((token) => [
+    { name: { contains: token, mode: "insensitive" as const } },
+    { code: { contains: token, mode: "insensitive" as const } },
+    { description: { contains: token, mode: "insensitive" as const } },
+  ]);
+  const products = await prisma.product.findMany({
+    where: {
+      active: true,
+      OR: or.length > 0 ? or : [{ name: { contains: q, mode: "insensitive" } }],
+    },
+    select: {
+      code: true,
+      name: true,
+      brand: true,
+      category: true,
+      unit: true,
+      description: true,
+    },
+    take: 80,
+  });
+  const ranked = rankProductsByQuery(products, q).slice(0, 12);
+  if (ranked.length === 0) {
+    return {
+      answer: `No catalog products matched "${q}". Try a shorter code or brand.`,
+      headline: "No catalog matches",
+      figures: [{ label: "Matches", value: "0" }],
+      sections: [],
+      missing: ["No active products matched that search."],
+      sources: ["Product catalog (direct search)"],
+    };
+  }
+  return {
+    answer: `Found ${ranked.length} catalog product(s) for "${q}".`,
+    headline: `${ranked.length} catalog match${ranked.length === 1 ? "" : "es"}`,
+    figures: [{ label: "Matches", value: String(ranked.length) }],
+    sections: ranked.slice(0, 8).map((product) => ({
+      title: product.code,
+      bullets: [
+        product.name,
+        [product.brand, product.category].filter(Boolean).join(" · ") || "—",
+        (product.description || "").slice(0, 120),
+      ].filter(Boolean),
+    })),
+    missing: [],
+    sources: ["Product catalog (direct search)"],
+  };
+}
+
 function asStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -192,10 +262,15 @@ export async function runAdminCopilot(
   options?: { userId?: string; onProgress?: (event: CopilotProgress) => void }
 ): Promise<CopilotResult> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  const userQuestion = lastUser?.content || "";
+
   if (!apiKey) {
-    throw new Error(
-      "OPENROUTER_API_KEY is not set. Copilot cannot look up live numbers without it."
-    );
+    if (looksLikeCatalogQuestion(userQuestion)) {
+      const fallback = await directCatalogAnswer(userQuestion);
+      if (fallback) return fallback;
+    }
+    throw new Error(userFacingCopilotError("OPENROUTER_API_KEY is not set"));
   }
 
   const notify = (message: string) => options?.onProgress?.({ message });
@@ -225,6 +300,7 @@ export async function runAdminCopilot(
       body: JSON.stringify({
         model,
         temperature: 0,
+        max_tokens: COPILOT_MAX_TOKENS,
         tools: ADMIN_TOOL_DEFINITIONS,
         messages: conversation,
       }),
@@ -232,7 +308,11 @@ export async function runAdminCopilot(
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`OpenRouter error (${res.status}): ${errText.slice(0, 200)}`);
+      if (looksLikeCatalogQuestion(userQuestion)) {
+        const fallback = await directCatalogAnswer(userQuestion);
+        if (fallback) return fallback;
+      }
+      throw new Error(userFacingCopilotError(providerFailureMessage(res.status, errText)));
     }
 
     const data = (await res.json()) as {
@@ -280,12 +360,17 @@ export async function runAdminCopilot(
     body: JSON.stringify({
       model,
       temperature: 0,
+      max_tokens: COPILOT_MAX_TOKENS,
       response_format: { type: "json_object" },
       messages: [...conversation, { role: "user", content: FORMAT_HINT }],
     }),
   });
 
   if (!fallback.ok) {
+    if (looksLikeCatalogQuestion(userQuestion)) {
+      const catalog = await directCatalogAnswer(userQuestion);
+      if (catalog) return catalog;
+    }
     return {
       answer: "Looked up the books but could not format a final answer. Try asking again.",
       headline: "Could not format the answer",

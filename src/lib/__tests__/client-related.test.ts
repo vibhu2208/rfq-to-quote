@@ -77,8 +77,8 @@ describe("client related work matching", () => {
     ).toBe(false);
   });
 
-  it("says a running ledger balance depends on Books", () => {
-    expect(CLIENT_BOOKS_BALANCE_NOTE).toMatch(/Books/i);
-    expect(CLIENT_BOOKS_BALANCE_NOTE.toLowerCase()).toContain("not available");
+  it("describes quote-based activity instead of Books ledger history", () => {
+    expect(CLIENT_BOOKS_BALANCE_NOTE).toMatch(/quote/i);
+    expect(CLIENT_BOOKS_BALANCE_NOTE).toMatch(/opening balance/i);
   });
 });

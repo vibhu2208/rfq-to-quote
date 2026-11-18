@@ -113,7 +113,10 @@ import {
   type QuoteDiscountMethods,
 } from "@/lib/quote-discount";
 import { applyMarkupPercentToLines, lineMargin } from "@/lib/quote-markup";
-import { quoteAmountBlockReason } from "@/lib/quote-amount-limits";
+import {
+  MAX_QUOTE_LINE_QTY,
+  quoteAmountBlockReason,
+} from "@/lib/quote-amount-limits";
 import {
   BUYER_FIELD_FOCUS_ORDER,
   sanitizePhoneInput,
@@ -4066,6 +4069,13 @@ function LineQtyInput({
         const next = Number(trimmed);
         if (!Number.isFinite(next) || next < 0) {
           onReject("Quantity cannot be negative. The previous quantity was kept.");
+          setText(String(value));
+          return;
+        }
+        if (next > MAX_QUOTE_LINE_QTY) {
+          onReject(
+            `Quantity exceeds the maximum of ${MAX_QUOTE_LINE_QTY.toLocaleString("en-IN")}. The previous quantity was kept.`
+          );
           setText(String(value));
           return;
         }

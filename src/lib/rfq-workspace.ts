@@ -173,6 +173,41 @@ export function restoreVisibleLineSelection<T extends WorkspaceMatch>(input: {
   return lineSelection;
 }
 
+export type StrongMatchPreviewRow = {
+  lineNumber: number;
+  requirementText: string;
+  productId: string;
+  productName: string;
+  score: number;
+};
+
+export function previewStrongMatchesForAccept<T extends WorkspaceMatch>(
+  items: Array<LineMatches<T>>,
+  current: Record<number, string>
+): StrongMatchPreviewRow[] {
+  const rows: StrongMatchPreviewRow[] = [];
+
+  for (const item of items) {
+    const currentId = current[item.lineNumber];
+    const visible = item.matches.some((match) => match.product.id === currentId);
+    if (currentId && visible) continue;
+
+    const best = sortMatchesByScore(item.matches).find((match) =>
+      isHighConfidenceCatalogMatch(match, item.requirementText)
+    );
+    if (!best) continue;
+    rows.push({
+      lineNumber: item.lineNumber,
+      requirementText: item.requirementText,
+      productId: best.product.id,
+      productName: best.product.name,
+      score: best.score,
+    });
+  }
+
+  return rows;
+}
+
 export function acceptHighConfidenceSelections<T extends WorkspaceMatch>(
   items: Array<LineMatches<T>>,
   current: Record<number, string>

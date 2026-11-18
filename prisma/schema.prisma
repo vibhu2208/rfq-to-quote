@@ -697,6 +697,10 @@ model VendorCategory {
   category    String
   subcategory String @default("")
   keywords    Json   @default("[]")
+  /// Higher sorts first within the same category/subcategory mapping.
+  mapPriority Int    @default(0)
+  /// Preferred vendor for this category-subcategory when multiple vendors match.
+  isPreferred Boolean @default(false)
 
   vendor   Vendor          @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   contacts VendorContact[]
