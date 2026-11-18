@@ -64,7 +64,9 @@ function mountPrintFrame(win: Window, url: string) {
   );
   doc.close();
   const frame = doc.getElementById("qpdf");
-  if (!(frame instanceof HTMLIFrameElement)) {
+  // The iframe was created in the popup document, so the opener's
+  // HTMLIFrameElement constructor does not match it.
+  if (!frame || !(frame instanceof win.HTMLIFrameElement)) {
     win.location.replace(url);
     window.setTimeout(() => {
       try {

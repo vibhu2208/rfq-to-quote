@@ -13,10 +13,12 @@ describe("zeroPricedQuoteLines", () => {
         { aliasName: "Switch", qty: 2, unitPrice: 4500, discountPercent: 0 },
         { description: "", qty: 1, unitPrice: 0 },
         { aliasName: "Monitor", qty: 1, unitPrice: 1000, discountPercent: 100 },
+        { aliasName: "   ", description: "Patch lead", qty: 2, unitPrice: 0 },
       ])
     ).toEqual([
       { name: "Line 1: Access point" },
       { name: "Line 4: Monitor" },
+      { name: "Line 5: Patch lead" },
     ]);
   });
 

@@ -5,6 +5,7 @@ import { decimalToNumber } from "@/lib/quotes";
 import { formatQuoteInstant } from "@/lib/quote-format";
 import {
   parseQuoteListFilters,
+  QUOTE_LIST_EXPORT_LIMIT,
   quoteListCsv,
   quoteListOrderBy,
   quoteListWhere,
@@ -22,7 +23,7 @@ export async function GET(req: NextRequest) {
   const quotes = await prisma.quote.findMany({
     where: quoteListWhere(filters),
     orderBy: quoteListOrderBy(filters),
-    take: 5000,
+    take: QUOTE_LIST_EXPORT_LIMIT + 1,
     select: {
       quoteNumber: true,
       quoteName: true,
@@ -36,8 +37,9 @@ export async function GET(req: NextRequest) {
     },
   });
 
+  const truncated = quotes.length > QUOTE_LIST_EXPORT_LIMIT;
   const csv = quoteListCsv(
-    quotes.map((quote) => ({
+    quotes.slice(0, QUOTE_LIST_EXPORT_LIMIT).map((quote) => ({
       quoteNumber: quote.quoteNumber,
       quoteName: quote.quoteName,
       buyer: quote.buyerCompany || quote.buyerName,
@@ -47,8 +49,11 @@ export async function GET(req: NextRequest) {
       withGst: quote.withGst,
     }))
   );
+  const body = truncated
+    ? `${csv}\n"Export stopped at ${QUOTE_LIST_EXPORT_LIMIT} rows. Narrow the filters to export the rest."`
+    : csv;
 
-  return new NextResponse(csv, {
+  return new NextResponse(body, {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",

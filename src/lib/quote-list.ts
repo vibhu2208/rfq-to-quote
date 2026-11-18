@@ -3,6 +3,9 @@ import type { Prisma, QuoteStatus } from "@prisma/client";
 /** Small enough that a few dozen quotes paginate instead of rendering the full set. */
 export const QUOTE_LIST_PAGE_SIZE = 25;
 
+/** CSV export cap. The file says so when the match set is larger. */
+export const QUOTE_LIST_EXPORT_LIMIT = 5000;
+
 export const QUOTE_LIST_SORTS = ["updated", "number", "buyer", "status", "total"] as const;
 
 export type QuoteListSort = (typeof QUOTE_LIST_SORTS)[number];
@@ -103,25 +106,35 @@ function moneyBound(raw: string): number | null {
   return n;
 }
 
+function withStableId(
+  order: Prisma.QuoteOrderByWithRelationInput[]
+): Prisma.QuoteOrderByWithRelationInput[] {
+  return [...order, { id: "asc" }];
+}
+
 export function quoteListOrderBy(
   f: Pick<QuoteListFilters, "sort" | "dir">
 ): Prisma.QuoteOrderByWithRelationInput[] {
   const dir = f.dir === "asc" ? "asc" : "desc";
   switch (f.sort) {
     case "number":
-      return [{ quoteNumber: dir }];
+      return withStableId([{ quoteNumber: dir }]);
     case "buyer":
-      return [{ buyerCompany: dir }, { buyerName: dir }];
+      return withStableId([{ buyerCompany: dir }, { buyerName: dir }]);
     case "status":
-      return [{ status: dir }, { updatedAt: "desc" }];
+      return withStableId([{ status: dir }, { updatedAt: "desc" }]);
     case "total":
-      return [{ grandTotal: dir }, { updatedAt: "desc" }];
+      return withStableId([{ grandTotal: dir }, { updatedAt: "desc" }]);
     case "updated":
       // Rows show issuedAt when set, otherwise updatedAt. Null issue dates sort last
       // so a filled quotation date is not ordered by a later edit timestamp.
-      return [{ issuedAt: { sort: dir, nulls: "last" } }, { updatedAt: dir }];
+      // id breaks ties so offset pages do not repeat or skip a row.
+      return withStableId([
+        { issuedAt: { sort: dir, nulls: "last" } },
+        { updatedAt: dir },
+      ]);
     default:
-      return [{ needsAssistance: "desc" }, { updatedAt: "desc" }];
+      return withStableId([{ needsAssistance: "desc" }, { updatedAt: "desc" }]);
   }
 }
 

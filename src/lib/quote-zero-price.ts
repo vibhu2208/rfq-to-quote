@@ -10,8 +10,12 @@ export type ZeroPricedLineInput = {
 
 export type ZeroPricedLine = { name: string };
 
+function lineName(line: ZeroPricedLineInput): string {
+  return line.aliasName?.trim() || line.description?.trim() || "";
+}
+
 function lineLabel(line: ZeroPricedLineInput, index: number): string {
-  const raw = (line.aliasName || line.description || "").replace(/\s+/g, " ").trim();
+  const raw = lineName(line).replace(/\s+/g, " ");
   const short = raw.length > 80 ? `${raw.slice(0, 77)}…` : raw;
   return short ? `Line ${index + 1}: ${short}` : `Line ${index + 1}`;
 }
@@ -20,7 +24,7 @@ function lineLabel(line: ZeroPricedLineInput, index: number): string {
 export function zeroPricedQuoteLines(lines: ZeroPricedLineInput[]): ZeroPricedLine[] {
   const flagged: ZeroPricedLine[] = [];
   lines.forEach((line, index) => {
-    const name = (line.aliasName || line.description || "").trim();
+    const name = lineName(line);
     // Unnamed placeholder rows (including a blank qty-1 line) are not a priced export.
     if (!name) return;
     const net = effectiveUnitPrice(Number(line.unitPrice) || 0, line.discountPercent);

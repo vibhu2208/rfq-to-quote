@@ -65,10 +65,12 @@ describe("quoteListWhere", () => {
     expect(quoteListOrderBy(parseQuoteListFilters({ sort: "total", dir: "asc" }))).toEqual([
       { grandTotal: "asc" },
       { updatedAt: "desc" },
+      { id: "asc" },
     ]);
     expect(quoteListOrderBy(parseQuoteListFilters({ sort: "updated", dir: "desc" }))).toEqual([
       { issuedAt: { sort: "desc", nulls: "last" } },
       { updatedAt: "desc" },
+      { id: "asc" },
     ]);
   });
 
