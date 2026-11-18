@@ -3498,7 +3498,7 @@ export default function RfqDetailPage() {
       extras,
       addedLines: addedLines.map((line) => ({
         lineNumber: line.lineNumber,
-        description: line.description,
+        description: line.description.slice(0, 300),
         quantity: line.quantity,
         unit: line.unit,
       })),
@@ -4075,7 +4075,7 @@ export default function RfqDetailPage() {
   }
 
   function addMissingItem(description: string) {
-    const text = description.trim();
+    const text = description.trim().slice(0, 300);
     if (text.length < 2) return;
     const lineNumber =
       Math.max(
@@ -4559,6 +4559,7 @@ export default function RfqDetailPage() {
                 onChange={(event) => setMissingItemText(event.target.value)}
                 placeholder="Add a line the parser missed"
                 aria-label="Missing item description"
+                maxLength={300}
                 className="h-8 min-w-0 flex-1 rounded-full border border-light-green/40 bg-white px-3 text-xs text-dark-primary outline-none focus:border-mid-green"
               />
               <button
@@ -5524,6 +5525,7 @@ export default function RfqDetailPage() {
                     name="missing"
                     placeholder="Product the email asked for but parsing missed"
                     aria-label="Add missing requested product"
+                    maxLength={300}
                     className="h-8 min-w-0 flex-1 rounded-full border border-light-green/40 bg-white px-3 text-xs outline-none focus:border-mid-green"
                   />
                   <button
