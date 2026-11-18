@@ -6,6 +6,8 @@ import {
   formatQuoteUnit,
   formatTaxAnalysis,
   parseQuoteDate,
+  quoteBankDetailsLines,
+  quoteContactFooterLines,
   quoteShowHsn,
   quoteShowUnit,
   todayQuoteDateIso,
@@ -59,6 +61,38 @@ describe("formatTaxAnalysis", () => {
         discountPercent: 10,
       })
     ).toContain("Discount (10%): -100.00");
+  });
+});
+
+describe("quote footer lines", () => {
+  it("puts A/C no and type on the second bank line", () => {
+    expect(
+      quoteBankDetailsLines({
+        bankName: "HDFC Bank",
+        bankBranch: "Noida",
+        bankIfsc: "HDFC0001234",
+        bankAccount: "1234567890",
+        bankAccountType: "Current",
+      })
+    ).toEqual({
+      line1: "Bank Details: HDFC Bank  Branch: Noida  IFSC Code: HDFC0001234",
+      line2: "A/C No: 1234567890  A/C Type: Current",
+    });
+  });
+
+  it("puts email and website on the second address line", () => {
+    expect(
+      quoteContactFooterLines({
+        address: "Sector 62, Noida",
+        phone: "0120-1234567",
+        mobile: "9876543210",
+        email: "sales@example.com",
+        website: "www.example.com",
+      })
+    ).toEqual({
+      line1: "Address: Sector 62, Noida | PH: 0120-1234567 | Mobile: 9876543210",
+      line2: "Email: sales@example.com | Website: www.example.com",
+    });
   });
 });
 

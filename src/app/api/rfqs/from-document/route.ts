@@ -95,6 +95,9 @@ export async function POST(req: NextRequest) {
       extraNotes: string;
       quantity: number;
       unit: string;
+      unitPrice?: number;
+      taxRate?: number | null;
+      hsnCode?: string;
     }> = [];
 
     if (spreadsheet) {
@@ -109,12 +112,16 @@ export async function POST(req: NextRequest) {
         extraNotes: item.extraNotes,
         quantity: item.quantity > 0 ? item.quantity : 1,
         unit: item.unit,
+        ...(item.unitPrice > 0 ? { unitPrice: item.unitPrice } : {}),
+        ...(item.taxRate != null ? { taxRate: item.taxRate } : {}),
+        ...(item.hsnCode ? { hsnCode: item.hsnCode } : {}),
       }));
       ocrText = extractedItems
-        .map(
-          (l) =>
-            `• ${l.description}${l.code ? ` [${l.code}]` : ""} – ${l.quantity} ${l.unit}`
-        )
+        .map((l) => {
+          const price =
+            l.unitPrice != null && l.unitPrice > 0 ? ` @ ${l.unitPrice}` : "";
+          return `• ${l.description}${l.code ? ` [${l.code}]` : ""} – ${l.quantity} ${l.unit}${price}`;
+        })
         .join("\n");
       if (extractedItems.length === 0) {
         return NextResponse.json(
@@ -147,6 +154,9 @@ export async function POST(req: NextRequest) {
             extraNotes: l.extraNotes,
             quantity: l.quantity > 0 ? l.quantity : 1,
             unit: l.unit,
+            ...(l.unitPrice != null && l.unitPrice > 0
+              ? { unitPrice: l.unitPrice }
+              : {}),
           }))
           .filter((l) => l.productName);
       } catch {
@@ -158,9 +168,11 @@ export async function POST(req: NextRequest) {
       extractedItems.length > 0
         ? [
             "Extracted items:",
-            ...extractedItems.map(
-              (l) => `• ${l.description} – ${l.quantity} ${l.unit}`
-            ),
+            ...extractedItems.map((l) => {
+              const price =
+                l.unitPrice != null && l.unitPrice > 0 ? ` @ ${l.unitPrice}` : "";
+              return `• ${l.description} – ${l.quantity} ${l.unit}${price}`;
+            }),
           ].join("\n")
         : "";
 

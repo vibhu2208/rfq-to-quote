@@ -206,6 +206,40 @@ export const DEFAULT_QUOTE_TAGLINE = "ENABLING IT   |   ISO 9001:2015";
 export const DEFAULT_QUOTE_SERVICES =
   "Computer Hardware & Software, Electrical & Electronic Kits, Networking, Corporate Training. Customized Software Solutions, Mobile App Development, E-Commerce Solutions, Plagiarism Checker";
 
+export type QuoteFooterLines = {
+  line1: string | null;
+  line2: string | null;
+};
+
+export function quoteBankDetailsLines(company: {
+  bankName?: string;
+  bankBranch?: string;
+  bankIfsc?: string;
+  bankAccount?: string;
+  bankAccountType?: string;
+}): QuoteFooterLines {
+  const primary = [
+    company.bankName,
+    company.bankBranch ? `Branch: ${company.bankBranch}` : null,
+    company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
+  ].filter(Boolean);
+  const account = [
+    company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
+    company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
+  ].filter(Boolean);
+
+  if (primary.length === 0 && account.length === 0) {
+    return { line1: null, line2: null };
+  }
+
+  return {
+    line1:
+      primary.length > 0 ? `Bank Details: ${primary.join("  ")}` : "Bank Details:",
+    line2: account.length > 0 ? account.join("  ") : null,
+  };
+}
+
+/** @deprecated Prefer quoteBankDetailsLines for two-line footer layout. */
 export function quoteBankDetailsLine(company: {
   bankName?: string;
   bankBranch?: string;
@@ -213,18 +247,35 @@ export function quoteBankDetailsLine(company: {
   bankAccount?: string;
   bankAccountType?: string;
 }): string | null {
-  if (!company.bankName && !company.bankAccount) return null;
-  return `Bank Details: ${[
-    company.bankName,
-    company.bankBranch ? `Branch: ${company.bankBranch}` : null,
-    company.bankIfsc ? `IFSC Code: ${company.bankIfsc}` : null,
-    company.bankAccount ? `A/C No: ${company.bankAccount}` : null,
-    company.bankAccountType ? `A/C Type: ${company.bankAccountType}` : null,
-  ]
-    .filter(Boolean)
-    .join("  ")}`;
+  const { line1, line2 } = quoteBankDetailsLines(company);
+  if (!line1 && !line2) return null;
+  return [line1, line2].filter(Boolean).join("  ");
 }
 
+export function quoteContactFooterLines(company: {
+  address?: string;
+  phone?: string;
+  mobile?: string;
+  email?: string;
+  website?: string;
+}): QuoteFooterLines {
+  const primary = [
+    company.address ? `Address: ${company.address}` : null,
+    company.phone ? `PH: ${company.phone}` : null,
+    company.mobile ? `Mobile: ${company.mobile}` : null,
+  ].filter(Boolean);
+  const digital = [
+    company.email ? `Email: ${company.email}` : null,
+    company.website ? `Website: ${company.website}` : null,
+  ].filter(Boolean);
+
+  return {
+    line1: primary.length > 0 ? primary.join(" | ") : null,
+    line2: digital.length > 0 ? digital.join(" | ") : null,
+  };
+}
+
+/** @deprecated Prefer quoteContactFooterLines for two-line footer layout. */
 export function quoteContactFooterLine(company: {
   address?: string;
   phone?: string;
@@ -232,15 +283,8 @@ export function quoteContactFooterLine(company: {
   email?: string;
   website?: string;
 }): string {
-  return [
-    company.address ? `Address: ${company.address}` : null,
-    company.phone ? `PH: ${company.phone}` : null,
-    company.mobile ? `Mobile: ${company.mobile}` : null,
-    company.email ? `Email: ${company.email}` : null,
-    company.website ? `Website: ${company.website}` : null,
-  ]
-    .filter(Boolean)
-    .join(" | ");
+  const { line1, line2 } = quoteContactFooterLines(company);
+  return [line1, line2].filter(Boolean).join(" | ");
 }
 
 export function quoteShowHsn(showHsn?: boolean | null): boolean {

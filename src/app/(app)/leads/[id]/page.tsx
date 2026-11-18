@@ -245,13 +245,30 @@ export default function LeadDetailPage() {
     setSaving(true);
     try {
       const res = await fetch(`/api/rfqs/${id}/convert-quote`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
+      const data = (await res.json().catch(() => ({}))) as {
+        id?: string;
+        error?: string;
+      };
       if (!res.ok) {
-        window.alert(data.error || "Could not create quote");
+        window.alert(
+          typeof data.error === "string" && data.error.trim()
+            ? data.error
+            : "Could not create quote"
+        );
         return;
       }
-      if (data.id) router.push(`/quotes/${data.id}`);
-      else await load();
+      if (data.id) {
+        router.push(`/quotes/${data.id}`);
+        return;
+      }
+      window.alert("Could not create quote");
+      await load();
+    } catch (err) {
+      window.alert(
+        err instanceof Error && err.message.trim()
+          ? err.message
+          : "Could not create quote"
+      );
     } finally {
       setSaving(false);
     }
@@ -345,9 +362,9 @@ export default function LeadDetailPage() {
               type="button"
               disabled={saving}
               onClick={() => void createQuote()}
-              className="rounded-full bg-mid-green px-3 py-1.5 text-sm font-medium text-white"
+              className="rounded-full bg-mid-green px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
             >
-              Create quotation
+              {saving ? "Creating…" : "Create quotation"}
             </button>
           )}
         </div>
