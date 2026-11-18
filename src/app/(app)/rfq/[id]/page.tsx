@@ -125,6 +125,8 @@ type RfqRequirementItem = {
   model?: string | null;
   code?: string | null;
   extraNotes?: string | null;
+  unitPrice?: number | null;
+  taxRate?: number | null;
 };
 
 type RequirementMatch = {
