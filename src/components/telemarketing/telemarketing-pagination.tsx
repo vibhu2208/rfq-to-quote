@@ -53,7 +53,7 @@ export function TelemarketingPagination({
   const items = pageWindow(safePage, totalPages);
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-b-lg bg-[#eef1f0] px-4 py-2.5 pb-16 sm:pb-2.5">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-b-lg bg-[#eef1f0] px-4 py-2.5 pb-[5.5rem] sm:pb-[5.5rem]">
       <p className="text-[12px] tabular-nums text-dark-primary/70">
         {unknownTotal
           ? "Loading contacts…"
