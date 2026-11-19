@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Building2,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
+  CircleAlert,
   Copy,
   Download,
   Eye,
@@ -124,7 +126,7 @@ import {
   type BuyerFieldErrors,
 } from "@/lib/quote-buyer-fields";
 import { hsnFieldError, sanitizeHsnInput } from "@/lib/hsn";
-import { collectReadinessGaps } from "@/lib/quote-readiness";
+import { collectReadinessGaps, type ReadinessGap } from "@/lib/quote-readiness";
 import {
   composeCommercialTerms,
   extractIndianState,
@@ -559,6 +561,7 @@ export function QuoteBuilder({
   const forceSaveRef = useRef(false);
   const [buyerFieldErrors, setBuyerFieldErrors] = useState<BuyerFieldErrors>({});
   const [waivedForKey, setWaivedForKey] = useState<string | null>(null);
+  const [readinessPopupOpen, setReadinessPopupOpen] = useState(false);
   const [canUndo, setCanUndo] = useState(false);
   const undoStack = useRef<LineItem[][]>([]);
   const buyerDialogRef = useRef<HTMLDivElement>(null);
@@ -1932,6 +1935,7 @@ export function QuoteBuilder({
   function exportBlockedByReadiness() {
     const blocking = readinessGaps.filter((gap) => gap.fix !== "buyer");
     if (blocking.length === 0 || readinessWaived) return false;
+    setReadinessPopupOpen(true);
     document.getElementById("quote-readiness")?.scrollIntoView({ block: "center" });
     setNotice("Resolve the ready-to-send checklist, or acknowledge the gaps. Buyer company, address, and state are still required for the PDF.");
     return true;
@@ -1946,6 +1950,20 @@ export function QuoteBuilder({
     if (target instanceof HTMLElement) {
       target.scrollIntoView({ block: "center" });
       target.focus();
+    }
+  }
+
+  function fixReadinessGap(gap: ReadinessGap) {
+    setReadinessPopupOpen(false);
+    if (gap.fix === "buyer") openBuyerPanel("edit");
+    else if (gap.fix === "price" && gap.lineIndex != null)
+      focusLineField(gap.lineIndex, "price");
+    else if (gap.fix === "hsn" && gap.lineIndex != null)
+      focusLineField(gap.lineIndex, "hsn");
+    else if (gap.fix === "stock" && gap.lineIndex != null)
+      focusLineField(gap.lineIndex, "price");
+    else if (gap.fix === "warranty" || gap.fix === "terms") {
+      document.getElementById("quote-commercial")?.scrollIntoView({ block: "center" });
     }
   }
 
@@ -2312,12 +2330,7 @@ export function QuoteBuilder({
       : saveLabel === "Saving…"
         ? "bg-light-green/30 text-dark-secondary"
         : "bg-light-green/25 text-dark-secondary";
-  const readyLabel =
-    readinessGaps.length === 0
-      ? "Ready to send"
-      : readinessWaived
-        ? "Gaps acknowledged"
-        : "Not ready";
+  const readyToSend = readinessGaps.length === 0;
   const iconBtn =
     "inline-flex h-8 w-8 items-center justify-center rounded-md border border-light-green/35 bg-white text-mid-green hover:bg-light-green/15 disabled:opacity-60";
   const field =
@@ -2352,15 +2365,6 @@ export function QuoteBuilder({
         >
           {saveLabel}
         </span>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-            readinessGaps.length === 0
-              ? "bg-light-green/25 text-dark-secondary"
-              : "bg-amber-50 text-amber-950"
-          }`}
-        >
-          {readyLabel}
-        </span>
         <button
           type="button"
           onClick={() => openBuyerPanel("edit")}
@@ -2377,6 +2381,31 @@ export function QuoteBuilder({
           ) : null}
         </button>
         <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setReadinessPopupOpen(true)}
+            className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-background shadow-sm ${
+              readyToSend
+                ? "bg-emerald-700 hover:bg-emerald-800"
+                : "bg-rose-700 hover:bg-rose-800"
+            }`}
+            title={readyToSend ? "Ready to send" : "Not ready to send — view gaps"}
+            aria-label={readyToSend ? "Ready to send" : "Not ready to send"}
+          >
+            {readyToSend ? (
+              <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
+            ) : (
+              <CircleAlert className="h-3.5 w-3.5" strokeWidth={2} />
+            )}
+            <span className="hidden sm:inline">
+              {readyToSend ? "Ready to send" : "Not ready to send"}
+            </span>
+            {!readyToSend ? (
+              <span className="rounded-full bg-white/20 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums">
+                {readinessGaps.length}
+              </span>
+            ) : null}
+          </button>
           <QuoteCalculator compact className={iconBtn} />
           <button
             type="button"
@@ -2465,67 +2494,117 @@ export function QuoteBuilder({
       ) : null}
       {msg ? <p className="text-sm text-mid-green">{msg}</p> : null}
 
-      <section
-        id="quote-readiness"
-        aria-label="Ready to send"
-        className="rounded-xl border border-light-green/30 bg-white/80 px-3 py-2"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-dark-primary">
-            {readinessGaps.length === 0 ? "Ready to send" : "Not ready to send"}
-          </h2>
-          <span className="text-[11px] text-mid-green">
-            Saved means stored. Preview is for review. Sending stays blocked until
-            these gaps are fixed or acknowledged.
-          </span>
-        </div>
-        {readinessGaps.length > 0 ? (
-          <>
-            <ul className="mt-2 space-y-1">
-              {readinessGaps.map((gap) => (
-                <li key={gap.id} className="flex items-center justify-between gap-2 text-sm">
-                  <span>{gap.message}</span>
-                  <button
-                    type="button"
-                    className="shrink-0 text-xs font-medium text-mid-green underline"
-                    onClick={() => {
-                      if (gap.fix === "buyer") openBuyerPanel("edit");
-                      else if (gap.fix === "price" && gap.lineIndex != null)
-                        focusLineField(gap.lineIndex, "price");
-                      else if (gap.fix === "hsn" && gap.lineIndex != null)
-                        focusLineField(gap.lineIndex, "hsn");
-                      else if (gap.fix === "stock" && gap.lineIndex != null)
-                        focusLineField(gap.lineIndex, "price");
-                      else if (gap.fix === "warranty" || gap.fix === "terms") {
-                        document
-                          .getElementById("quote-commercial")
-                          ?.scrollIntoView({ block: "center" });
-                      }
-                    }}
-                  >
-                    Fix
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <label className="mt-2 flex items-center gap-2 text-xs text-dark-primary">
-              <input
-                type="checkbox"
-                checked={readinessWaived}
-                onChange={(e) =>
-                  setWaivedForKey(e.target.checked ? readinessKey : null)
-                }
-              />
-              I have reviewed these gaps and want to continue anyway. Buyer company,
-              address, and state are still required to generate the PDF.
-            </label>
-          </>
-        ) : (
-          <p className="mt-1 text-xs text-mid-green">
-            Buyer details, prices, and HSN look complete.
-          </p>
-        )}
+      <section id="quote-readiness" className="sr-only" aria-hidden>
+        Ready to send checklist anchor
       </section>
+
+      {readinessPopupOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-dark-primary/40 px-4"
+          onClick={() => setReadinessPopupOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="quote-readiness-title"
+            className="w-full max-w-md rounded-xl bg-background p-5 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <div
+                  className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${
+                    readyToSend
+                      ? "bg-emerald-100 text-emerald-800"
+                      : "bg-rose-100 text-rose-800"
+                  }`}
+                >
+                  {readyToSend ? (
+                    <CheckCircle2 className="h-5 w-5" strokeWidth={2} />
+                  ) : (
+                    <CircleAlert className="h-5 w-5" strokeWidth={2} />
+                  )}
+                </div>
+                <div>
+                  <h2
+                    id="quote-readiness-title"
+                    className="text-lg font-semibold text-dark-primary"
+                  >
+                    {readyToSend ? "Ready to send" : "Not ready to send"}
+                  </h2>
+                  <p className="mt-0.5 text-sm text-mid-green">
+                    {readyToSend
+                      ? "Buyer details, prices, and HSN look complete."
+                      : "Fix these gaps before PDF or email, or acknowledge them below."}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setReadinessPopupOpen(false)}
+                className="rounded-md p-1 text-mid-green hover:bg-dark-secondary/8 hover:text-dark-primary"
+                aria-label="Close"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {readinessGaps.length > 0 ? (
+              <>
+                <ul className="mt-4 max-h-[50vh] space-y-2 overflow-y-auto">
+                  {readinessGaps.map((gap) => (
+                    <li
+                      key={gap.id}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-dark-primary/8 bg-white px-3 py-2.5 text-sm"
+                    >
+                      <span className="min-w-0 text-dark-primary">{gap.message}</span>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-md bg-dark-secondary px-2.5 py-1 text-xs font-medium text-background hover:bg-dark-primary"
+                        onClick={() => fixReadinessGap(gap)}
+                      >
+                        Fix
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <label className="mt-4 flex items-start gap-2 text-xs text-dark-primary">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={readinessWaived}
+                    onChange={(e) =>
+                      setWaivedForKey(e.target.checked ? readinessKey : null)
+                    }
+                  />
+                  <span>
+                    I have reviewed these gaps and want to continue anyway. Buyer
+                    company, address, and state are still required to generate the PDF.
+                  </span>
+                </label>
+              </>
+            ) : (
+              <p className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm text-emerald-900">
+                All readiness checks passed. You can preview, download PDF, or send.
+              </p>
+            )}
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setReadinessPopupOpen(false)}
+                className={`rounded-lg px-4 py-2 text-sm font-medium text-background ${
+                  readyToSend
+                    ? "bg-emerald-700 hover:bg-emerald-800"
+                    : "bg-dark-secondary hover:bg-dark-primary"
+                }`}
+              >
+                {readyToSend ? "Done" : "Close"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {renderPreviewModal()}
 
