@@ -74,7 +74,7 @@ export function CallbackDueModal({
             type="button"
             disabled={saving}
             onClick={() => void submit()}
-            className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+            className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save callback"}
           </button>

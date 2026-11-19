@@ -1,22 +1,22 @@
 import type { TelemarketingCallStatus } from "@prisma/client";
 import { TELEMARKETING_CALL_STATUS_LABELS } from "@/lib/telemarketing/constants";
 
-const STATUS_CLASS: Record<TelemarketingCallStatus, string> = {
-  NO_ACTION: "bg-stone-200/90 text-stone-700",
-  CONNECTED: "bg-[#d4e7d0] text-[#2f4a2b]",
+export const STATUS_CLASS: Record<TelemarketingCallStatus, string> = {
+  NO_ACTION: "bg-dark-primary/[0.07] text-dark-primary",
+  CONNECTED: "bg-light-green/35 text-dark-secondary",
   CALL_BACK_REQUESTED: "bg-amber-100 text-amber-900",
-  COULDNT_CONNECT: "bg-[#ffd9c4] text-[#8a4b2a]",
+  COULDNT_CONNECT: "bg-orange-100 text-orange-900",
   NOT_INTERESTED: "bg-rose-100 text-rose-800",
-  MOVE_TO_LEAD: "bg-[#ccfcc6] text-[#1a3d18] font-semibold",
+  MOVE_TO_LEAD: "bg-mid-green/20 text-dark-secondary font-semibold",
 };
 
 export const STATUS_DOT_CLASS: Record<TelemarketingCallStatus, string> = {
-  NO_ACTION: "bg-stone-400",
-  CONNECTED: "bg-emerald-600",
+  NO_ACTION: "bg-dark-primary/40",
+  CONNECTED: "bg-mid-green",
   CALL_BACK_REQUESTED: "bg-amber-500",
   COULDNT_CONNECT: "bg-orange-400",
   NOT_INTERESTED: "bg-rose-500",
-  MOVE_TO_LEAD: "bg-[#2f4a2b]",
+  MOVE_TO_LEAD: "bg-dark-secondary",
 };
 
 export function CallStatusPill({
