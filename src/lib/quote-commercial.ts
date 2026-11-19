@@ -79,15 +79,59 @@ export type WarrantyAsk = {
   service: WarrantyService;
 };
 
+export type DeliveryAsk = {
+  /** Human-readable phrase for the quote delivery field — spaces preserved. */
+  label: string;
+};
+
+function deliveryPhraseBeforeIndex(source: string, index: number) {
+  return source.slice(Math.max(0, index - 80), index);
+}
+
+/** Pull a delivery timeline from RFQ text (distinct from warranty). */
+export function extractDeliveryAsk(text: string | null | undefined): DeliveryAsk | null {
+  const source = String(text ?? "");
+  if (!source.trim()) return null;
+  const match = source.match(
+    /\b(?:deliver(?:y|ed)?|dispatch|ship(?:ment)?|supply)\b[^.\n]{0,60}?\b(\d+(?:\.\d+)?)\s*-?\s*(day|days|week|weeks)\b/i
+  );
+  if (!match?.[1]) {
+    const within = source.match(
+      /\bwithin\s+(\d+(?:\.\d+)?)\s*-?\s*(day|days|week|weeks)\b/i
+    );
+    if (!within?.[1]) return null;
+    const idx = within.index ?? 0;
+    if (!/\bdeliver/i.test(deliveryPhraseBeforeIndex(source, idx)) && !/\bdeliver/i.test(source)) {
+      return null;
+    }
+    const qty = Math.round(Number(within[1]));
+    if (!Number.isFinite(qty) || qty <= 0) return null;
+    const unit = within[2].toLowerCase().startsWith("week") ? "weeks" : "days";
+    const label = unit === "weeks" ? `Within ${qty} weeks` : `Within ${qty} days`;
+    return { label };
+  }
+  const qty = Math.round(Number(match[1]));
+  if (!Number.isFinite(qty) || qty <= 0) return null;
+  const unit = match[2].toLowerCase().startsWith("week") ? "weeks" : "days";
+  const label = unit === "weeks" ? `Within ${qty} weeks` : `Within ${qty} days`;
+  return { label };
+}
+
 /** Pull a warranty duration from RFQ text. Returns null when none is stated. */
 export function extractWarrantyAsk(text: string | null | undefined): WarrantyAsk | null {
   const source = String(text ?? "");
   if (!source.trim()) return null;
+  if (extractDeliveryAsk(source)) return null;
   const match = source.match(
     /(\d+(?:\.\d+)?)\s*-?\s*(year|years|yr|yrs|month|months|mon|day|days)\b/i
   );
   if (!match) {
     if (!/\bwarranty\b/i.test(source)) return null;
+    return null;
+  }
+  const idx = match.index ?? 0;
+  const before = deliveryPhraseBeforeIndex(source, idx);
+  if (/day|days/i.test(match[2]) && /\bdeliver/i.test(before) && !/\bwarranty\b/i.test(before)) {
     return null;
   }
   const qty = Math.round(Number(match[1]));

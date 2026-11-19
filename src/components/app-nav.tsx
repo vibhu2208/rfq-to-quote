@@ -377,16 +377,11 @@ export function AppNav({ email: userEmail }: { email: string }) {
     if (!bar || !measure || !brand || !userSlot) return;
 
     const sync = () => {
-      const wideScreen = window.matchMedia("(min-width: 1440px)").matches;
-      if (!wideScreen) {
-        setCompactNav(true);
-        return;
-      }
-      const gap = 16;
+      const gap = 12;
       const available =
-        bar.clientWidth - brand.offsetWidth - userSlot.offsetWidth - gap;
+        bar.clientWidth - brand.offsetWidth - userSlot.offsetWidth - gap * 2;
       const needed = measure.scrollWidth;
-      setCompactNav(needed > available - 4);
+      setCompactNav(needed > available - 2);
     };
 
     sync();
@@ -408,27 +403,38 @@ export function AppNav({ email: userEmail }: { email: string }) {
 
   return (
     <header className="sticky top-0 z-40 shrink-0 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
-      <div ref={barRef} className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
+      <div
+        ref={barRef}
+        className="flex h-14 min-w-0 items-center gap-1.5 overflow-x-hidden px-2 sm:gap-2 sm:px-4 lg:px-5"
+      >
         {compactNav ? (
           <button
             type="button"
-            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background"
-            onClick={() => setMobileOpen(true)}
-            aria-label="Open menu"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-light-green outline-none ring-mid-green/60 hover:bg-background/10 hover:text-background focus-visible:ring-2"
+            onClick={() => setMobileOpen((open) => !open)}
+            aria-expanded={mobileOpen}
+            aria-controls="app-mobile-nav"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
           >
-            <Menu className="h-5 w-5" strokeWidth={1.6} />
+            {mobileOpen ? (
+              <X className="h-5 w-5" strokeWidth={1.6} />
+            ) : (
+              <Menu className="h-5 w-5" strokeWidth={1.6} />
+            )}
           </button>
         ) : null}
 
         <Link
           ref={brandRef}
           href="/dashboard"
-          className="mr-1 flex shrink-0 items-center gap-2.5"
+          className="mr-0.5 flex min-w-0 shrink items-center gap-2 sm:mr-1 sm:shrink-0 sm:gap-2.5"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-mid-green text-sm font-semibold tracking-tight">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-mid-green text-sm font-semibold tracking-tight">
             Q
           </span>
-          <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
+          <span className="truncate text-[15px] font-semibold tracking-tight max-[400px]:sr-only">
+            QuoteFlow
+          </span>
         </Link>
 
         <nav
@@ -469,7 +475,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
             <button
               type="button"
               onClick={() => setUserOpen((v) => !v)}
-              className="inline-flex max-w-full shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-background/10"
+              className="inline-flex max-w-full shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-2 outline-none ring-mid-green/60 hover:bg-background/10 focus-visible:ring-2"
               aria-expanded={userOpen}
               aria-haspopup="menu"
               aria-label={`Account menu for ${userEmail}`}
@@ -518,7 +524,10 @@ export function AppNav({ email: userEmail }: { email: string }) {
             className="absolute inset-0 bg-dark-primary/50"
             onClick={() => setMobileOpen(false)}
           />
-          <aside className="relative flex h-full w-80 max-w-[85vw] flex-col bg-dark-secondary shadow-2xl">
+          <aside
+            id="app-mobile-nav"
+            className="relative flex h-full w-80 max-w-[85vw] flex-col bg-dark-secondary shadow-2xl"
+          >
             <div className="flex h-14 items-center justify-between border-b border-white/10 px-4">
               <span className="flex items-center gap-2.5 text-[15px] font-semibold">
                 <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-mid-green text-sm">

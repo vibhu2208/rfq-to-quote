@@ -130,6 +130,7 @@ import { collectReadinessGaps, type ReadinessGap } from "@/lib/quote-readiness";
 import {
   composeCommercialTerms,
   extractIndianState,
+  extractDeliveryAsk,
   extractWarrantyAsk,
   parseCommercialTerms,
   rfqMentionsWarranty,
@@ -1888,6 +1889,10 @@ export function QuoteBuilder({
   ]
     .filter(Boolean)
     .join("\n");
+  const deliveryAsk = useMemo(
+    () => extractDeliveryAsk(requirementText),
+    [requirementText]
+  );
   const warrantyAsk = useMemo(
     () => extractWarrantyAsk(requirementText),
     [requirementText]
@@ -1910,13 +1915,16 @@ export function QuoteBuilder({
         stockByProductId,
         termsMissing:
           /\bdeliver/i.test(requirementText) && !commercial.delivery.trim(),
+        rfqItems: requirementContext?.items ?? [],
         lines: form.lineItems.map((line) => ({
-          name: line.aliasName,
+          name: line.aliasName || line.description,
           unitPrice: line.unitPrice,
           hsnCode: line.hsnCode,
           warrantyQty: line.warrantyQty,
           productId: line.productId,
           customItem: line.customItem,
+          qty: line.qty,
+          unit: line.unit,
         })),
       }),
     [
@@ -1927,6 +1935,7 @@ export function QuoteBuilder({
       requirementText,
       stockByProductId,
       commercial.delivery,
+      requirementContext?.items,
     ]
   );
   const readinessKey = readinessGaps.map((gap) => gap.id).join("|");
@@ -1961,8 +1970,11 @@ export function QuoteBuilder({
     else if (gap.fix === "hsn" && gap.lineIndex != null)
       focusLineField(gap.lineIndex, "hsn");
     else if (gap.fix === "stock" && gap.lineIndex != null)
-      focusLineField(gap.lineIndex, "price");
-    else if (gap.fix === "warranty" || gap.fix === "terms") {
+      focusLineField(gap.lineIndex, "qty");
+    else if (gap.fix === "rfq") {
+      document.getElementById("quote-line-table")?.scrollIntoView({ block: "center" });
+      if (gap.lineIndex != null) focusLineField(gap.lineIndex, "qty");
+    } else if (gap.fix === "warranty" || gap.fix === "terms") {
       document.getElementById("quote-commercial")?.scrollIntoView({ block: "center" });
     }
   }
@@ -3037,7 +3049,10 @@ export function QuoteBuilder({
       ) : null}
 
       <div className="space-y-3">
-            <section className="min-w-0 rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+            <section
+              id="quote-line-table"
+              className="min-w-0 rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]"
+            >
               <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-1.5">
                 <h2 className="text-sm font-semibold text-dark-primary">
                   Line items
@@ -3825,6 +3840,15 @@ export function QuoteBuilder({
                     className={field}
                   />
                 </label>
+                {deliveryAsk && !commercial.delivery.trim() ? (
+                  <button
+                    type="button"
+                    className="text-left text-xs text-mid-green underline sm:col-span-3"
+                    onClick={() => updateCommercial({ delivery: deliveryAsk.label })}
+                  >
+                    RFQ asks for {deliveryAsk.label} — apply to delivery
+                  </button>
+                ) : null}
                 {warrantyAsk ? (
                   <button
                     type="button"

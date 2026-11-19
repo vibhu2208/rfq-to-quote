@@ -13,6 +13,7 @@ import {
 import { collectReadinessGaps } from "@/lib/quote-readiness";
 import {
   composeCommercialTerms,
+  extractDeliveryAsk,
   extractIndianState,
   extractWarrantyAsk,
   parseCommercialTerms,
@@ -109,16 +110,59 @@ describe("readiness gaps", () => {
           hsnCode: "",
           warrantyQty: 0,
           productId: "p1",
+          qty: 2,
         },
       ],
     });
     expect(gaps.map((gap) => gap.id)).toEqual([
-      "buyer",
+      "buyer-address",
+      "buyer-state",
       "price-0",
       "hsn-0",
       "stock-0",
       "warranty-0",
     ]);
+  });
+
+  it("does not flag in-stock catalog lines under available qty", () => {
+    const gaps = collectReadinessGaps({
+      buyerCompany: "Cafe",
+      buyerAddress: "1 Road",
+      buyerState: "Madhya Pradesh",
+      stockByProductId: { p1: 5 },
+      lines: [
+        {
+          name: "Switch",
+          unitPrice: 100,
+          hsnCode: "8517",
+          productId: "p1",
+          qty: 2,
+        },
+      ],
+    });
+    expect(gaps.map((gap) => gap.id)).toEqual([]);
+  });
+
+  it("flags RFQ items missing from the quote", () => {
+    const gaps = collectReadinessGaps({
+      buyerCompany: "Cafe",
+      buyerAddress: "1 Road",
+      buyerState: "Maharashtra",
+      rfqItems: [
+        { lineNumber: 1, description: "Cable tray", quantity: 10, unit: "pcs" },
+        { lineNumber: 2, description: "Patch panel", quantity: 4, unit: "nos" },
+      ],
+      lines: [
+        {
+          name: "Cable tray",
+          unitPrice: 100,
+          hsnCode: "8536",
+          qty: 10,
+          unit: "pcs",
+        },
+      ],
+    });
+    expect(gaps.some((g) => g.id.startsWith("rfq-missing"))).toBe(true);
   });
 
   it("still flags a line with no warranty when another line has one", () => {
@@ -155,6 +199,21 @@ describe("commercial defaults", () => {
     expect(
       extractIndianState("Company is in Madhya Pradesh, city not given")
     ).toBe("Madhya Pradesh");
+  });
+
+  it("maps delivery day asks to delivery and preserves spaces", () => {
+    const delivery = extractDeliveryAsk("Please deliver within 7 days of PO.");
+    expect(delivery?.label).toBe("Within 7 days");
+    expect(extractWarrantyAsk("Please deliver within 7 days of PO.")).toBeNull();
+    const parsed = parseCommercialTerms(
+      composeCommercialTerms({
+        paymentTerms: "Against Delivery",
+        validity: "",
+        delivery: "Within 7 days",
+        extra: [],
+      })
+    );
+    expect(parsed.delivery).toBe("Within 7 days");
   });
 });
 

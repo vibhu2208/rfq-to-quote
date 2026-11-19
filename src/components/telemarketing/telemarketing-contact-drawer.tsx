@@ -203,6 +203,16 @@ export function TelemarketingContactDrawer({
   }, [load]);
 
   useEffect(() => {
+    const mq = window.matchMedia("(max-height: 720px)");
+    const sync = () => {
+      if (mq.matches) setDetailsOpen(false);
+    };
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       if (logOpen) {
@@ -481,7 +491,7 @@ export function TelemarketingContactDrawer({
         aria-label="Close drawer"
         onClick={onClose}
       />
-      <aside className="relative flex h-full min-h-0 w-full max-w-[40rem] flex-col border-l border-dark-primary/10 bg-white shadow-[-16px_0_48px_rgba(11,43,38,0.2)] sm:max-w-[44rem]">
+      <aside className="relative flex h-dvh min-h-0 w-full max-w-[40rem] flex-col border-l border-dark-primary/10 bg-white shadow-[-16px_0_48px_rgba(11,43,38,0.2)] sm:max-w-[44rem]">
         {/* Header */}
         <div className="shrink-0 px-4 pt-3 pb-2 sm:px-5">
           <div className="flex items-start gap-2.5">

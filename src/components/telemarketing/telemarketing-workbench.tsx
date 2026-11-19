@@ -98,7 +98,7 @@ export function TelemarketingWorkbench() {
     null
   );
   const [confirmAction, setConfirmAction] = useState<{
-    type: "lead" | "archive";
+    type: "lead" | "archive" | "unarchive";
     contactId: string;
     label: string;
   } | null>(null);
@@ -354,6 +354,14 @@ export function TelemarketingWorkbench() {
   }
 
   function requestArchive(row: ContactRow) {
+    if (view === "archived") {
+      setConfirmAction({
+        type: "unarchive",
+        contactId: row.id,
+        label: row.name || row.company || row.phone || "this contact",
+      });
+      return;
+    }
     setConfirmAction({
       type: "archive",
       contactId: row.id,
@@ -378,7 +386,7 @@ export function TelemarketingWorkbench() {
         }
         if (data.leadNumber) toast(`Lead ${data.leadNumber} created`, "success");
         else toast("Moved to lead", "success");
-      } else {
+      } else if (confirmAction.type === "archive") {
         const res = await fetch(`/api/telemarketing/contacts/${confirmAction.contactId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -390,6 +398,18 @@ export function TelemarketingWorkbench() {
           return;
         }
         toast("Contact archived", "success");
+      } else {
+        const res = await fetch(`/api/telemarketing/contacts/${confirmAction.contactId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ archive: false }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          toast(typeof data.error === "string" ? data.error : "Could not restore", "error");
+          return;
+        }
+        toast("Contact restored", "success");
       }
       setConfirmAction(null);
       refreshList();
@@ -708,9 +728,15 @@ export function TelemarketingWorkbench() {
             <IconAction label="Mark as lead" onClick={() => requestMoveToLead(row)} tone="green-fill">
               <UserRound className="h-4 w-4" />
             </IconAction>
-            <IconAction label="Archive contact" onClick={() => requestArchive(row)} tone="danger">
-              <Archive className="h-4 w-4" />
-            </IconAction>
+            {view === "archived" ? (
+              <IconAction label="Restore contact" onClick={() => requestArchive(row)} tone="green">
+                <Archive className="h-4 w-4" />
+              </IconAction>
+            ) : (
+              <IconAction label="Archive contact" onClick={() => requestArchive(row)} tone="danger">
+                <Archive className="h-4 w-4" />
+              </IconAction>
+            )}
           </div>
         </td>
       </tr>
@@ -722,7 +748,7 @@ export function TelemarketingWorkbench() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 pb-32">
-      <div className="shrink-0 rounded-xl border border-dark-primary/8 bg-gradient-to-b from-white to-[#f3f5f4] px-3 py-2.5 shadow-sm">
+      <div className="max-h-[34dvh] shrink-0 overflow-y-auto rounded-xl border border-dark-primary/8 bg-gradient-to-b from-white to-[#f3f5f4] px-2.5 py-2 shadow-sm sm:max-h-none sm:overflow-visible sm:px-3 sm:py-2.5">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="mr-auto flex min-w-0 items-center gap-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-dark-secondary text-background">
@@ -1043,13 +1069,27 @@ export function TelemarketingWorkbench() {
 
       <ConfirmModal
         open={Boolean(confirmAction)}
-        title={confirmAction?.type === "archive" ? "Archive contact?" : "Move to lead?"}
+        title={
+          confirmAction?.type === "archive"
+            ? "Archive contact?"
+            : confirmAction?.type === "unarchive"
+              ? "Restore contact?"
+              : "Move to lead?"
+        }
         description={
           confirmAction?.type === "archive"
             ? `Archive ${confirmAction.label}? They’ll move out of the active list and can be found under View: Archived.`
-            : `Create a lead from ${confirmAction?.label || "this contact"}? This moves them into Leads.`
+            : confirmAction?.type === "unarchive"
+              ? `Restore ${confirmAction.label} to the active telemarketing list?`
+              : `Create a lead from ${confirmAction?.label || "this contact"}? This moves them into Leads.`
         }
-        confirmLabel={confirmAction?.type === "archive" ? "Archive" : "Move to lead"}
+        confirmLabel={
+          confirmAction?.type === "archive"
+            ? "Archive"
+            : confirmAction?.type === "unarchive"
+              ? "Restore"
+              : "Move to lead"
+        }
         tone={confirmAction?.type === "archive" ? "danger" : "primary"}
         busy={confirmBusy}
         onClose={() => {

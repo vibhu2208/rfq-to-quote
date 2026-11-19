@@ -33,11 +33,20 @@ export async function GET(req: NextRequest) {
         warehouseId,
         product: { active: true, productType: "GOODS" },
       },
-      select: { productId: true, quantityOnHand: true },
+      select: {
+        productId: true,
+        quantityOnHand: true,
+        quantityReserved: true,
+        product: { select: { openingStock: true } },
+      },
     });
     const map: Record<string, number> = {};
     for (const row of balances) {
-      map[row.productId] = decimalToNumber(row.quantityOnHand);
+      const onHand = decimalToNumber(row.quantityOnHand);
+      const reserved = decimalToNumber(row.quantityReserved);
+      const available = Math.max(0, onHand - reserved);
+      const opening = decimalToNumber(row.product.openingStock);
+      map[row.productId] = available > 0 ? available : opening;
     }
     return NextResponse.json({ synced: syncResult, map });
   }

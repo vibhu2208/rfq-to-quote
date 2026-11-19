@@ -91,7 +91,11 @@ function ChevronStep({
           : "bg-white text-dark-primary ring-1 ring-inset ring-dark-primary/10 hover:bg-dark-secondary/[0.04]"
       } ${first ? "rounded-l-md" : ""} ${last ? "rounded-r-md" : ""}`}
     >
-      <span className="text-center leading-tight sm:whitespace-nowrap">{label}</span>
+      <span className="min-w-0 max-w-[7.5rem] text-center text-xs leading-snug sm:max-w-none sm:text-sm sm:leading-tight">
+        <span className="line-clamp-2 sm:line-clamp-none sm:whitespace-nowrap">
+          {label}
+        </span>
+      </span>
       <span
         className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
           selected
