@@ -2,18 +2,26 @@ import type { TelemarketingCallStatus } from "@prisma/client";
 import { TELEMARKETING_CALL_STATUS_LABELS } from "@/lib/telemarketing/constants";
 
 const STATUS_CLASS: Record<TelemarketingCallStatus, string> = {
-  NO_ACTION: "bg-dark-secondary/10 text-mid-green",
-  CONNECTED: "bg-emerald-100 text-emerald-800",
+  NO_ACTION: "bg-stone-200/90 text-stone-700",
+  CONNECTED: "bg-[#d4e7d0] text-[#2f4a2b]",
   CALL_BACK_REQUESTED: "bg-amber-100 text-amber-900",
-  COULDNT_CONNECT: "bg-slate-200 text-slate-700",
+  COULDNT_CONNECT: "bg-[#ffd9c4] text-[#8a4b2a]",
   NOT_INTERESTED: "bg-rose-100 text-rose-800",
-  MOVE_TO_LEAD: "bg-mid-green/15 text-dark-primary",
+  MOVE_TO_LEAD: "bg-[#ccfcc6] text-[#1a3d18] font-semibold",
 };
 
-export function CallStatusPill({ status }: { status: TelemarketingCallStatus }) {
+export function CallStatusPill({
+  status,
+  className = "",
+  compact,
+}: {
+  status: TelemarketingCallStatus;
+  className?: string;
+  compact?: boolean;
+}) {
   return (
     <span
-      className={`inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-medium ${STATUS_CLASS[status]}`}
+      className={`inline-flex min-w-[7.5rem] items-center justify-center rounded-md px-2 py-1 text-center text-[11px] font-semibold leading-tight ${STATUS_CLASS[status]} ${compact ? "min-w-0 px-2 py-0.5 text-[10px]" : ""} ${className}`}
     >
       {TELEMARKETING_CALL_STATUS_LABELS[status]}
     </span>

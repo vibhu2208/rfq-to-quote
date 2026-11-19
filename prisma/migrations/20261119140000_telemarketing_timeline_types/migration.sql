@@ -1,0 +1,4 @@
+-- AlterEnum
+ALTER TYPE "TelemarketingTimelineType" ADD VALUE IF NOT EXISTS 'CONTACT_UPDATED';
+ALTER TYPE "TelemarketingTimelineType" ADD VALUE IF NOT EXISTS 'ALTERNATIVE_ADDED';
+ALTER TYPE "TelemarketingTimelineType" ADD VALUE IF NOT EXISTS 'NOTE';
