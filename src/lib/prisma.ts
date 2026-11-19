@@ -1,7 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 
 /** Bump when schema relations change so dev HMR drops a stale PrismaClient. */
-const PRISMA_CLIENT_VERSION = "admin-subcategory-v1";
+const PRISMA_CLIENT_VERSION = "telemarketing-v1";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;

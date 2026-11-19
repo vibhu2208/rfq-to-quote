@@ -11,6 +11,7 @@ export function InlineEditableCell({
   fieldLabel,
   onSave,
   monospace,
+  fullWidth,
   className = "",
 }: {
   value: string;
@@ -21,6 +22,8 @@ export function InlineEditableCell({
   fieldLabel?: string;
   onSave: (next: string) => Promise<void>;
   monospace?: boolean;
+  /** Allow wrapping / no max-width truncate (e.g. company names). */
+  fullWidth?: boolean;
   className?: string;
 }) {
   const [editing, setEditing] = useState(false);
@@ -66,7 +69,10 @@ export function InlineEditableCell({
 
   if (editing) {
     return (
-      <div className={`w-full min-w-[6rem] max-w-[9rem] ${className}`} onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`w-full min-w-[6rem] ${fullWidth ? "" : "max-w-[9rem]"} ${className}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <input
           ref={inputRef}
           value={draft}
@@ -105,7 +111,7 @@ export function InlineEditableCell({
 
   return (
     <div
-      className={`group flex w-full max-w-[9rem] items-center gap-1 ${className}`}
+      className={`group flex w-full items-center gap-1 ${fullWidth ? "" : "max-w-[9rem]"} ${className}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onDoubleClick={(e) => {
@@ -114,7 +120,7 @@ export function InlineEditableCell({
       }}
     >
       <span
-        className={`min-w-0 flex-1 truncate text-[12px] ${shown ? "text-dark-primary" : "text-mid-green/50"}`}
+        className={`min-w-0 flex-1 text-[12px] ${fullWidth ? "whitespace-normal break-words leading-snug" : "truncate"} ${shown ? "text-dark-primary" : "text-mid-green/50"}`}
         title={shown || placeholder || "—"}
       >
         {shown || placeholder || "—"}

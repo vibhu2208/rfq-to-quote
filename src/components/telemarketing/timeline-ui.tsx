@@ -102,7 +102,7 @@ export function TelemarketingTimelineList({ events }: { events: TimelineRow[] })
                   className="absolute -left-4 top-3 h-2.5 w-2.5 rounded-full border-2 border-white bg-violet-400 shadow-sm"
                   aria-hidden
                 />
-                <div className="rounded-lg border border-dark-primary/8 bg-[#faf9f6] p-3">
+                <div className="rounded-lg border border-dark-primary/8 bg-background p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <span
                       className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${BADGE_CLASS[ev.type] || "bg-stone-200 text-stone-700"}`}

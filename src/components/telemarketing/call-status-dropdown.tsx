@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown } from "lucide-react";
 import type { TelemarketingCallStatus } from "@prisma/client";
-import { Check } from "lucide-react";
-import { CallStatusPill, STATUS_DOT_CLASS } from "@/components/telemarketing/status-chip";
+import { STATUS_CLASS, STATUS_DOT_CLASS } from "@/components/telemarketing/status-chip";
 import {
   TELEMARKETING_CALL_STATUSES,
   TELEMARKETING_CALL_STATUS_LABELS,
@@ -66,12 +66,17 @@ export function CallStatusDropdown({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className="max-w-full disabled:opacity-60"
+        className={`inline-flex w-full min-w-[8.5rem] max-w-[11rem] items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium leading-tight disabled:opacity-60 ${STATUS_CLASS[status]}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Call status: ${TELEMARKETING_CALL_STATUS_LABELS[status]}. Change status`}
       >
-        <CallStatusPill status={status} className="max-w-[9rem]" />
+        <span className="min-w-0 truncate">{TELEMARKETING_CALL_STATUS_LABELS[status]}</span>
+        <ChevronDown
+          className={`h-3.5 w-3.5 shrink-0 opacity-70 transition ${open ? "rotate-180" : ""}`}
+          strokeWidth={2.2}
+          aria-hidden
+        />
       </button>
       {open ? (
         <div

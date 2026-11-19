@@ -8,8 +8,10 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Phone,
   Plus,
   Search,
+  SlidersHorizontal,
   Trash2,
   Upload,
   UserRound,
@@ -17,15 +19,13 @@ import {
 } from "lucide-react";
 import { TelemarketingContactDrawer } from "@/components/telemarketing/telemarketing-contact-drawer";
 import { CallStatusDropdown } from "@/components/telemarketing/call-status-dropdown";
+import { CallStatusProcessBar } from "@/components/telemarketing/call-status-process-bar";
 import { InlineEditableCell } from "@/components/telemarketing/inline-editable-cell";
-import {
-  TELEMARKETING_CALL_STATUSES,
-  TELEMARKETING_CALL_STATUS_LABELS,
-} from "@/lib/telemarketing/constants";
+import { TelemarketingPagination } from "@/components/telemarketing/telemarketing-pagination";
 import type { TelemarketingCallStatus } from "@prisma/client";
 import { useToast } from "@/components/app-toast";
 import { CallbackDueModal } from "@/components/telemarketing/callback-due-modal";
-import { ConfirmActionModal } from "@/components/telemarketing/confirm-action-modal";
+import { ConfirmModal } from "@/components/telemarketing/confirm-modal";
 import { useTelemarketingChrome } from "@/components/telemarketing/telemarketing-chrome";
 import { partitionTelemarketingTags } from "@/lib/telemarketing/tag-groups";
 import {
@@ -80,7 +80,6 @@ export function TelemarketingWorkbench() {
   const [loading, setLoading] = useState(true);
   const [listFetching, setListFetching] = useState(false);
   const [initialLoaded, setInitialLoaded] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [qInput, setQInput] = useState("");
   const [qDebounced, setQDebounced] = useState("");
   const [status, setStatus] = useState<string>("ALL");
@@ -89,22 +88,23 @@ export function TelemarketingWorkbench() {
   const [assignee, setAssignee] = useState("ALL");
   const [districtTag, setDistrictTag] = useState("ALL");
   const [boardTag, setBoardTag] = useState("ALL");
-  const [confirmAction, setConfirmAction] = useState<
-    null | { kind: "lead" | "archive"; contactId: string }
-  >(null);
-  const [confirmBusy, setConfirmBusy] = useState(false);
   const [altDraftErrors, setAltDraftErrors] = useState<Record<string, string>>({});
   const [sortBy, setSortBy] = useState<SortColumn>("createdAt");
   const [sortAsc, setSortAsc] = useState(false);
-  const [listSkip, setListSkip] = useState(0);
+  const [page, setPage] = useState(0);
   const fetchGenRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const [callbackPrompt, setCallbackPrompt] = useState<{ contactId: string; label: string } | null>(
     null
   );
+  const [confirmAction, setConfirmAction] = useState<{
+    type: "lead" | "archive";
+    contactId: string;
+    label: string;
+  } | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
   const [newFormErrors, setNewFormErrors] = useState<Record<number, string>>({});
   const [newSubmitting, setNewSubmitting] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [drawerId, setDrawerId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, ContactRow[]>>({});
@@ -123,9 +123,30 @@ export function TelemarketingWorkbench() {
     email: "",
   });
   const [importAssignee, setImportAssignee] = useState("");
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const moreFiltersRef = useRef<HTMLDivElement>(null);
   const [newContacts, setNewContacts] = useState([
     { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
   ]);
+
+  const moreFiltersActive =
+    assignee !== "ALL" || districtTag !== "ALL" || boardTag !== "ALL";
+
+  useEffect(() => {
+    if (!moreFiltersOpen) return;
+    function onPointer(e: MouseEvent) {
+      if (!moreFiltersRef.current?.contains(e.target as Node)) setMoreFiltersOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setMoreFiltersOpen(false);
+    }
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [moreFiltersOpen]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => setQDebounced(qInput.trim()), 300);
@@ -150,14 +171,13 @@ export function TelemarketingWorkbench() {
   const initialLoadedRef = useRef(false);
 
   const loadContactsPage = useCallback(
-    async (skip: number, append: boolean) => {
+    async (skip: number) => {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
       const gen = ++fetchGenRef.current;
 
-      if (append) setLoadingMore(true);
-      else if (!initialLoadedRef.current) setLoading(true);
+      if (!initialLoadedRef.current) setLoading(true);
       else setListFetching(true);
 
       try {
@@ -176,14 +196,9 @@ export function TelemarketingWorkbench() {
         const nextItems: ContactRow[] = list.items || [];
         const nextTotal = list.total || 0;
 
-        setItems((prev) => (append ? [...prev, ...nextItems] : nextItems));
+        setItems(nextItems);
         setStatusCounts(list.statusCounts || {});
         setTotal(nextTotal);
-        setHasMore(
-          typeof list.hasMore === "boolean"
-            ? list.hasMore
-            : skip + nextItems.length < nextTotal
-        );
         setUsers(usersData.items || []);
         setTagOptions(tagsData.tags || []);
         initialLoadedRef.current = true;
@@ -195,7 +210,6 @@ export function TelemarketingWorkbench() {
         if (gen === fetchGenRef.current) {
           setLoading(false);
           setListFetching(false);
-          setLoadingMore(false);
         }
       }
     },
@@ -203,15 +217,15 @@ export function TelemarketingWorkbench() {
   );
 
   useEffect(() => {
-    setListSkip(0);
+    setPage(0);
     setItems([]);
     initialLoadedRef.current = false;
     setInitialLoaded(false);
   }, [listQueryBase]);
 
   useEffect(() => {
-    void loadContactsPage(listSkip, listSkip > 0);
-  }, [listSkip, listQueryBase, loadContactsPage]);
+    void loadContactsPage(page * PAGE_SIZE);
+  }, [page, listQueryBase, loadContactsPage]);
 
   function toggleSort(column: SortColumn) {
     if (sortBy === column) setSortAsc((v) => !v);
@@ -237,8 +251,8 @@ export function TelemarketingWorkbench() {
   }
 
   const refreshList = useCallback(() => {
-    setListSkip(0);
-    void loadContactsPage(0, false);
+    setPage(0);
+    void loadContactsPage(0);
   }, [loadContactsPage]);
 
   const { district: districtTags, board: boardTags } = useMemo(
@@ -333,32 +347,50 @@ export function TelemarketingWorkbench() {
     refreshList();
   }
 
-  function requestMoveToLead(contactId: string) {
-    setConfirmAction({ kind: "lead", contactId });
+  function requestMoveToLead(row: ContactRow) {
+    setConfirmAction({
+      type: "lead",
+      contactId: row.id,
+      label: row.name || row.company || row.phone || "this contact",
+    });
   }
 
-  function requestArchive(contactId: string) {
-    setConfirmAction({ kind: "archive", contactId });
+  function requestArchive(row: ContactRow) {
+    setConfirmAction({
+      type: "archive",
+      contactId: row.id,
+      label: row.name || row.company || row.phone || "this contact",
+    });
   }
 
-  async function runConfirmAction() {
+  async function runConfirmedAction() {
     if (!confirmAction) return;
     setConfirmBusy(true);
     try {
-      if (confirmAction.kind === "lead") {
+      if (confirmAction.type === "lead") {
         const res = await fetch(`/api/telemarketing/contacts/${confirmAction.contactId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ moveToLead: true }),
         });
         const data = await res.json();
-        if (res.ok && data.leadNumber) toast(`Lead ${data.leadNumber} created`, "success");
+        if (!res.ok) {
+          toast(typeof data.error === "string" ? data.error : "Could not move to lead", "error");
+          return;
+        }
+        if (data.leadNumber) toast(`Lead ${data.leadNumber} created`, "success");
+        else toast("Moved to lead", "success");
       } else {
-        await fetch(`/api/telemarketing/contacts/${confirmAction.contactId}`, {
+        const res = await fetch(`/api/telemarketing/contacts/${confirmAction.contactId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ archive: true }),
         });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          toast(typeof data.error === "string" ? data.error : "Could not archive", "error");
+          return;
+        }
         toast("Contact archived", "success");
       }
       setConfirmAction(null);
@@ -517,14 +549,6 @@ export function TelemarketingWorkbench() {
     refreshList();
   }
 
-  const statusChips = [
-    { key: "ALL", label: "All" },
-    ...TELEMARKETING_CALL_STATUSES.map((s) => ({
-      key: s,
-      label: TELEMARKETING_CALL_STATUS_LABELS[s],
-    })),
-  ];
-
   function toggleSelect(id: string) {
     setSelected((s) => {
       const next = new Set(s);
@@ -540,7 +564,7 @@ export function TelemarketingWorkbench() {
     return (
       <tr
         key={row.id}
-        className={`group border-t border-dark-primary/6 text-[12px] hover:bg-[#faf9f6] ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
+        className={`group border-t border-dark-primary/6 text-[12px] hover:bg-background ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
         onClick={() => {
           if (!child) openDrawer(row.id);
         }}
@@ -577,23 +601,31 @@ export function TelemarketingWorkbench() {
               <span className="inline-block w-4" />
             )}
             {child ? <span className="text-mid-green">↳</span> : null}
-            {index + 1 + listSkip}
+            {index + 1 + page * PAGE_SIZE}
           </div>
         </td>
-        <td className="max-w-[10rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center gap-1">
-            <InlineEditableCell
-              value={row.company}
-              placeholder="No company"
-              fieldLabel="Company"
-              onSave={(v) => patchField(row.id, "company", v)}
-            />
+        <td className="min-w-[12rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-start gap-1">
+            <div className="min-w-0 flex-1">
+              <InlineEditableCell
+                value={row.company}
+                placeholder="No company"
+                fieldLabel="Company"
+                fullWidth
+                onSave={(v) => patchField(row.id, "company", v)}
+              />
+              {row.role?.trim() ? (
+                <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-mid-green">
+                  {row.role.trim()}
+                </p>
+              ) : null}
+            </div>
             {!child ? (
               <button
                 type="button"
                 title="Add alternative contact"
                 aria-label="Add alternative contact"
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-mid-green/25 bg-[#e8f5e6] text-mid-green hover:bg-[#d4e7d0]"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-mid-green/25 bg-light-green/25 text-mid-green hover:bg-light-green/40"
                 onClick={(e) => {
                   e.stopPropagation();
                   setAltDraft((d) => ({
@@ -632,44 +664,39 @@ export function TelemarketingWorkbench() {
             onSave={(v) => patchField(row.id, "email", v)}
           />
         </td>
-        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <InlineEditableCell
-            value={row.role}
-            placeholder="-"
-            fieldLabel="Role"
-            onSave={(v) => patchField(row.id, "role", v)}
-          />
-        </td>
         <td
-          className="relative z-0 max-w-[8.5rem] px-2 py-1.5"
+          className="relative z-0 px-2 py-1.5"
           onClick={(e) => e.stopPropagation()}
         >
           <CallStatusDropdown
             status={row.callStatus}
             onBeforeChange={(s) => handleStatusPick(row, s)}
             onChange={(s) => patchStatus(row.id, s)}
-            onMoveToLead={() => requestMoveToLead(row.id)}
+            onMoveToLead={() => requestMoveToLead(row)}
           />
         </td>
         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <select
-            className="max-w-[8.5rem] rounded-md border border-mid-green/20 bg-[#e8f5e6]/60 px-2 py-1 text-[11px]"
-            value={row.assignedTo?.id || ""}
-            onChange={(e) => patchAssignee(row.id, e.target.value ? e.target.value : null)}
-          >
-            <option value="">Unassigned</option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
+          <div className="relative max-w-[9.5rem]">
+            <select
+              className="h-8 w-full appearance-none rounded-lg border-0 bg-dark-primary/[0.06] py-1.5 pl-2.5 pr-7 text-[11px] font-medium text-dark-primary outline-none"
+              value={row.assignedTo?.id || ""}
+              onChange={(e) => patchAssignee(row.id, e.target.value ? e.target.value : null)}
+            >
+              <option value="">Unassigned</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name || u.email}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-primary/55" />
+          </div>
         </td>
         <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-mid-green">
           {format(new Date(row.createdAt), "d MMM yyyy")}
         </td>
         <td
-          className="sticky right-0 z-10 bg-white px-2 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)] group-hover:bg-[#faf9f6]"
+          className="sticky right-0 z-10 bg-white px-2 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)] group-hover:bg-background"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-1">
@@ -680,10 +707,10 @@ export function TelemarketingWorkbench() {
             >
               <Clock className="h-4 w-4" />
             </IconAction>
-            <IconAction label="Mark as lead" onClick={() => requestMoveToLead(row.id)} tone="green-fill">
+            <IconAction label="Mark as lead" onClick={() => requestMoveToLead(row)} tone="green-fill">
               <UserRound className="h-4 w-4" />
             </IconAction>
-            <IconAction label="Archive contact" onClick={() => requestArchive(row.id)} tone="danger">
+            <IconAction label="Archive contact" onClick={() => requestArchive(row)} tone="danger">
               <Archive className="h-4 w-4" />
             </IconAction>
           </div>
@@ -692,159 +719,206 @@ export function TelemarketingWorkbench() {
     );
   }
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 pb-32">
-      <PageHeader
-        title="Telemarketing"
-        actions={
-          <>
-            <button
-              type="button"
-              onClick={() => {
-                setImportOpen(true);
-                setImportStep(1);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#2f4a2b] px-3 py-2 text-sm font-medium text-white shadow-sm"
-            >
-              <Upload className="h-4 w-4" /> Import contacts
-            </button>
-            <button
-              type="button"
-              onClick={() => setNewOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md bg-[#2f4a2b] px-3 py-2 text-sm font-medium text-white shadow-sm"
-            >
-              <Plus className="h-4 w-4" /> New contact
-            </button>
-          </>
-        }
-      />
+  const toolbarSelectClass =
+    "h-9 appearance-none rounded-lg border border-dark-primary/10 bg-white py-1.5 pl-3 pr-8 text-[13px] text-dark-primary outline-none focus:border-mid-green/40";
 
-      <WorkbenchCard>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[12rem] flex-1">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-mid-green/60" />
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-24">
+      <div className="shrink-0 rounded-xl border border-dark-primary/8 bg-gradient-to-b from-white to-[#f3f5f4] px-3 py-2.5 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <div className="mr-auto flex min-w-0 items-center gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-dark-secondary text-background">
+              <Phone className="h-4 w-4" strokeWidth={2} />
+            </div>
+            <h1 className="truncate text-[17px] font-semibold tracking-tight text-dark-primary">
+              Telemarketing
+            </h1>
+            {listFetching ? (
+              <span className="text-[11px] text-mid-green" aria-live="polite">
+                Updating…
+              </span>
+            ) : null}
+          </div>
+
+          <div className="relative min-w-[14rem] w-full max-w-xs sm:w-auto">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-dark-primary/35" />
             <input
-              className={`${fieldClass} w-full pl-9`}
-              placeholder="Search contacts"
+              className="h-9 w-full rounded-lg border border-dark-primary/10 bg-white py-1.5 pl-9 pr-3 text-[13px] text-dark-primary outline-none placeholder:text-dark-primary/40 focus:border-mid-green/40"
+              placeholder="Search contacts..."
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
               aria-busy={listFetching}
             />
           </div>
-          {listFetching ? (
-            <span className="text-[11px] text-mid-green" aria-live="polite">
-              Updating…
-            </span>
-          ) : null}
-          <select className={fieldClass} value={view} onChange={(e) => setView(e.target.value as "active" | "archived")}>
-            <option value="active">View: Active</option>
-            <option value="archived">View: Archived</option>
-          </select>
-          <select className={fieldClass} value={source} onChange={(e) => setSource(e.target.value)}>
-            <option value="ALL">Source: All</option>
-            <option value="IMPORTED">Source: Imported</option>
-            <option value="MANUAL">Source: Manual</option>
-          </select>
-          <select className={fieldClass} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
-            <option value="ALL">Assignee: All</option>
-            <option value="UNASSIGNED">Unassigned</option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name || u.email}
-              </option>
-            ))}
-          </select>
-          <select
-            className={fieldClass}
-            value={districtTag}
-            onChange={(e) => {
-              setDistrictTag(e.target.value);
-              if (e.target.value !== "ALL") setBoardTag("ALL");
-            }}
-          >
-            <option value="ALL">District: All</option>
-            {districtTags.map((t) => (
-              <option key={t.tag} value={t.tag}>
-                {t.tag} ({t.count})
-              </option>
-            ))}
-          </select>
-          <select
-            className={fieldClass}
-            value={boardTag}
-            onChange={(e) => {
-              setBoardTag(e.target.value);
-              if (e.target.value !== "ALL") setDistrictTag("ALL");
-            }}
-          >
-            <option value="ALL">Board: All</option>
-            {boardTags.map((t) => (
-              <option key={t.tag} value={t.tag}>
-                {t.tag} ({t.count})
-              </option>
-            ))}
-          </select>
-        </div>
 
-        <div className="mt-3 -mx-1 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
-          <div className="flex min-w-max flex-wrap gap-1.5">
-          {statusChips.map((chip) => {
-            const active = status === chip.key;
-            const count = statusCounts[chip.key];
-            return (
-              <button
-                key={chip.key}
-                type="button"
-                onClick={() => setStatus(chip.key)}
-                className={`inline-flex max-w-[11rem] items-center gap-1.5 whitespace-normal rounded-md px-2.5 py-1.5 text-left text-[11px] font-semibold leading-snug transition sm:max-w-none sm:whitespace-nowrap ${
-                  active
-                    ? "bg-[#2f4a2b] text-white"
-                    : "border border-dark-primary/10 bg-white text-dark-primary hover:bg-[#faf9f6]"
-                }`}
-              >
-                <span className="min-w-0">{chip.label}</span>
-                {count != null ? (
-                  <span
-                    className={`rounded-full px-1.5 py-0 text-[10px] ${active ? "bg-white/20" : "bg-dark-secondary/10"}`}
-                  >
-                    {count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
+          <div className="relative">
+            <select
+              className={toolbarSelectClass}
+              value={view}
+              onChange={(e) => setView(e.target.value as "active" | "archived")}
+            >
+              <option value="active">View: Active</option>
+              <option value="archived">View: Archived</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-primary/45" />
           </div>
-        </div>
-        {initialLoaded ? (
-          <p className="mt-2 text-[11px] text-mid-green">
-            Showing {items.length} of {total} contacts
-          </p>
-        ) : null}
-      </WorkbenchCard>
 
-      <div className="min-h-0 flex-1 overflow-x-auto rounded-lg border border-dark-primary/10 bg-white shadow-sm">
-        <table className="w-full min-w-[1080px] text-left">
-          <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#faf9f6] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
+          <div className="relative">
+            <select
+              className={toolbarSelectClass}
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+            >
+              <option value="ALL">Source: All</option>
+              <option value="IMPORTED">Source: Imported</option>
+              <option value="MANUAL">Source: Manual</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-primary/45" />
+          </div>
+
+          <div className="relative" ref={moreFiltersRef}>
+            <button
+              type="button"
+              onClick={() => setMoreFiltersOpen((o) => !o)}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border border-dark-primary/10 bg-white px-3 text-[13px] text-dark-primary ${
+                moreFiltersActive ? "border-mid-green/40 ring-1 ring-mid-green/15" : ""
+              }`}
+              aria-expanded={moreFiltersOpen}
+            >
+              <SlidersHorizontal className="h-3.5 w-3.5 text-mid-green" />
+              More Filters
+              {moreFiltersActive ? (
+                <span className="rounded-full bg-mid-green/15 px-1.5 text-[10px] font-semibold text-mid-green">
+                  On
+                </span>
+              ) : null}
+            </button>
+            {moreFiltersOpen ? (
+              <div className="absolute right-0 z-30 mt-1.5 w-72 space-y-2 rounded-lg border border-dark-primary/10 bg-white p-3 shadow-[0_12px_32px_rgba(11,43,38,0.16)]">
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-mid-green">Assignee</span>
+                  <select
+                    className={`${fieldClass} w-full`}
+                    value={assignee}
+                    onChange={(e) => setAssignee(e.target.value)}
+                  >
+                    <option value="ALL">All</option>
+                    <option value="UNASSIGNED">Unassigned</option>
+                    {users.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name || u.email}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-mid-green">District</span>
+                  <select
+                    className={`${fieldClass} w-full`}
+                    value={districtTag}
+                    onChange={(e) => {
+                      setDistrictTag(e.target.value);
+                      if (e.target.value !== "ALL") setBoardTag("ALL");
+                    }}
+                  >
+                    <option value="ALL">All</option>
+                    {districtTags.map((t) => (
+                      <option key={t.tag} value={t.tag}>
+                        {t.tag} ({t.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-mid-green">Board</span>
+                  <select
+                    className={`${fieldClass} w-full`}
+                    value={boardTag}
+                    onChange={(e) => {
+                      setBoardTag(e.target.value);
+                      if (e.target.value !== "ALL") setDistrictTag("ALL");
+                    }}
+                  >
+                    <option value="ALL">All</option>
+                    {boardTags.map((t) => (
+                      <option key={t.tag} value={t.tag}>
+                        {t.tag} ({t.count})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {moreFiltersActive ? (
+                  <button
+                    type="button"
+                    className="text-[12px] font-medium text-mid-green hover:underline"
+                    onClick={() => {
+                      setAssignee("ALL");
+                      setDistrictTag("ALL");
+                      setBoardTag("ALL");
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setImportOpen(true);
+              setImportStep(1);
+            }}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-dark-secondary px-3.5 text-[13px] font-medium text-background hover:bg-dark-primary"
+          >
+            <Upload className="h-4 w-4" /> Import Contacts
+          </button>
+          <button
+            type="button"
+            onClick={() => setNewOpen(true)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-dark-primary/12 bg-white px-3 text-[13px] font-medium text-dark-primary hover:bg-background"
+          >
+            <Plus className="h-4 w-4" /> New
+          </button>
+        </div>
+      </div>
+
+      <div className="shrink-0">
+        <CallStatusProcessBar
+          activeStatus={status}
+          statusCounts={statusCounts}
+          onSelect={(next) => {
+            setStatus(next);
+            setPage(0);
+          }}
+          countsPending={!initialLoaded}
+        />
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-dark-primary/10 bg-white shadow-sm">
+        <div className="min-h-0 flex-1 overflow-auto">
+        <table className="w-full min-w-[1040px] table-fixed text-left">
+          <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#f7f8f7] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
             <tr>
-              <th className="w-8 px-1.5 py-1.5" />
-              <th className="w-12 px-1.5 py-1.5">S.No.</th>
-              <th className="w-[9rem] px-2 py-2">
+              <th className="w-8 px-2 py-2" />
+              <th className="w-12 px-2 py-2">S.No.</th>
+              <th className="w-[16rem] px-2 py-2">
                 <SortHeader label="Company" active={sortBy === "company"} asc={sortAsc} onClick={() => toggleSort("company")} />
               </th>
               <th className="w-[8rem] px-2 py-2">
                 <SortHeader label="Name" active={sortBy === "name"} asc={sortAsc} onClick={() => toggleSort("name")} />
               </th>
-              <th className="w-[7rem] px-2 py-2">Phone</th>
-              <th className="w-[8rem] px-2 py-2">Email</th>
-              <th className="w-[6rem] px-2 py-2">Role</th>
-              <th className="w-[8.5rem] px-2 py-2">
-                <SortHeader label="Call status" active={sortBy === "callStatus"} asc={sortAsc} onClick={() => toggleSort("callStatus")} />
+              <th className="w-[7.5rem] px-2 py-2">Phone Number</th>
+              <th className="w-[9rem] px-2 py-2">Email</th>
+              <th className="w-[9.5rem] px-2 py-2">
+                <SortHeader label="Call Status" active={sortBy === "callStatus"} asc={sortAsc} onClick={() => toggleSort("callStatus")} />
               </th>
-              <th className="w-[7rem] px-2 py-2">Assigned to</th>
+              <th className="w-[7.5rem] px-2 py-2">Assigned to</th>
               <th className="w-[5.5rem] px-2 py-2">
                 <SortHeader label="Added" active={sortBy === "createdAt"} asc={sortAsc} onClick={() => toggleSort("createdAt")} />
               </th>
-              <th className="sticky right-0 z-10 w-[7.5rem] bg-[#faf9f6] px-1.5 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)]">
+              <th className="sticky right-0 z-10 w-[7.5rem] bg-background px-2 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.04)]">
                 Actions
               </th>
             </tr>
@@ -854,7 +928,7 @@ export function TelemarketingWorkbench() {
               <TableSkeletonRows />
             ) : !loading && items.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-10 text-center text-sm text-mid-green">
+                <td colSpan={10} className="px-3 py-10 text-center text-sm text-mid-green">
                   {emptyTableMessage()}
                 </td>
               </tr>
@@ -870,7 +944,7 @@ export function TelemarketingWorkbench() {
                       <td className="px-2 py-2 text-xs text-mid-green" colSpan={2}>
                         Alternative draft
                       </td>
-                      <td className="px-2 py-1.5" colSpan={7}>
+                      <td className="px-2 py-1.5" colSpan={6}>
                         <div className="flex flex-col gap-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <input
@@ -908,7 +982,7 @@ export function TelemarketingWorkbench() {
                           />
                           <button
                             type="button"
-                            className="rounded-md bg-[#2f4a2b] px-3 py-1.5 text-xs text-white"
+                            className="rounded-md bg-dark-secondary px-3 py-1.5 text-xs text-background"
                             onClick={() => void saveAlternative(row.id)}
                           >
                             Save
@@ -947,37 +1021,16 @@ export function TelemarketingWorkbench() {
             )}
           </tbody>
         </table>
-      </div>
-
-      {initialLoaded && hasMore ? (
-        <div className="flex justify-center">
-          <button
-            type="button"
-            disabled={loadingMore}
-            onClick={() => setListSkip((s) => s + PAGE_SIZE)}
-            className="rounded-md border border-dark-primary/15 bg-white px-4 py-2 text-sm font-medium text-dark-primary hover:bg-[#faf9f6] disabled:opacity-50"
-          >
-            {loadingMore ? "Loading…" : `Load more (${items.length} of ${total} loaded)`}
-          </button>
         </div>
-      ) : null}
-
-      {confirmAction ? (
-        <ConfirmActionModal
-          open
-          title={confirmAction.kind === "lead" ? "Move to Leads?" : "Archive contact?"}
-          message={
-            confirmAction.kind === "lead"
-              ? "This contact will be converted into a lead. You can continue working it from the Leads workspace."
-              : "This contact will be archived and hidden from the active list."
-          }
-          confirmLabel={confirmAction.kind === "lead" ? "Move to Leads" : "Archive"}
-          confirmTone={confirmAction.kind === "archive" ? "danger" : "primary"}
-          busy={confirmBusy}
-          onCancel={() => setConfirmAction(null)}
-          onConfirm={runConfirmAction}
+        <TelemarketingPagination
+          page={page}
+          total={total}
+          pageSize={PAGE_SIZE}
+          loading={listFetching || loading}
+          unknownTotal={!initialLoaded}
+          onPageChange={setPage}
         />
-      ) : null}
+      </div>
 
       {callbackPrompt ? (
         <CallbackDueModal
@@ -990,6 +1043,23 @@ export function TelemarketingWorkbench() {
           }}
         />
       ) : null}
+
+      <ConfirmModal
+        open={Boolean(confirmAction)}
+        title={confirmAction?.type === "archive" ? "Archive contact?" : "Move to lead?"}
+        description={
+          confirmAction?.type === "archive"
+            ? `Archive ${confirmAction.label}? They’ll move out of the active list and can be found under View: Archived.`
+            : `Create a lead from ${confirmAction?.label || "this contact"}? This moves them into Leads.`
+        }
+        confirmLabel={confirmAction?.type === "archive" ? "Archive" : "Move to lead"}
+        tone={confirmAction?.type === "archive" ? "danger" : "primary"}
+        busy={confirmBusy}
+        onClose={() => {
+          if (!confirmBusy) setConfirmAction(null);
+        }}
+        onConfirm={runConfirmedAction}
+      />
 
       {drawerId ? (
         <TelemarketingContactDrawer
@@ -1070,7 +1140,7 @@ export function TelemarketingWorkbench() {
               type="button"
               disabled={newSubmitting}
               onClick={() => void submitNewContacts()}
-              className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+              className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
             >
               {newSubmitting ? "Adding…" : "Add contact(s)"}
             </button>
@@ -1174,7 +1244,7 @@ function TableSkeletonRows() {
     <>
       {Array.from({ length: 8 }).map((_, i) => (
         <tr key={i}>
-          <td colSpan={11} className="px-3 py-2">
+          <td colSpan={10} className="px-3 py-2">
             <div className="h-9 animate-pulse rounded-md bg-dark-secondary/10" />
           </td>
         </tr>
@@ -1196,10 +1266,10 @@ function IconAction({
 }) {
   const cls =
     tone === "green-fill"
-      ? "bg-[#2f4a2b] text-white hover:bg-[#243b22]"
+      ? "bg-dark-secondary text-background hover:bg-dark-primary"
       : tone === "danger"
         ? "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
-        : "border border-mid-green/25 bg-[#e8f5e6] text-mid-green hover:bg-[#d4e7d0]";
+        : "border border-mid-green/25 bg-light-green/25 text-mid-green hover:bg-light-green/40";
   return (
     <button
       type="button"
@@ -1210,24 +1280,6 @@ function IconAction({
     >
       {children}
     </button>
-  );
-}
-
-function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h1 className="text-xl font-semibold text-dark-primary">{title}</h1>
-      <div className="flex flex-wrap gap-2">{actions}</div>
-    </div>
-  );
-}
-
-function WorkbenchCard({ title, children }: { title?: string; children: ReactNode }) {
-  return (
-    <div className="rounded-lg border border-dark-primary/10 bg-white p-4 shadow-sm">
-      {title ? <p className="mb-2 text-sm font-medium text-dark-primary">{title}</p> : null}
-      {children}
-    </div>
   );
 }
 
@@ -1272,7 +1324,7 @@ function ModalNav({
       <button
         type="button"
         onClick={onNext}
-        className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white"
+        className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background"
       >
         {nextLabel}
       </button>

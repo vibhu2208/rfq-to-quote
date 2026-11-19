@@ -6,7 +6,9 @@ import { TelemarketingChromeProvider } from "@/components/telemarketing/telemark
 export default function TelemarketingPage() {
   return (
     <TelemarketingChromeProvider>
-      <TelemarketingWorkbench />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <TelemarketingWorkbench />
+      </div>
     </TelemarketingChromeProvider>
   );
 }
