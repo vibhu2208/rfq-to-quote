@@ -205,19 +205,26 @@ export function TelemarketingContactDrawer({
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (
-        logOpen ||
-        reminderOpen ||
-        callbackOpen ||
-        leadConfirmOpen ||
-        linkFormOpen
-      ) {
+      if (logOpen) {
+        e.stopPropagation();
+        setLogOpen(false);
         return;
       }
+      if (reminderOpen) {
+        e.stopPropagation();
+        setReminderOpen(false);
+        return;
+      }
+      if (linkFormOpen) {
+        e.stopPropagation();
+        setLinkFormOpen(false);
+        return;
+      }
+      if (callbackOpen || leadConfirmOpen) return;
       onClose();
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose, logOpen, reminderOpen, callbackOpen, leadConfirmOpen, linkFormOpen]);
 
   async function patch(body: Record<string, unknown>) {
@@ -474,12 +481,12 @@ export function TelemarketingContactDrawer({
         aria-label="Close drawer"
         onClick={onClose}
       />
-      <aside className="relative flex h-full w-full max-w-[40rem] flex-col border-l border-dark-primary/10 bg-white shadow-[-16px_0_48px_rgba(11,43,38,0.2)] sm:max-w-[44rem]">
+      <aside className="relative flex h-full min-h-0 w-full max-w-[40rem] flex-col border-l border-dark-primary/10 bg-white shadow-[-16px_0_48px_rgba(11,43,38,0.2)] sm:max-w-[44rem]">
         {/* Header */}
-        <div className="shrink-0 px-5 pt-4 pb-3">
-          <div className="flex items-start gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-light-green/35 text-dark-secondary">
-              <Phone className="h-5 w-5" strokeWidth={1.8} />
+        <div className="shrink-0 px-4 pt-3 pb-2 sm:px-5">
+          <div className="flex items-start gap-2.5">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-light-green/35 text-dark-secondary sm:h-10 sm:w-10">
+              <Phone className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={1.8} />
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
@@ -520,9 +527,9 @@ export function TelemarketingContactDrawer({
         ) : !contact ? (
           <div className="px-5 py-10 text-sm text-mid-green">Contact not found.</div>
         ) : (
-          <>
+          <div className="flex min-h-0 flex-1 flex-col">
             {/* Meta strip */}
-            <div className="mx-5 grid grid-cols-2 gap-y-3 border-y border-dark-primary/8 py-3 sm:grid-cols-4 sm:divide-x sm:divide-dark-primary/8">
+            <div className="mx-4 grid grid-cols-2 gap-y-3 border-y border-dark-primary/8 py-2.5 sm:mx-5 sm:grid-cols-4 sm:divide-x sm:divide-dark-primary/8 sm:py-3">
               <MetaCell label="Source">
                 <span className="font-semibold capitalize text-dark-primary">
                   {contact.source.toLowerCase()}
@@ -531,6 +538,7 @@ export function TelemarketingContactDrawer({
               <MetaCell label="Status">
                 <CallStatusDropdown
                   status={contact.callStatus}
+                  fullLabel
                   onBeforeChange={handleDrawerStatusPick}
                   onChange={patchStatus}
                   onMoveToLead={moveToLead}
@@ -638,6 +646,7 @@ export function TelemarketingContactDrawer({
               {detailsOpen ? (
                 <div className="grid gap-0 border-t border-dark-primary/6 px-2 py-2 sm:grid-cols-3 sm:divide-x sm:divide-dark-primary/8">
                   <CompactDetail
+                    editLabel="name"
                     icon={<User className="h-3.5 w-3.5" />}
                     value={contact.name}
                     placeholder="No name"
@@ -657,6 +666,7 @@ export function TelemarketingContactDrawer({
                     }}
                   />
                   <CompactDetail
+                    editLabel="company"
                     icon={<Building2 className="h-3.5 w-3.5" />}
                     value={contact.company}
                     placeholder="No company"
@@ -671,6 +681,7 @@ export function TelemarketingContactDrawer({
                     onCancel={() => setEditField(null)}
                   />
                   <CompactDetail
+                    editLabel="phone"
                     icon={<Phone className="h-3.5 w-3.5" />}
                     value={contact.phone}
                     placeholder="No phone"
@@ -690,6 +701,7 @@ export function TelemarketingContactDrawer({
                     }}
                   />
                   <CompactDetail
+                    editLabel="email"
                     icon={<Mail className="h-3.5 w-3.5" />}
                     value={contact.email}
                     placeholder="No email"
@@ -709,6 +721,7 @@ export function TelemarketingContactDrawer({
                     }}
                   />
                   <CompactDetail
+                    editLabel="role"
                     icon={<UserCircle className="h-3.5 w-3.5" />}
                     value={contact.role}
                     placeholder="No board / role"
@@ -1024,7 +1037,7 @@ export function TelemarketingContactDrawer({
               ) : null}
             </div>
 
-            <div className="shrink-0 border-t border-dark-primary/8 bg-white px-5 py-3">
+            <div className="shrink-0 border-t border-dark-primary/8 bg-white px-5 py-3 pb-4">
               <button
                 type="button"
                 onClick={() => setReminderOpen(true)}
@@ -1034,7 +1047,7 @@ export function TelemarketingContactDrawer({
                 Reminder
               </button>
             </div>
-          </>
+          </div>
         )}
 
         {logOpen ? (
@@ -1193,6 +1206,7 @@ function CompactDetail({
   icon,
   value,
   placeholder,
+  editLabel,
   editing,
   draft,
   error,
@@ -1204,6 +1218,7 @@ function CompactDetail({
   icon: React.ReactNode;
   value: string;
   placeholder: string;
+  editLabel: string;
   editing: boolean;
   draft: string;
   error?: string;
@@ -1213,6 +1228,9 @@ function CompactDetail({
   onCancel: () => void;
 }) {
   const shown = value.trim() || placeholder;
+  const editAria = value.trim()
+    ? `Edit ${editLabel}: ${value.trim()}`
+    : `Edit ${editLabel}`;
   return (
     <div className="flex min-w-0 flex-col gap-0.5 px-2 py-2">
       <div className="flex min-w-0 items-center gap-2">
@@ -1232,11 +1250,12 @@ function CompactDetail({
       ) : (
         <button
           type="button"
+          aria-label={editAria}
           className={`flex min-w-0 flex-1 items-center gap-1 text-left text-xs ${value.trim() ? "font-medium text-dark-primary" : "text-mid-green/70"}`}
           onClick={onStart}
         >
-          <span className="truncate">{shown}</span>
-          <Pencil className="h-3 w-3 shrink-0 opacity-40" />
+          <span className="min-w-0 break-words leading-snug">{shown}</span>
+          <Pencil className="h-3 w-3 shrink-0 opacity-40" aria-hidden />
         </button>
       )}
       </div>
@@ -1263,6 +1282,17 @@ function Modal({
   children: ReactNode;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onClose]);
+
   return (
     <div className="absolute inset-0 z-10 flex items-end justify-center bg-dark-primary/40 p-4 sm:items-center">
       <div className="w-full max-w-md rounded-xl bg-background p-5 shadow-xl">

@@ -218,7 +218,6 @@ export function TelemarketingWorkbench() {
 
   useEffect(() => {
     setPage(0);
-    setItems([]);
     initialLoadedRef.current = false;
     setInitialLoaded(false);
   }, [listQueryBase]);
@@ -235,9 +234,8 @@ export function TelemarketingWorkbench() {
     }
   }
 
-  const filtersActive =
+  const searchFiltersActive =
     Boolean(qDebounced) ||
-    status !== "ALL" ||
     source !== "ALL" ||
     assignee !== "ALL" ||
     districtTag !== "ALL" ||
@@ -245,7 +243,7 @@ export function TelemarketingWorkbench() {
 
   function emptyTableMessage() {
     if (view === "archived") return "No archived contacts";
-    if (filtersActive) return "No contacts match your search";
+    if (searchFiltersActive) return "No contacts match your search";
     if (status !== "ALL") return "No contacts in this status";
     return "No contacts yet";
   }
@@ -675,8 +673,8 @@ export function TelemarketingWorkbench() {
             onMoveToLead={() => requestMoveToLead(row)}
           />
         </td>
-        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <div className="relative max-w-[9.5rem]">
+        <td className="min-w-[8.5rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="relative w-full min-w-[7.5rem] max-w-[9.5rem]">
             <select
               className="h-8 w-full appearance-none rounded-lg border-0 bg-dark-primary/[0.06] py-1.5 pl-2.5 pr-7 text-[11px] font-medium text-dark-primary outline-none"
               value={row.assignedTo?.id || ""}
@@ -696,7 +694,7 @@ export function TelemarketingWorkbench() {
           {format(new Date(row.createdAt), "d MMM yyyy")}
         </td>
         <td
-          className="sticky right-0 z-10 bg-white px-2 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)] group-hover:bg-background"
+          className="sticky right-0 z-20 w-[6.75rem] border-l border-dark-primary/8 bg-white px-2 py-1.5 shadow-[-8px_0_12px_rgba(11,43,38,0.08)] group-hover:bg-background"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-1">
@@ -723,7 +721,7 @@ export function TelemarketingWorkbench() {
     "h-9 appearance-none rounded-lg border border-dark-primary/10 bg-white py-1.5 pl-3 pr-8 text-[13px] text-dark-primary outline-none focus:border-mid-green/40";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-24">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-32">
       <div className="shrink-0 rounded-xl border border-dark-primary/8 bg-gradient-to-b from-white to-[#f3f5f4] px-3 py-2.5 shadow-sm">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="mr-auto flex min-w-0 items-center gap-2.5">
@@ -884,21 +882,19 @@ export function TelemarketingWorkbench() {
         </div>
       </div>
 
-      <div className="shrink-0">
-        <CallStatusProcessBar
-          activeStatus={status}
-          statusCounts={statusCounts}
-          onSelect={(next) => {
-            setStatus(next);
-            setPage(0);
-          }}
-          countsPending={!initialLoaded}
-        />
-      </div>
-
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-dark-primary/10 bg-white shadow-sm">
         <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full min-w-[1040px] table-fixed text-left">
+          <div className="min-w-[1040px]">
+            <CallStatusProcessBar
+              activeStatus={status}
+              statusCounts={statusCounts}
+              onSelect={(next) => {
+                setStatus(next);
+                setPage(0);
+              }}
+              countsPending={!initialLoaded}
+            />
+        <table className="w-full table-fixed text-left">
           <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#f7f8f7] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
             <tr>
               <th className="w-8 px-2 py-2" />
@@ -911,14 +907,14 @@ export function TelemarketingWorkbench() {
               </th>
               <th className="w-[7.5rem] px-2 py-2">Phone Number</th>
               <th className="w-[9rem] px-2 py-2">Email</th>
-              <th className="w-[9.5rem] px-2 py-2">
+              <th className="w-[10.5rem] px-2 py-2">
                 <SortHeader label="Call Status" active={sortBy === "callStatus"} asc={sortAsc} onClick={() => toggleSort("callStatus")} />
               </th>
-              <th className="w-[7.5rem] px-2 py-2">Assigned to</th>
+              <th className="w-[8.5rem] px-2 py-2">Assigned to</th>
               <th className="w-[5.5rem] px-2 py-2">
                 <SortHeader label="Added" active={sortBy === "createdAt"} asc={sortAsc} onClick={() => toggleSort("createdAt")} />
               </th>
-              <th className="sticky right-0 z-10 w-[7.5rem] bg-background px-2 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.04)]">
+              <th className="sticky right-0 z-20 w-[6.75rem] border-l border-dark-primary/8 bg-[#f7f8f7] px-2 py-2 shadow-[-8px_0_12px_rgba(11,43,38,0.08)]">
                 Actions
               </th>
             </tr>
@@ -926,7 +922,7 @@ export function TelemarketingWorkbench() {
           <tbody>
             {loading && items.length === 0 ? (
               <TableSkeletonRows />
-            ) : !loading && items.length === 0 ? (
+            ) : items.length === 0 && !listFetching ? (
               <tr>
                 <td colSpan={10} className="px-3 py-10 text-center text-sm text-mid-green">
                   {emptyTableMessage()}
@@ -1021,6 +1017,7 @@ export function TelemarketingWorkbench() {
             )}
           </tbody>
         </table>
+          </div>
         </div>
         <TelemarketingPagination
           page={page}
