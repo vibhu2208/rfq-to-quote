@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import type { TelemarketingCallStatus } from "@prisma/client";
 import { STATUS_CLASS, STATUS_DOT_CLASS } from "@/components/telemarketing/status-chip";
 import {
@@ -99,9 +99,14 @@ export function CallStatusDropdown({
                 className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[s]}`}
                 aria-hidden
               />
-              <span className="truncate text-dark-primary">
+              <span className="min-w-0 flex-1 truncate text-dark-primary">
                 {TELEMARKETING_CALL_STATUS_LABELS[s]}
               </span>
+              {s === status ? (
+                <Check className="h-3.5 w-3.5 shrink-0 text-mid-green" aria-hidden />
+              ) : (
+                <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              )}
             </button>
           ))}
         </div>

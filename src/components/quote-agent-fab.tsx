@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { usePathname } from "next/navigation";
 import { GripVertical, Sparkles, X } from "lucide-react";
 import { AdminCopilot } from "@/components/admin-copilot";
+import { useTelemarketingChrome } from "@/components/telemarketing/telemarketing-chrome";
 
 type Pos = { x: number; y: number };
 
@@ -35,6 +36,8 @@ function readStoredPos(): Pos | null {
 export function QuoteAgentFab() {
   const pathname = usePathname();
   const telemarketingPage = pathname?.startsWith("/telemarketing");
+  const { drawerOpen: telemarketingDrawerOpen } = useTelemarketingChrome();
+  const hideFab = telemarketingPage && telemarketingDrawerOpen;
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<Pos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -159,6 +162,8 @@ export function QuoteAgentFab() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
+
+  if (hideFab) return null;
 
   return (
     <div

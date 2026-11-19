@@ -3,6 +3,7 @@
 import { format } from "date-fns";
 import type { TelemarketingTimelineType } from "@prisma/client";
 import { formatTelemarketingInstant } from "@/lib/telemarketing/datetime";
+import { formatTelemarketingTimelineText } from "@/lib/telemarketing/timeline-text";
 import { QUOTE_TIME_ZONE } from "@/lib/quote-format";
 
 type TimelineRow = {
@@ -114,10 +115,12 @@ export function TelemarketingTimelineList({ events }: { events: TimelineRow[] })
                   </div>
                   {ev.body ? (
                     <p className="mt-2 whitespace-pre-wrap break-words text-[13px] text-dark-primary">
-                      {ev.body}
+                      {formatTelemarketingTimelineText(ev.body)}
                     </p>
                   ) : ev.title ? (
-                    <p className="mt-2 break-words text-[13px] text-dark-primary">{ev.title}</p>
+                    <p className="mt-2 break-words text-[13px] text-dark-primary">
+                      {formatTelemarketingTimelineText(ev.title)}
+                    </p>
                   ) : null}
                   {ev.actor ? (
                     <p className="mt-1.5 text-[11px] text-mid-green">

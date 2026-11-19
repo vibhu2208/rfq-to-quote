@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Building2,
   ChevronDown,
@@ -38,6 +38,10 @@ import {
   formatTelemarketingInstant,
   validateFutureDateTime,
 } from "@/lib/telemarketing/datetime";
+import {
+  validateEmailInput,
+  validatePhoneInput,
+} from "@/lib/telemarketing/validation";
 
 type UserRef = { id: string; name: string; email: string };
 
@@ -144,6 +148,36 @@ export function TelemarketingContactDrawer({
   const [linkDraft, setLinkDraft] = useState({ name: "", phone: "", email: "", role: "" });
   const [linkSaving, setLinkSaving] = useState(false);
   const [linkError, setLinkError] = useState("");
+  const [fieldError, setFieldError] = useState("");
+  const [nowMs] = useState(() => Date.now());
+
+  const logFollowUpDate = useMemo(
+    () => (logFollowUp ? parseLocalDateTimeValue(logFollowUp) : null),
+    [logFollowUp]
+  );
+  const logFollowUpInvalid = Boolean(
+    logFollowUpDate && validateFutureDateTime(logFollowUpDate)
+  );
+  const logSubmitDisabled = !logNote.trim() || saving || logFollowUpInvalid;
+  const logDisabledReason = !logNote.trim()
+    ? "Add a call update before logging."
+    : logFollowUpInvalid
+      ? validateFutureDateTime(logFollowUpDate!) || "Follow-up must be in the future."
+      : "";
+
+  const reminderDueDate = useMemo(
+    () => parseLocalDateTimeValue(reminderDue),
+    [reminderDue]
+  );
+  const reminderInvalid = Boolean(
+    reminderDueDate && validateFutureDateTime(reminderDueDate)
+  );
+  const reminderSubmitDisabled = !reminderNotes.trim() || saving || reminderInvalid;
+  const reminderDisabledReason = !reminderNotes.trim()
+    ? "Reminder notes are required."
+    : reminderInvalid
+      ? validateFutureDateTime(reminderDueDate!) || "Due time must be in the future."
+      : "";
 
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
@@ -170,11 +204,21 @@ export function TelemarketingContactDrawer({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (
+        logOpen ||
+        reminderOpen ||
+        callbackOpen ||
+        leadConfirmOpen ||
+        linkFormOpen
+      ) {
+        return;
+      }
+      onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, logOpen, reminderOpen, callbackOpen, leadConfirmOpen, linkFormOpen]);
 
   async function patch(body: Record<string, unknown>) {
     const res = await fetch(`/api/telemarketing/contacts/${contactId}`, {
@@ -226,6 +270,21 @@ export function TelemarketingContactDrawer({
   }
 
   async function saveField(field: string, value: string) {
+    if (field === "phone") {
+      const v = validatePhoneInput(value);
+      if (!v.ok) {
+        setFieldError(v.error);
+        throw new Error(v.error);
+      }
+    }
+    if (field === "email") {
+      const v = validateEmailInput(value);
+      if (!v.ok) {
+        setFieldError(v.error);
+        throw new Error(v.error);
+      }
+    }
+    setFieldError("");
     await patch({ [field]: value });
     setEditField(null);
   }
@@ -587,10 +646,15 @@ export function TelemarketingContactDrawer({
                     onStart={() => {
                       setEditField("name");
                       setFieldDraft(contact.name);
+                      setFieldError("");
                     }}
                     onDraft={setFieldDraft}
+                    error={editField === "name" ? fieldError : ""}
                     onSave={() => void saveField("name", fieldDraft)}
-                    onCancel={() => setEditField(null)}
+                    onCancel={() => {
+                      setEditField(null);
+                      setFieldError("");
+                    }}
                   />
                   <CompactDetail
                     icon={<Building2 className="h-3.5 w-3.5" />}
@@ -615,10 +679,15 @@ export function TelemarketingContactDrawer({
                     onStart={() => {
                       setEditField("phone");
                       setFieldDraft(contact.phone);
+                      setFieldError("");
                     }}
                     onDraft={setFieldDraft}
-                    onSave={() => void saveField("phone", fieldDraft)}
-                    onCancel={() => setEditField(null)}
+                    error={editField === "phone" ? fieldError : ""}
+                    onSave={() => void saveField("phone", fieldDraft).catch(() => undefined)}
+                    onCancel={() => {
+                      setEditField(null);
+                      setFieldError("");
+                    }}
                   />
                   <CompactDetail
                     icon={<Mail className="h-3.5 w-3.5" />}
@@ -629,10 +698,15 @@ export function TelemarketingContactDrawer({
                     onStart={() => {
                       setEditField("email");
                       setFieldDraft(contact.email);
+                      setFieldError("");
                     }}
                     onDraft={setFieldDraft}
-                    onSave={() => void saveField("email", fieldDraft)}
-                    onCancel={() => setEditField(null)}
+                    error={editField === "email" ? fieldError : ""}
+                    onSave={() => void saveField("email", fieldDraft).catch(() => undefined)}
+                    onCancel={() => {
+                      setEditField(null);
+                      setFieldError("");
+                    }}
                   />
                   <CompactDetail
                     icon={<UserCircle className="h-3.5 w-3.5" />}
@@ -752,14 +826,26 @@ export function TelemarketingContactDrawer({
                     />
                   ) : (
                     <ul className="space-y-2">
-                      {contact.reminders.map((r) => (
+                      {contact.reminders.map((r) => {
+                        const overdue =
+                          r.status === "PENDING" && new Date(r.dueAt).getTime() < nowMs;
+                        return (
                         <li
                           key={r.id}
-                          className="rounded-lg border border-dark-primary/8 bg-white p-3 text-sm"
+                          className={`rounded-lg border bg-white p-3 text-sm ${
+                            overdue ? "border-rose-200 bg-rose-50/40" : "border-dark-primary/8"
+                          }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <p className="font-medium text-dark-primary">{r.type}</p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-medium text-dark-primary">{r.type}</p>
+                                {overdue ? (
+                                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-800">
+                                    Overdue
+                                  </span>
+                                ) : null}
+                              </div>
                               <p className="text-xs text-mid-green">
                                 Due {formatTelemarketingInstant(r.dueAt, { withTime: true })}
                               </p>
@@ -778,7 +864,8 @@ export function TelemarketingContactDrawer({
                             )}
                           </div>
                         </li>
-                      ))}
+                      );
+                      })}
                     </ul>
                   )}
                 </div>
@@ -938,24 +1025,14 @@ export function TelemarketingContactDrawer({
             </div>
 
             <div className="shrink-0 border-t border-dark-primary/8 bg-white px-5 py-3">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={openLogCallModal}
-                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-dark-secondary px-3 py-2.5 text-sm font-medium text-background hover:bg-dark-primary"
-                >
-                  <Phone className="h-4 w-4" />
-                  Log call
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setReminderOpen(true)}
-                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-dark-primary/15 bg-white px-3 py-2.5 text-sm font-medium text-dark-primary hover:bg-background"
-                >
-                  <Plus className="h-4 w-4" />
-                  Reminder
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setReminderOpen(true)}
+                className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-dark-primary/15 bg-white px-3 py-2.5 text-sm font-medium text-dark-primary hover:bg-background"
+              >
+                <Plus className="h-4 w-4" />
+                Reminder
+              </button>
             </div>
           </>
         )}
@@ -996,20 +1073,24 @@ export function TelemarketingContactDrawer({
                 </div>
               </label>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setLogOpen(false)} className="rounded-full px-4 py-2 text-sm">
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!logNote.trim() || saving}
-                title={!logNote.trim() ? "Call update is required" : undefined}
-                onClick={() => void submitLogCall()}
-                className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
-              >
-                {saving ? "Logging…" : "Log call"}
-              </button>
-              {logError ? <p className="mt-2 text-sm text-rose-600">{logError}</p> : null}
+            <div className="mt-4 flex flex-col items-end gap-1">
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setLogOpen(false)} className="rounded-full px-4 py-2 text-sm">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={logSubmitDisabled}
+                  onClick={() => void submitLogCall()}
+                  className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+                >
+                  {saving ? "Logging…" : "Log call"}
+                </button>
+              </div>
+              {logDisabledReason ? (
+                <p className="text-xs text-mid-green">{logDisabledReason}</p>
+              ) : null}
+              {logError ? <p className="text-sm text-rose-600">{logError}</p> : null}
             </div>
           </Modal>
         ) : null}
@@ -1073,18 +1154,23 @@ export function TelemarketingContactDrawer({
                 />
               </label>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setReminderOpen(false)} className="rounded-full px-4 py-2 text-sm">
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!reminderNotes.trim() || saving}
-                onClick={() => void submitReminder()}
-                className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
-              >
-                Create reminder
-              </button>
+            <div className="mt-4 flex flex-col items-end gap-1">
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setReminderOpen(false)} className="rounded-full px-4 py-2 text-sm">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={reminderSubmitDisabled}
+                  onClick={() => void submitReminder()}
+                  className="rounded-md bg-dark-secondary px-4 py-2 text-sm font-medium text-background disabled:opacity-50"
+                >
+                  Create reminder
+                </button>
+              </div>
+              {reminderDisabledReason ? (
+                <p className="text-xs text-mid-green">{reminderDisabledReason}</p>
+              ) : null}
             </div>
           </Modal>
         ) : null}
@@ -1109,6 +1195,7 @@ function CompactDetail({
   placeholder,
   editing,
   draft,
+  error,
   onStart,
   onDraft,
   onSave,
@@ -1119,6 +1206,7 @@ function CompactDetail({
   placeholder: string;
   editing: boolean;
   draft: string;
+  error?: string;
   onStart: () => void;
   onDraft: (v: string) => void;
   onSave: () => void;
@@ -1126,7 +1214,8 @@ function CompactDetail({
 }) {
   const shown = value.trim() || placeholder;
   return (
-    <div className="flex min-w-0 items-center gap-2 px-2 py-2">
+    <div className="flex min-w-0 flex-col gap-0.5 px-2 py-2">
+      <div className="flex min-w-0 items-center gap-2">
       <span className="shrink-0 text-mid-green">{icon}</span>
       {editing ? (
         <input
@@ -1150,6 +1239,8 @@ function CompactDetail({
           <Pencil className="h-3 w-3 shrink-0 opacity-40" />
         </button>
       )}
+      </div>
+      {error ? <p className="pl-6 text-[10px] text-rose-600">{error}</p> : null}
     </div>
   );
 }

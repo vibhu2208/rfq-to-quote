@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import type { Prisma, TelemarketingCallStatus } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
 import { logTelemarketingTimeline } from "@/lib/telemarketing/timeline";
 import { parseTagsJson } from "@/lib/telemarketing/contact-update";
+import {
+  applyTelemarketingTextSearch,
+  buildTelemarketingListWhere,
+} from "@/lib/telemarketing/list-query";
 
 const listSelect = {
   id: true,
@@ -25,66 +29,16 @@ const listSelect = {
   _count: { select: { reminders: true, calls: true, alternatives: true } },
 };
 
-function buildWhere(params: URLSearchParams): Prisma.TelemarketingContactWhereInput {
-  const q = params.get("q")?.trim();
-  const status = params.get("status") as TelemarketingCallStatus | "ALL" | null;
-  const source = params.get("source");
-  const view = params.get("view") || "active";
-  const assignee = params.get("assignee");
-  const tag = params.get("tag")?.trim().toLowerCase();
-  const primaryContactId = params.get("primaryContactId");
-
-  if (primaryContactId) {
-    return { primaryContactId, archivedAt: null };
-  }
-
-  const where: Prisma.TelemarketingContactWhereInput = {
-    primaryContactId: null,
-  };
-
-  if (view === "archived") {
-    where.archivedAt = { not: null };
-  } else {
-    where.archivedAt = null;
-  }
-
-  if (source === "MANUAL" || source === "IMPORTED") {
-    where.source = source;
-  }
-
-  if (status && status !== "ALL") {
-    where.callStatus = status;
-  }
-
-  if (assignee === "unassigned") {
-    where.assignedToUserId = null;
-  } else if (assignee) {
-    where.assignedToUserId = assignee;
-  }
-
-  if (tag) {
-    where.tags = { string_contains: tag };
-  }
-
-  if (q) {
-    where.OR = [
-      { name: { contains: q, mode: "insensitive" } },
-      { company: { contains: q, mode: "insensitive" } },
-      { phone: { contains: q } },
-      { email: { contains: q, mode: "insensitive" } },
-      { role: { contains: q, mode: "insensitive" } },
-    ];
-  }
-
-  return where;
-}
-
 export async function GET(req: NextRequest) {
   const { error } = await requireSession();
   if (error) return error;
 
   const { searchParams } = new URL(req.url);
-  const where = buildWhere(searchParams);
+  let where = buildTelemarketingListWhere(searchParams);
+  const q = searchParams.get("q")?.trim();
+  if (q) {
+    where = await applyTelemarketingTextSearch(prisma, where, q);
+  }
   const take = Math.min(Number(searchParams.get("take") || 50) || 50, 200);
   const skip = Math.max(Number(searchParams.get("skip") || 0) || 0, 0);
   const sort = searchParams.get("sort") === "asc" ? "asc" : "desc";
@@ -102,10 +56,10 @@ export async function GET(req: NextRequest) {
           ? [{ callStatus: sort }, { id: sort }]
           : [{ createdAt: sort }, { id: sort }];
 
-  const baseWhere: Prisma.TelemarketingContactWhereInput = {
-    archivedAt: where.archivedAt,
-    primaryContactId: null,
-  };
+  let countsWhere = buildTelemarketingListWhere(searchParams, { omitCallStatus: true });
+  if (q) {
+    countsWhere = await applyTelemarketingTextSearch(prisma, countsWhere, q);
+  }
 
   const [items, total, statusGroups, dueReminders] = await Promise.all([
     prisma.telemarketingContact.findMany({
@@ -129,7 +83,7 @@ export async function GET(req: NextRequest) {
     prisma.telemarketingContact.count({ where }),
     prisma.telemarketingContact.groupBy({
       by: ["callStatus"],
-      where: baseWhere,
+      where: countsWhere,
       _count: { _all: true },
     }),
     prisma.telemarketingReminder.findMany({
