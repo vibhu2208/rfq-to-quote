@@ -15,8 +15,10 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Megaphone,
   NotebookTabs,
   Package,
+  PhoneCall,
   Receipt,
   Settings2,
   Target,
@@ -35,6 +37,8 @@ type NavItem = {
 const overview: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Target },
+  { href: "/telemarketing", label: "Telemarketing", icon: PhoneCall },
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
 ];
 
 const sales: NavItem[] = [
@@ -66,6 +70,8 @@ const admin: NavItem[] = [
 const desktopLinks: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Target },
+  { href: "/telemarketing", label: "Telemarketing", icon: PhoneCall },
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   ...sales,
   ...operations,
   ...finance,
