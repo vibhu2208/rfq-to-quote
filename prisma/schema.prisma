@@ -166,6 +166,12 @@ model User {
   leadOwnershipActors   LeadOwnershipHistory[]   @relation("LeadOwnershipActor")
   savedLeadViews        SavedLeadView[]
   leadAssignmentRules   LeadAssignmentRule[]     @relation("LeadAssignmentRuleCreator")
+  telemarketingAssigned TelemarketingContact[]   @relation("TelemarketingAssignee")
+  telemarketingCalls    TelemarketingCall[]      @relation("TelemarketingCallActor")
+  telemarketingRemindersAssigned TelemarketingReminder[] @relation("TelemarketingReminderAssignee")
+  telemarketingRemindersCreated  TelemarketingReminder[] @relation("TelemarketingReminderCreator")
+  telemarketingTimeline TelemarketingTimelineEvent[] @relation("TelemarketingTimelineActor")
+  campaignsCreated      Campaign[]               @relation("CampaignCreator")
 }
 
 model Product {
@@ -284,6 +290,7 @@ model Rfq {
   followUps          LeadFollowUp[]
   ownershipHistory   LeadOwnershipHistory[]
   attachments        LeadAttachment[]
+  telemarketingSources TelemarketingContact[] @relation("TelemarketingConvertedLead")
 
   @@index([channel])
   @@index([status])
@@ -1076,6 +1083,8 @@ model Organisation {
   payments            Payment[]
   rfqs                Rfq[]
   leadAssignmentRules LeadAssignmentRule[]
+  telemarketingContacts TelemarketingContact[]
+  campaigns           Campaign[]
 
   @@index([status])
 }
@@ -2059,4 +2068,223 @@ model EWayBillRecord {
 
   @@index([gstRegistrationId, status])
   @@index([invoiceId])
+}
+
+enum TelemarketingCallStatus {
+  NO_ACTION
+  CONNECTED
+  CALL_BACK_REQUESTED
+  COULDNT_CONNECT
+  NOT_INTERESTED
+  MOVE_TO_LEAD
+}
+
+enum TelemarketingContactSource {
+  MANUAL
+  IMPORTED
+}
+
+enum TelemarketingReminderType {
+  CALL
+  WHATSAPP
+  MEETING
+  CUSTOM
+}
+
+enum TelemarketingReminderStatus {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+enum TelemarketingTimelineType {
+  CONTACT_CREATED
+  CONTACT_IMPORTED
+  CONTACT_ASSIGNED
+  CALL_LOGGED
+  REMINDER_CREATED
+  REMINDER_COMPLETED
+  MARKED_AS_LEAD
+  STATUS_CHANGED
+  ARCHIVED
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  PAUSED
+}
+
+enum CampaignLaunchMode {
+  INSTANT
+  SCHEDULED
+}
+
+enum CampaignRecipientMode {
+  TELEMARKETING
+  LEADS
+  CSV
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  SKIPPED
+}
+
+model TelemarketingContact {
+  id               String                      @id @default(cuid())
+  name             String                      @default("")
+  company          String                      @default("")
+  role             String                      @default("")
+  phone            String                      @default("")
+  email            String                      @default("")
+  source           TelemarketingContactSource  @default(MANUAL)
+  callStatus       TelemarketingCallStatus     @default(NO_ACTION)
+  tags             Json                        @default("[]")
+  assignedToUserId String?
+  primaryContactId String?
+  convertedLeadId  String?
+  archivedAt       DateTime?
+  organisationId   String?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  assignedTo       User?                       @relation("TelemarketingAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  primaryContact   TelemarketingContact?       @relation("TelemarketingAlternatives", fields: [primaryContactId], references: [id], onDelete: SetNull)
+  alternatives     TelemarketingContact[]      @relation("TelemarketingAlternatives")
+  convertedLead    Rfq?                        @relation("TelemarketingConvertedLead", fields: [convertedLeadId], references: [id], onDelete: SetNull)
+  organisation     Organisation?               @relation(fields: [organisationId], references: [id], onDelete: SetNull)
+  calls            TelemarketingCall[]
+  reminders        TelemarketingReminder[]
+  timeline         TelemarketingTimelineEvent[]
+  campaignRecipients CampaignRecipient[]
+
+  @@index([callStatus])
+  @@index([source])
+  @@index([assignedToUserId])
+  @@index([archivedAt])
+  @@index([createdAt])
+  @@index([phone])
+  @@index([email])
+  @@index([company])
+  @@index([convertedLeadId])
+  @@index([primaryContactId])
+}
+
+model TelemarketingCall {
+  id         String                   @id @default(cuid())
+  contactId  String
+  status     TelemarketingCallStatus
+  note       String                   @default("")
+  followUpAt DateTime?
+  actorId    String?
+  createdAt  DateTime                 @default(now())
+
+  contact TelemarketingContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  actor   User?                @relation("TelemarketingCallActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([contactId, createdAt])
+}
+
+model TelemarketingReminder {
+  id               String                       @id @default(cuid())
+  contactId        String
+  type             TelemarketingReminderType
+  status           TelemarketingReminderStatus  @default(PENDING)
+  dueAt            DateTime
+  notes            String                       @default("")
+  assignedToUserId String?
+  createdById      String?
+  completedAt      DateTime?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  contact    TelemarketingContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  assignedTo User?                @relation("TelemarketingReminderAssignee", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  createdBy  User?                @relation("TelemarketingReminderCreator", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([contactId, dueAt])
+  @@index([status, dueAt])
+  @@index([assignedToUserId, dueAt])
+}
+
+model TelemarketingTimelineEvent {
+  id        String                    @id @default(cuid())
+  contactId String
+  type      TelemarketingTimelineType
+  title     String                    @default("")
+  body      String                    @default("")
+  meta      Json                      @default("{}")
+  actorId   String?
+  createdAt DateTime                  @default(now())
+
+  contact TelemarketingContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  actor   User?                @relation("TelemarketingTimelineActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([contactId, createdAt])
+}
+
+model Campaign {
+  id                String               @id @default(cuid())
+  name              String
+  messageBody       String               @default("")
+  status            CampaignStatus       @default(DRAFT)
+  launchMode        CampaignLaunchMode   @default(INSTANT)
+  scheduledAt       DateTime?
+  launchedAt        DateTime?
+  recipientMode     CampaignRecipientMode @default(CSV)
+  recipientFilter   Json                 @default("{}")
+  totalRecipients   Int                  @default(0)
+  queuedCount       Int                  @default(0)
+  deliveredCount    Int                  @default(0)
+  failedCount       Int                  @default(0)
+  pendingCount      Int                  @default(0)
+  replyCount        Int                  @default(0)
+  createdById       String?
+  organisationId    String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  createdBy    User?               @relation("CampaignCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  organisation Organisation?       @relation(fields: [organisationId], references: [id], onDelete: SetNull)
+  recipients   CampaignRecipient[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([scheduledAt])
+}
+
+model CampaignRecipient {
+  id           String                  @id @default(cuid())
+  campaignId   String
+  phone        String
+  name         String                  @default("")
+  company      String                  @default("")
+  email        String                  @default("")
+  status       CampaignRecipientStatus @default(PENDING)
+  skipReason   String                  @default("")
+  messageBody  String                  @default("")
+  sourceRef    String                  @default("")
+  contactId    String?
+  rfqId        String?
+  replyText    String                  @default("")
+  repliedAt    DateTime?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  campaign Campaign              @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  TelemarketingContact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId, status])
+  @@index([phone])
+  @@index([contactId])
 }
