@@ -2,7 +2,7 @@
 
 import Papa from "papaparse";
 import { format } from "date-fns";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Archive,
   ChevronDown,
@@ -24,6 +24,17 @@ import {
 } from "@/lib/telemarketing/constants";
 import type { TelemarketingCallStatus } from "@prisma/client";
 import { useToast } from "@/components/app-toast";
+import { CallbackDueModal } from "@/components/telemarketing/callback-due-modal";
+
+const NEW_CONTACT_FIELD_LABELS: Record<string, string> = {
+  name: "Name",
+  company: "Company",
+  role: "Role",
+  phone: "Phone",
+  email: "Email",
+};
+
+type SortColumn = "createdAt" | "company" | "name" | "callStatus";
 
 type UserRef = { id: string; name: string; email: string };
 
@@ -58,15 +69,26 @@ export function TelemarketingWorkbench() {
   const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
   const [users, setUsers] = useState<UserRef[]>([]);
   const [loading, setLoading] = useState(true);
+  const [listFetching, setListFetching] = useState(false);
+  const [initialLoaded, setInitialLoaded] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState("");
+  const [qDebounced, setQDebounced] = useState("");
   const [status, setStatus] = useState<string>("ALL");
   const [source, setSource] = useState<string>("ALL");
   const [view, setView] = useState<"active" | "archived">("active");
   const [assignee, setAssignee] = useState("ALL");
   const [districtTag, setDistrictTag] = useState("ALL");
+  const [sortBy, setSortBy] = useState<SortColumn>("createdAt");
   const [sortAsc, setSortAsc] = useState(false);
-  const [skip, setSkip] = useState(0);
+  const [listSkip, setListSkip] = useState(0);
+  const fetchGenRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const [callbackPrompt, setCallbackPrompt] = useState<{ contactId: string; label: string } | null>(
+    null
+  );
+  const [newFormErrors, setNewFormErrors] = useState<Record<number, string>>({});
+  const [newSubmitting, setNewSubmitting] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [total, setTotal] = useState(0);
   const [drawerId, setDrawerId] = useState<string | null>(null);
@@ -90,55 +112,116 @@ export function TelemarketingWorkbench() {
     { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
   ]);
 
-  const queryString = useMemo(() => {
+  useEffect(() => {
+    const handle = window.setTimeout(() => setQDebounced(qInput.trim()), 300);
+    return () => window.clearTimeout(handle);
+  }, [qInput]);
+
+  const listQueryBase = useMemo(() => {
     const p = new URLSearchParams();
-    if (q.trim()) p.set("q", q.trim());
+    if (qDebounced) p.set("q", qDebounced);
     if (status !== "ALL") p.set("status", status);
     if (source !== "ALL") p.set("source", source);
     if (assignee !== "ALL") p.set("assignee", assignee === "UNASSIGNED" ? "unassigned" : assignee);
     if (districtTag !== "ALL") p.set("tag", districtTag);
     p.set("view", view);
     p.set("sort", sortAsc ? "asc" : "desc");
+    p.set("sortBy", sortBy);
     p.set("take", String(PAGE_SIZE));
-    p.set("skip", String(skip));
     return p.toString();
-  }, [q, status, source, view, assignee, districtTag, sortAsc, skip]);
+  }, [qDebounced, status, source, view, assignee, districtTag, sortAsc, sortBy]);
 
-  const refresh = useCallback(
-    async (mode: "replace" | "append" = "replace") => {
-      if (mode === "append") setLoadingMore(true);
-      else setLoading(true);
+  const initialLoadedRef = useRef(false);
+
+  const loadContactsPage = useCallback(
+    async (skip: number, append: boolean) => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      const gen = ++fetchGenRef.current;
+
+      if (append) setLoadingMore(true);
+      else if (!initialLoadedRef.current) setLoading(true);
+      else setListFetching(true);
+
       try {
+        const params = new URLSearchParams(listQueryBase);
+        params.set("skip", String(skip));
         const [listRes, usersRes, tagsRes] = await Promise.all([
-          fetch(`/api/telemarketing/contacts?${queryString}`),
-          fetch("/api/leads/users"),
-          fetch("/api/telemarketing/tags"),
+          fetch(`/api/telemarketing/contacts?${params}`, { signal: ac.signal }),
+          fetch("/api/leads/users", { signal: ac.signal }),
+          fetch("/api/telemarketing/tags", { signal: ac.signal }),
         ]);
+        if (gen !== fetchGenRef.current) return;
+
         const list = await listRes.json();
         const usersData = await usersRes.json();
         const tagsData = await tagsRes.json();
         const nextItems: ContactRow[] = list.items || [];
-        setItems((prev) => (mode === "append" ? [...prev, ...nextItems] : nextItems));
+        const nextTotal = list.total || 0;
+
+        setItems((prev) => (append ? [...prev, ...nextItems] : nextItems));
         setStatusCounts(list.statusCounts || {});
-        setHasMore(Boolean(list.hasMore));
-        setTotal(list.total || 0);
+        setTotal(nextTotal);
+        setHasMore(
+          typeof list.hasMore === "boolean"
+            ? list.hasMore
+            : skip + nextItems.length < nextTotal
+        );
         setUsers(usersData.items || []);
         setTagOptions(tagsData.tags || []);
+        initialLoadedRef.current = true;
+        setInitialLoaded(true);
+      } catch (e) {
+        if (e instanceof DOMException && e.name === "AbortError") return;
+        throw e;
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (gen === fetchGenRef.current) {
+          setLoading(false);
+          setListFetching(false);
+          setLoadingMore(false);
+        }
       }
     },
-    [queryString]
+    [listQueryBase]
   );
 
   useEffect(() => {
-    setSkip(0);
-  }, [q, status, source, view, assignee, districtTag, sortAsc]);
+    setListSkip(0);
+    setItems([]);
+    initialLoadedRef.current = false;
+    setInitialLoaded(false);
+  }, [listQueryBase]);
 
   useEffect(() => {
-    void refresh(skip === 0 ? "replace" : "append");
-  }, [refresh, skip]);
+    void loadContactsPage(listSkip, listSkip > 0);
+  }, [listSkip, listQueryBase, loadContactsPage]);
+
+  function toggleSort(column: SortColumn) {
+    if (sortBy === column) setSortAsc((v) => !v);
+    else {
+      setSortBy(column);
+      setSortAsc(false);
+    }
+  }
+
+  const filtersActive =
+    Boolean(qDebounced) ||
+    status !== "ALL" ||
+    source !== "ALL" ||
+    assignee !== "ALL" ||
+    districtTag !== "ALL";
+
+  function emptyTableMessage() {
+    if (view === "archived") return "No archived contacts";
+    if (filtersActive) return "No contacts match your search";
+    return "No contacts yet";
+  }
+
+  const refreshList = useCallback(() => {
+    setListSkip(0);
+    void loadContactsPage(0, false);
+  }, [loadContactsPage]);
 
   const districtTags = useMemo(
     () => tagOptions.filter((t) => t.tag.includes("district") || t.tag === "area"),
@@ -162,11 +245,17 @@ export function TelemarketingWorkbench() {
     );
   }
 
-  async function patchStatus(id: string, callStatus: TelemarketingCallStatus) {
+  async function patchStatus(
+    id: string,
+    callStatus: TelemarketingCallStatus,
+    callbackDueAt?: string
+  ) {
+    const body: Record<string, unknown> = { callStatus };
+    if (callbackDueAt) body.callbackDueAt = callbackDueAt;
     const res = await fetch(`/api/telemarketing/contacts/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ callStatus }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -177,7 +266,17 @@ export function TelemarketingWorkbench() {
       toast(`Lead ${data.leadNumber} created`, "success");
     }
     setItems((rows) => rows.map((r) => (r.id === id ? { ...r, callStatus } : r)));
-    void refresh("replace");
+    refreshList();
+  }
+
+  function handleStatusPick(row: ContactRow, next: TelemarketingCallStatus) {
+    if (next === "CALL_BACK_REQUESTED") {
+      setCallbackPrompt({
+        contactId: row.id,
+        label: row.name || row.company || row.phone || "Contact",
+      });
+      return false;
+    }
   }
 
   async function patchAssignee(contactId: string, assignedToUserId: string | null) {
@@ -186,7 +285,7 @@ export function TelemarketingWorkbench() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ assignedToUserId }),
     });
-    void refresh("replace");
+    refreshList();
   }
 
   async function moveToLead(contactId: string) {
@@ -198,7 +297,7 @@ export function TelemarketingWorkbench() {
     });
     const data = await res.json();
     if (res.ok && data.leadNumber) toast(`Lead ${data.leadNumber} created`, "success");
-    void refresh("replace");
+    refreshList();
   }
 
   async function archiveContact(contactId: string) {
@@ -208,7 +307,8 @@ export function TelemarketingWorkbench() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ archive: true }),
     });
-    void refresh("replace");
+    toast("Contact archived", "success");
+    refreshList();
   }
 
   async function toggleExpand(parent: ContactRow) {
@@ -246,25 +346,60 @@ export function TelemarketingWorkbench() {
     const listRes = await fetch(`/api/telemarketing/contacts?primaryContactId=${primaryId}`);
     const listData = await listRes.json();
     setExpanded((e) => ({ ...e, [primaryId]: listData.items || [] }));
-    void refresh("replace");
+    refreshList();
     toast("Alternative contact added", "success");
   }
 
   async function submitNewContacts() {
-    const contacts = newContacts.map((c) => ({
-      ...c,
-      assignedToUserId: c.assignedToUserId || null,
-    }));
-    await fetch("/api/telemarketing/contacts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contacts }),
+    const localErrors: Record<number, string> = {};
+    newContacts.forEach((c, i) => {
+      if (!c.phone.trim() && !c.email.trim()) {
+        localErrors[i] = "Phone or email is required";
+      }
     });
-    setNewOpen(false);
-    setNewContacts([
-      { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
-    ]);
-    void refresh("replace");
+    setNewFormErrors(localErrors);
+    if (Object.keys(localErrors).length > 0) return;
+
+    setNewSubmitting(true);
+    try {
+      const contacts = newContacts.map((c) => ({
+        ...c,
+        assignedToUserId: c.assignedToUserId || null,
+      }));
+      const res = await fetch("/api/telemarketing/contacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contacts }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(
+          typeof data.error === "string" ? data.error : "Could not create contacts",
+          "error"
+        );
+        return;
+      }
+      const apiErrors = (data.errors || []) as { index: number; error: string }[];
+      if (apiErrors.length) {
+        const mapped: Record<number, string> = {};
+        for (const err of apiErrors) mapped[err.index] = err.error;
+        setNewFormErrors(mapped);
+        if (!data.createdIds?.length) return;
+      }
+      if (!data.createdIds?.length) {
+        toast("No contacts were created", "error");
+        return;
+      }
+      setNewOpen(false);
+      setNewFormErrors({});
+      setNewContacts([
+        { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
+      ]);
+      refreshList();
+      toast("Contact(s) added", "success");
+    } finally {
+      setNewSubmitting(false);
+    }
   }
 
   function onImportFile(file: File) {
@@ -302,7 +437,7 @@ export function TelemarketingWorkbench() {
     setImportOpen(false);
     setImportStep(1);
     setImportRows([]);
-    void refresh("replace");
+    refreshList();
   }
 
   const statusChips = [
@@ -328,7 +463,7 @@ export function TelemarketingWorkbench() {
     return (
       <tr
         key={row.id}
-        className={`border-t border-dark-primary/6 text-[12px] hover:bg-[#faf9f6] ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
+        className={`group border-t border-dark-primary/6 text-[12px] hover:bg-[#faf9f6] ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
         onClick={() => {
           if (!child) setDrawerId(row.id);
         }}
@@ -365,7 +500,7 @@ export function TelemarketingWorkbench() {
               <span className="inline-block w-4" />
             )}
             {child ? <span className="text-mid-green">↳</span> : null}
-            {index + 1 + skip}
+            {index + 1 + listSkip}
           </div>
         </td>
         <td className="max-w-[10rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -379,6 +514,7 @@ export function TelemarketingWorkbench() {
               <button
                 type="button"
                 title="Add alternative contact"
+                aria-label="Add alternative contact"
                 className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-mid-green/25 bg-[#e8f5e6] text-mid-green hover:bg-[#d4e7d0]"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -425,6 +561,7 @@ export function TelemarketingWorkbench() {
         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
           <CallStatusDropdown
             status={row.callStatus}
+            onBeforeChange={(s) => handleStatusPick(row, s)}
             onChange={(s) => patchStatus(row.id, s)}
             onMoveToLead={() => moveToLead(row.id)}
           />
@@ -446,15 +583,22 @@ export function TelemarketingWorkbench() {
         <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-mid-green">
           {format(new Date(row.createdAt), "d MMM yyyy")}
         </td>
-        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+        <td
+          className="sticky right-0 bg-white px-2 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)] group-hover:bg-[#faf9f6]"
+          onClick={(e) => e.stopPropagation()}
+        >
           <div className="flex items-center gap-1">
-            <IconAction title="Open timeline" onClick={() => setDrawerId(row.id)} tone="green">
+            <IconAction
+              label="Open timeline"
+              onClick={() => setDrawerId(row.id)}
+              tone="green"
+            >
               <Clock className="h-4 w-4" />
             </IconAction>
-            <IconAction title="Mark as lead" onClick={() => moveToLead(row.id)} tone="green-fill">
+            <IconAction label="Mark as lead" onClick={() => moveToLead(row.id)} tone="green-fill">
               <UserRound className="h-4 w-4" />
             </IconAction>
-            <IconAction title="Archive contact" onClick={() => archiveContact(row.id)} tone="danger">
+            <IconAction label="Archive contact" onClick={() => archiveContact(row.id)} tone="danger">
               <Archive className="h-4 w-4" />
             </IconAction>
           </div>
@@ -497,10 +641,16 @@ export function TelemarketingWorkbench() {
             <input
               className={`${fieldClass} w-full pl-9`}
               placeholder="Search contacts"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+              aria-busy={listFetching}
             />
           </div>
+          {listFetching ? (
+            <span className="text-[11px] text-mid-green" aria-live="polite">
+              Updating…
+            </span>
+          ) : null}
           <select className={fieldClass} value={view} onChange={(e) => setView(e.target.value as "active" | "archived")}>
             <option value="active">View: Active</option>
             <option value="archived">View: Archived</option>
@@ -564,47 +714,47 @@ export function TelemarketingWorkbench() {
             );
           })}
         </div>
-        <p className="mt-2 text-[11px] text-mid-green">
-          Showing {items.length} of {total} contacts
-        </p>
+        {initialLoaded ? (
+          <p className="mt-2 text-[11px] text-mid-green">
+            Showing {items.length} of {total} contacts
+          </p>
+        ) : null}
       </WorkbenchCard>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-dark-primary/10 bg-white shadow-sm">
-        <table className="w-full min-w-[1080px] text-left">
+      <div className="min-h-0 flex-1 overflow-x-auto rounded-lg border border-dark-primary/10 bg-white shadow-sm">
+        <table className="w-full min-w-[1080px] table-fixed text-left">
           <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#faf9f6] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
             <tr>
               <th className="w-8 px-2 py-2" />
-              <th className="px-2 py-2">S.No.</th>
-              <th className="px-2 py-2">Company</th>
-              <th className="px-2 py-2">Name</th>
-              <th className="px-2 py-2">Phone</th>
-              <th className="px-2 py-2">Email</th>
-              <th className="px-2 py-2">Role</th>
-              <th className="px-2 py-2">Call status</th>
-              <th className="px-2 py-2">Assigned to</th>
-              <th className="px-2 py-2">
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 hover:text-dark-primary"
-                  onClick={() => setSortAsc((v) => !v)}
-                >
-                  Added {sortAsc ? "↑" : "↓"}
-                </button>
+              <th className="w-12 px-2 py-2">S.No.</th>
+              <th className="w-[9rem] px-2 py-2">
+                <SortHeader label="Company" active={sortBy === "company"} asc={sortAsc} onClick={() => toggleSort("company")} />
               </th>
-              <th className="px-2 py-2">Actions</th>
+              <th className="w-[8rem] px-2 py-2">
+                <SortHeader label="Name" active={sortBy === "name"} asc={sortAsc} onClick={() => toggleSort("name")} />
+              </th>
+              <th className="w-[7rem] px-2 py-2">Phone</th>
+              <th className="w-[8rem] px-2 py-2">Email</th>
+              <th className="w-[6rem] px-2 py-2">Role</th>
+              <th className="w-[8.5rem] px-2 py-2">
+                <SortHeader label="Call status" active={sortBy === "callStatus"} asc={sortAsc} onClick={() => toggleSort("callStatus")} />
+              </th>
+              <th className="w-[7rem] px-2 py-2">Assigned to</th>
+              <th className="w-[5.5rem] px-2 py-2">
+                <SortHeader label="Added" active={sortBy === "createdAt"} asc={sortAsc} onClick={() => toggleSort("createdAt")} />
+              </th>
+              <th className="sticky right-0 z-20 w-[7.5rem] bg-[#faf9f6] px-2 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.04)]">
+                Actions
+              </th>
             </tr>
           </thead>
           <tbody>
             {loading && items.length === 0 ? (
+              <TableSkeletonRows />
+            ) : !loading && items.length === 0 ? (
               <tr>
                 <td colSpan={11} className="px-3 py-10 text-center text-sm text-mid-green">
-                  Loading…
-                </td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td colSpan={11} className="px-3 py-10 text-center text-sm text-mid-green">
-                  No contacts yet.
+                  {emptyTableMessage()}
                 </td>
               </tr>
             ) : (
@@ -692,17 +842,29 @@ export function TelemarketingWorkbench() {
         </table>
       </div>
 
-      {hasMore ? (
+      {initialLoaded && hasMore ? (
         <div className="flex justify-center">
           <button
             type="button"
             disabled={loadingMore}
-            onClick={() => setSkip((s) => s + PAGE_SIZE)}
+            onClick={() => setListSkip((s) => s + PAGE_SIZE)}
             className="rounded-md border border-dark-primary/15 bg-white px-4 py-2 text-sm font-medium text-dark-primary hover:bg-[#faf9f6] disabled:opacity-50"
           >
-            {loadingMore ? "Loading…" : "Load more"}
+            {loadingMore ? "Loading…" : `Load more (${items.length} of ${total} loaded)`}
           </button>
         </div>
+      ) : null}
+
+      {callbackPrompt ? (
+        <CallbackDueModal
+          open
+          contactLabel={callbackPrompt.label}
+          onClose={() => setCallbackPrompt(null)}
+          onConfirm={async (dueAtIso) => {
+            await patchStatus(callbackPrompt.contactId, "CALL_BACK_REQUESTED", dueAtIso);
+            setCallbackPrompt(null);
+          }}
+        />
       ) : null}
 
       {drawerId ? (
@@ -710,29 +872,40 @@ export function TelemarketingWorkbench() {
           contactId={drawerId}
           users={users}
           onClose={() => setDrawerId(null)}
-          onChanged={() => void refresh("replace")}
+          onChanged={() => refreshList()}
         />
       ) : null}
 
       {newOpen ? (
         <ModalShell onClose={() => setNewOpen(false)} title="New contact(s)">
-          <p className="text-sm text-mid-green">Email or phone required per contact.</p>
+          <p className="text-sm text-mid-green">Phone or email is required for each contact.</p>
           {newContacts.map((c, i) => (
             <div key={i} className="mt-3 space-y-2 rounded-lg border border-dark-primary/8 p-3">
               <p className="text-xs font-medium text-mid-green">Contact {i + 1}</p>
+              {newFormErrors[i] ? (
+                <p className="text-sm text-rose-600">{newFormErrors[i]}</p>
+              ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
                 {(["name", "company", "role", "phone", "email"] as const).map((field) => (
-                  <input
-                    key={field}
-                    className={fieldClass}
-                    placeholder={field}
-                    value={c[field]}
-                    onChange={(e) => {
-                      const next = [...newContacts];
-                      next[i] = { ...next[i], [field]: e.target.value };
-                      setNewContacts(next);
-                    }}
-                  />
+                  <label key={field} className="flex flex-col gap-1 text-xs text-mid-green">
+                    {NEW_CONTACT_FIELD_LABELS[field]}
+                    <input
+                      className={fieldClass}
+                      value={c[field]}
+                      onChange={(e) => {
+                        const next = [...newContacts];
+                        next[i] = { ...next[i], [field]: e.target.value };
+                        setNewContacts(next);
+                        if (newFormErrors[i]) {
+                          setNewFormErrors((errs) => {
+                            const copy = { ...errs };
+                            delete copy[i];
+                            return copy;
+                          });
+                        }
+                      }}
+                    />
+                  </label>
                 ))}
                 <select
                   className={fieldClass}
@@ -771,10 +944,11 @@ export function TelemarketingWorkbench() {
             </button>
             <button
               type="button"
+              disabled={newSubmitting}
               onClick={() => void submitNewContacts()}
-              className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white"
+              className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
-              Add contact(s)
+              {newSubmitting ? "Adding…" : "Add contact(s)"}
             </button>
           </div>
         </ModalShell>
@@ -848,14 +1022,51 @@ export function TelemarketingWorkbench() {
   );
 }
 
+function SortHeader({
+  label,
+  active,
+  asc,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  asc: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-0.5 hover:text-dark-primary ${active ? "text-dark-primary" : ""}`}
+      onClick={onClick}
+    >
+      {label}
+      {active ? (asc ? "↑" : "↓") : ""}
+    </button>
+  );
+}
+
+function TableSkeletonRows() {
+  return (
+    <>
+      {Array.from({ length: 8 }).map((_, i) => (
+        <tr key={i}>
+          <td colSpan={11} className="px-3 py-2">
+            <div className="h-9 animate-pulse rounded-md bg-dark-secondary/10" />
+          </td>
+        </tr>
+      ))}
+    </>
+  );
+}
+
 function IconAction({
   children,
-  title,
+  label,
   onClick,
   tone,
 }: {
   children: ReactNode;
-  title: string;
+  label: string;
   onClick: () => void;
   tone: "green" | "green-fill" | "danger";
 }) {
@@ -868,7 +1079,8 @@ function IconAction({
   return (
     <button
       type="button"
-      title={title}
+      title={label}
+      aria-label={label}
       onClick={onClick}
       className={`inline-flex h-8 w-8 items-center justify-center rounded-md ${cls}`}
     >

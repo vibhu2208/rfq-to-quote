@@ -13,6 +13,11 @@ import {
   type ContactFieldKey,
 } from "@/lib/telemarketing/contact-update";
 import { validateEmailInput, validatePhoneInput } from "@/lib/telemarketing/validation";
+import {
+  formatFollowUpTimelineBody,
+  reminderNotesForCallback,
+  validateFutureDateTime,
+} from "@/lib/telemarketing/datetime";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -109,6 +114,7 @@ const patchSchema = z.object({
   archive: z.boolean().optional(),
   moveToLead: z.boolean().optional(),
   note: z.string().min(1).max(2000).optional(),
+  callbackDueAt: z.string().datetime().optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: Params) {
@@ -233,6 +239,19 @@ export async function PATCH(req: NextRequest, { params }: Params) {
 
   if (parsed.data.callStatus !== undefined && parsed.data.callStatus !== existing.callStatus) {
     const nextStatus = parsed.data.callStatus;
+    if (nextStatus === "CALL_BACK_REQUESTED") {
+      if (!parsed.data.callbackDueAt) {
+        return NextResponse.json(
+          { error: "Callback date and time is required for Call Back Requested" },
+          { status: 400 }
+        );
+      }
+      const dueAt = new Date(parsed.data.callbackDueAt);
+      const dueErr = validateFutureDateTime(dueAt);
+      if (dueErr) {
+        return NextResponse.json({ error: dueErr }, { status: 400 });
+      }
+    }
     if (nextStatus === "MOVE_TO_LEAD") {
       const rfq = await moveContactToLead({
         contact: existing,
@@ -252,6 +271,27 @@ export async function PATCH(req: NextRequest, { params }: Params) {
       body: buildStatusChangeBody(existing.callStatus, nextStatus),
       actorId,
     });
+
+    if (nextStatus === "CALL_BACK_REQUESTED" && parsed.data.callbackDueAt) {
+      const dueAt = new Date(parsed.data.callbackDueAt);
+      await prisma.telemarketingReminder.create({
+        data: {
+          contactId: id,
+          type: "CALL",
+          dueAt,
+          notes: reminderNotesForCallback(),
+          assignedToUserId: existing.assignedToUserId,
+          createdById: actorId || null,
+        },
+      });
+      await logTelemarketingTimeline({
+        contactId: id,
+        type: "REMINDER_CREATED",
+        title: "Callback scheduled",
+        body: formatFollowUpTimelineBody(dueAt),
+        actorId,
+      });
+    }
   }
 
   if (parsed.data.archive === true) {

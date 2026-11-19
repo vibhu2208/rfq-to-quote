@@ -372,7 +372,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
       <div className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
         <button
           type="button"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background lg:hidden"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background xl:hidden"
           onClick={() => setMobileOpen(true)}
           aria-label="Open menu"
         >
@@ -386,7 +386,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto lg:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto xl:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {desktopLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
@@ -441,7 +441,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
       </div>
 
       {mobileOpen ? (
-        <div className="fixed inset-0 z-50 lg:hidden">
+        <div className="fixed inset-0 z-50 xl:hidden">
           <button
             type="button"
             aria-label="Close menu"

@@ -2,7 +2,8 @@
 
 import { format } from "date-fns";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import {
   Building2,
   Mail,
@@ -28,6 +29,12 @@ import {
 } from "@/lib/telemarketing/constants";
 import { useToast } from "@/components/app-toast";
 import type { TelemarketingCallStatus } from "@prisma/client";
+import { CallbackDueModal } from "@/components/telemarketing/callback-due-modal";
+import {
+  defaultLogCallStatus,
+  formatTelemarketingInstant,
+  validateFutureDateTime,
+} from "@/lib/telemarketing/datetime";
 
 type UserRef = { id: string; name: string; email: string };
 
@@ -101,6 +108,9 @@ export function TelemarketingContactDrawer({
   const { toast } = useToast();
   const [contact, setContact] = useState<ContactDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadGenRef = useRef(0);
+  const hasContactRef = useRef(false);
   const [tab, setTab] = useState<Tab>("timeline");
   const [logOpen, setLogOpen] = useState(false);
   const [reminderOpen, setReminderOpen] = useState(false);
@@ -118,17 +128,28 @@ export function TelemarketingContactDrawer({
   });
   const [reminderNotes, setReminderNotes] = useState("");
   const [saving, setSaving] = useState(false);
+  const [noteSaving, setNoteSaving] = useState(false);
+  const [logError, setLogError] = useState("");
+  const [callbackOpen, setCallbackOpen] = useState(false);
   const [editField, setEditField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const gen = ++loadGenRef.current;
+    if (hasContactRef.current) setRefreshing(true);
+    else setLoading(true);
     try {
       const res = await fetch(`/api/telemarketing/contacts/${contactId}`);
       const data = await res.json();
-      setContact(data.contact || null);
+      if (gen !== loadGenRef.current) return;
+      const next = data.contact || null;
+      setContact(next);
+      hasContactRef.current = Boolean(next);
     } finally {
-      setLoading(false);
+      if (gen === loadGenRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [contactId]);
 
@@ -166,8 +187,17 @@ export function TelemarketingContactDrawer({
     await patch({ assignedToUserId: userId || null });
   }
 
-  async function patchStatus(callStatus: TelemarketingCallStatus) {
-    await patch({ callStatus });
+  async function patchStatus(callStatus: TelemarketingCallStatus, callbackDueAt?: string) {
+    const body: Record<string, unknown> = { callStatus };
+    if (callbackDueAt) body.callbackDueAt = callbackDueAt;
+    await patch(body);
+  }
+
+  function handleDrawerStatusPick(next: TelemarketingCallStatus) {
+    if (next === "CALL_BACK_REQUESTED") {
+      setCallbackOpen(true);
+      return false;
+    }
   }
 
   async function moveToLead() {
@@ -193,17 +223,45 @@ export function TelemarketingContactDrawer({
   }
 
   async function addNote() {
-    if (!noteDraft.trim()) return;
-    await patch({ note: noteDraft.trim() });
+    const body = noteDraft.trim();
+    if (!body) return;
+    setNoteSaving(true);
+    const optimistic = {
+      id: `tmp-${Date.now()}`,
+      type: "NOTE",
+      title: "Note",
+      body,
+      createdAt: new Date().toISOString(),
+      actor: null,
+    };
+    setContact((c) => (c ? { ...c, timeline: [optimistic, ...c.timeline] } : c));
     setNoteDraft("");
+    try {
+      await patch({ note: body });
+    } catch {
+      await load();
+    } finally {
+      setNoteSaving(false);
+    }
   }
 
   async function submitLogCall() {
-    if (!logNote.trim()) return;
+    if (!logNote.trim()) {
+      setLogError("Call update is required");
+      return;
+    }
+    const followUpAt = parseLocalDateTimeValue(logFollowUp);
+    if (followUpAt) {
+      const err = validateFutureDateTime(followUpAt);
+      if (err) {
+        setLogError(err);
+        return;
+      }
+    }
+    setLogError("");
     setSaving(true);
     try {
-      const followUpAt = parseLocalDateTimeValue(logFollowUp);
-      await fetch(`/api/telemarketing/contacts/${contactId}/calls`, {
+      const res = await fetch(`/api/telemarketing/contacts/${contactId}/calls`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -212,6 +270,13 @@ export function TelemarketingContactDrawer({
           followUpAt: followUpAt ? followUpAt.toISOString() : null,
         }),
       });
+      const data = await res.json();
+      if (!res.ok) {
+        const msg = typeof data.error === "string" ? data.error : "Could not log call";
+        setLogError(msg);
+        toast(msg, "error");
+        return;
+      }
       setLogOpen(false);
       setLogNote("");
       setLogFollowUp("");
@@ -220,6 +285,16 @@ export function TelemarketingContactDrawer({
     } finally {
       setSaving(false);
     }
+  }
+
+  function openLogCallModal() {
+    if (contact) {
+      setLogStatus(
+        defaultLogCallStatus(contact.callStatus) as (typeof LOG_CALL_STATUSES)[number]
+      );
+    }
+    setLogError("");
+    setLogOpen(true);
   }
 
   async function submitReminder() {
@@ -274,15 +349,27 @@ export function TelemarketingContactDrawer({
         <div className="border-b border-dark-primary/10 px-5 py-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 flex-1">
-              <span className="inline-flex rounded-md border border-dark-primary/10 bg-white px-2.5 py-1 text-sm font-medium text-dark-primary">
-                {contact?.phone?.trim() || "No phone"}
+              <div className="flex items-center gap-2">
+                <h2 className="truncate text-lg font-semibold text-dark-primary">
+                  {contact?.name?.trim() || contact?.company?.trim() || "Contact"}
+                </h2>
+                {refreshing ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-mid-green" aria-label="Refreshing" />
+                ) : null}
+              </div>
+              {contact?.company?.trim() && contact?.name?.trim() ? (
+                <p className="truncate text-sm text-mid-green">{contact.company}</p>
+              ) : null}
+              <span className="mt-2 inline-flex max-w-full truncate rounded-md border border-dark-primary/10 bg-white px-2.5 py-1 text-sm font-medium text-dark-primary">
+                {contact?.phone?.trim() || contact?.email?.trim() || "No phone"}
               </span>
               <p className="mt-2 text-[11px] text-mid-green">
-                Added {contact ? format(new Date(contact.createdAt), "d MMM yyyy") : "…"}
+                Added {contact ? formatTelemarketingInstant(contact.createdAt) : "…"}
                 {contact ? (
                   <>
                     {" "}
-                    | Last updated {format(new Date(contact.updatedAt), "d MMM yyyy, h:mm a")}
+                    | Last updated{" "}
+                    {formatTelemarketingInstant(contact.updatedAt, { withTime: true })}
                   </>
                 ) : null}
               </p>
@@ -298,8 +385,10 @@ export function TelemarketingContactDrawer({
           </div>
         </div>
 
-        {loading || !contact ? (
+        {loading && !contact ? (
           <div className="px-5 py-8 text-sm text-mid-green">Loading…</div>
+        ) : !contact ? (
+          <div className="px-5 py-8 text-sm text-mid-green">Contact not found.</div>
         ) : (
           <>
             <div className="grid grid-cols-2 gap-3 border-b border-dark-primary/10 bg-[#f3f0e8] px-5 py-3 text-xs sm:grid-cols-4">
@@ -309,6 +398,7 @@ export function TelemarketingContactDrawer({
                 value={
                   <CallStatusDropdown
                     status={contact.callStatus}
+                    onBeforeChange={handleDrawerStatusPick}
                     onChange={patchStatus}
                     onMoveToLead={moveToLead}
                   />
@@ -482,7 +572,7 @@ export function TelemarketingContactDrawer({
                     <h3 className="text-lg font-semibold text-dark-primary">Calls</h3>
                     <button
                       type="button"
-                      onClick={() => setLogOpen(true)}
+                      onClick={openLogCallModal}
                       className="inline-flex items-center gap-1 rounded-md bg-[#2f4a2b] px-3 py-1.5 text-xs font-medium text-white"
                     >
                       <Phone className="h-3.5 w-3.5" /> Log
@@ -511,14 +601,14 @@ export function TelemarketingContactDrawer({
                                   status={c.status as ContactDetail["callStatus"]}
                                   compact
                                 />
-                                <p className="mt-1 text-xs text-mid-green">{c.note}</p>
+                                <p className="mt-1 break-words text-xs text-mid-green">{c.note}</p>
                               </td>
                               <td className="px-3 py-2 text-xs text-mid-green">
-                                {format(new Date(c.createdAt), "d MMM yyyy, h:mm a")}
+                                {formatTelemarketingInstant(c.createdAt, { withTime: true })}
                               </td>
                               <td className="px-3 py-2 text-xs text-mid-green">
                                 {c.followUpAt
-                                  ? format(new Date(c.followUpAt), "d MMM yyyy, h:mm a")
+                                  ? formatTelemarketingInstant(c.followUpAt, { withTime: true })
                                   : "—"}
                               </td>
                             </tr>
@@ -558,9 +648,9 @@ export function TelemarketingContactDrawer({
                             <div>
                               <p className="font-medium text-dark-primary">{r.type}</p>
                               <p className="text-xs text-mid-green">
-                                Due {format(new Date(r.dueAt), "d MMM yyyy, h:mm a")}
+                                Due {formatTelemarketingInstant(r.dueAt, { withTime: true })}
                               </p>
-                              <p className="mt-1 text-mid-green">{r.notes}</p>
+                              <p className="mt-1 break-words text-mid-green">{r.notes}</p>
                             </div>
                             {r.status === "PENDING" ? (
                               <button
@@ -595,11 +685,11 @@ export function TelemarketingContactDrawer({
                     />
                     <button
                       type="button"
-                      disabled={!noteDraft.trim()}
+                      disabled={!noteDraft.trim() || noteSaving}
                       onClick={() => void addNote()}
                       className="mt-2 rounded-md bg-[#2f4a2b] px-3 py-1 text-xs text-white disabled:opacity-50"
                     >
-                      Save note
+                      {noteSaving ? "Saving…" : "Save note"}
                     </button>
                   </div>
                   <TelemarketingTimelineList events={contact.timeline} />
@@ -699,13 +789,27 @@ export function TelemarketingContactDrawer({
               <button
                 type="button"
                 disabled={!logNote.trim() || saving}
+                title={!logNote.trim() ? "Call update is required" : undefined}
                 onClick={() => void submitLogCall()}
                 className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
               >
-                Log call
+                {saving ? "Logging…" : "Log call"}
               </button>
+              {logError ? <p className="mt-2 text-sm text-rose-600">{logError}</p> : null}
             </div>
           </Modal>
+        ) : null}
+
+        {callbackOpen ? (
+          <CallbackDueModal
+            open
+            contactLabel={contact?.name || contact?.company || "Contact"}
+            onClose={() => setCallbackOpen(false)}
+            onConfirm={async (dueAtIso) => {
+              await patchStatus("CALL_BACK_REQUESTED", dueAtIso);
+              setCallbackOpen(false);
+            }}
+          />
         ) : null}
 
         {reminderOpen ? (

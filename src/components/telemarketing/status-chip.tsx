@@ -10,6 +10,15 @@ const STATUS_CLASS: Record<TelemarketingCallStatus, string> = {
   MOVE_TO_LEAD: "bg-[#ccfcc6] text-[#1a3d18] font-semibold",
 };
 
+export const STATUS_DOT_CLASS: Record<TelemarketingCallStatus, string> = {
+  NO_ACTION: "bg-stone-400",
+  CONNECTED: "bg-emerald-600",
+  CALL_BACK_REQUESTED: "bg-amber-500",
+  COULDNT_CONNECT: "bg-orange-400",
+  NOT_INTERESTED: "bg-rose-500",
+  MOVE_TO_LEAD: "bg-[#2f4a2b]",
+};
+
 export function CallStatusPill({
   status,
   className = "",

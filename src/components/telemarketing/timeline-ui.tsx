@@ -1,7 +1,9 @@
 "use client";
 
-import { format, isToday, isYesterday } from "date-fns";
+import { format } from "date-fns";
 import type { TelemarketingTimelineType } from "@prisma/client";
+import { formatTelemarketingInstant } from "@/lib/telemarketing/datetime";
+import { QUOTE_TIME_ZONE } from "@/lib/quote-format";
 
 type TimelineRow = {
   id: string;
@@ -31,9 +33,27 @@ function badgeLabel(type: string) {
 }
 
 function dayHeading(date: Date) {
-  if (isToday(date)) return "Today";
-  if (isYesterday(date)) return "Yesterday";
-  return format(date, "EEEE, d MMM yyyy");
+  const inIst = new Date(
+    date.toLocaleString("en-US", { timeZone: QUOTE_TIME_ZONE })
+  );
+  const nowIst = new Date(new Date().toLocaleString("en-US", { timeZone: QUOTE_TIME_ZONE }));
+  const yesterday = new Date(nowIst);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (
+    inIst.getFullYear() === nowIst.getFullYear() &&
+    inIst.getMonth() === nowIst.getMonth() &&
+    inIst.getDate() === nowIst.getDate()
+  ) {
+    return "Today";
+  }
+  if (
+    inIst.getFullYear() === yesterday.getFullYear() &&
+    inIst.getMonth() === yesterday.getMonth() &&
+    inIst.getDate() === yesterday.getDate()
+  ) {
+    return "Yesterday";
+  }
+  return formatTelemarketingInstant(date);
 }
 
 export function groupTimelineByDay(events: TimelineRow[]) {
@@ -89,13 +109,15 @@ export function TelemarketingTimelineList({ events }: { events: TimelineRow[] })
                       {badgeLabel(ev.type)}
                     </span>
                     <time className="text-[11px] text-mid-green">
-                      {format(new Date(ev.createdAt), "d MMM yyyy, h:mm a")}
+                      {formatTelemarketingInstant(ev.createdAt, { withTime: true })}
                     </time>
                   </div>
                   {ev.body ? (
-                    <p className="mt-2 text-[13px] text-dark-primary">{ev.body}</p>
+                    <p className="mt-2 whitespace-pre-wrap break-words text-[13px] text-dark-primary">
+                      {ev.body}
+                    </p>
                   ) : ev.title ? (
-                    <p className="mt-2 text-[13px] text-dark-primary">{ev.title}</p>
+                    <p className="mt-2 break-words text-[13px] text-dark-primary">{ev.title}</p>
                   ) : null}
                   {ev.actor ? (
                     <p className="mt-1.5 text-[11px] text-mid-green">
