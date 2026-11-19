@@ -3,14 +3,27 @@
 import Papa from "papaparse";
 import { format } from "date-fns";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Clock, Plus, Search, Upload, UserRound, X } from "lucide-react";
+import {
+  Archive,
+  ChevronDown,
+  ChevronRight,
+  Clock,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+  UserRound,
+  X,
+} from "lucide-react";
 import { TelemarketingContactDrawer } from "@/components/telemarketing/telemarketing-contact-drawer";
-import { CallStatusPill } from "@/components/telemarketing/status-chip";
+import { CallStatusDropdown } from "@/components/telemarketing/call-status-dropdown";
+import { InlineEditableCell } from "@/components/telemarketing/inline-editable-cell";
 import {
   TELEMARKETING_CALL_STATUSES,
   TELEMARKETING_CALL_STATUS_LABELS,
 } from "@/lib/telemarketing/constants";
 import type { TelemarketingCallStatus } from "@prisma/client";
+import { useToast } from "@/components/app-toast";
 
 type UserRef = { id: string; name: string; email: string };
 
@@ -22,35 +35,44 @@ type ContactRow = {
   phone: string;
   email: string;
   source: string;
+  tags: string[];
   callStatus: TelemarketingCallStatus;
   createdAt: string;
+  updatedAt: string;
   assignedTo: UserRef | null;
   reminders: Array<{ id: string; type: string; dueAt: string; notes: string }>;
+  _count?: { alternatives: number };
 };
 
-type DueReminder = {
-  id: string;
-  type: string;
-  dueAt: string;
-  notes: string;
-  contact: { id: string; name: string; company: string; phone: string };
-  assignedTo: UserRef | null;
-};
+type TagOption = { tag: string; count: number };
 
 const fieldClass =
-  "h-9 rounded-full border-0 bg-dark-secondary/[0.05] px-3 text-[13px] text-dark-primary outline-none focus:bg-white focus:ring-1 focus:ring-mid-green/30";
+  "h-9 rounded-md border border-dark-primary/10 bg-white px-3 text-[13px] text-dark-primary outline-none focus:border-mid-green/50 focus:ring-1 focus:ring-mid-green/20";
+
+const PAGE_SIZE = 50;
 
 export function TelemarketingWorkbench() {
+  const { toast } = useToast();
   const [items, setItems] = useState<ContactRow[]>([]);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
-  const [dueReminders, setDueReminders] = useState<DueReminder[]>([]);
+  const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
   const [users, setUsers] = useState<UserRef[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [q, setQ] = useState("");
   const [status, setStatus] = useState<string>("ALL");
   const [source, setSource] = useState<string>("ALL");
   const [view, setView] = useState<"active" | "archived">("active");
+  const [assignee, setAssignee] = useState("ALL");
+  const [districtTag, setDistrictTag] = useState("ALL");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [skip, setSkip] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
+  const [total, setTotal] = useState(0);
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, ContactRow[]>>({});
+  const [altDraft, setAltDraft] = useState<Record<string, { name: string; phone: string; email: string; role: string }>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [importStep, setImportStep] = useState<1 | 2 | 3>(1);
@@ -73,31 +95,90 @@ export function TelemarketingWorkbench() {
     if (q.trim()) p.set("q", q.trim());
     if (status !== "ALL") p.set("status", status);
     if (source !== "ALL") p.set("source", source);
+    if (assignee !== "ALL") p.set("assignee", assignee === "UNASSIGNED" ? "unassigned" : assignee);
+    if (districtTag !== "ALL") p.set("tag", districtTag);
     p.set("view", view);
+    p.set("sort", sortAsc ? "asc" : "desc");
+    p.set("take", String(PAGE_SIZE));
+    p.set("skip", String(skip));
     return p.toString();
-  }, [q, status, source, view]);
+  }, [q, status, source, view, assignee, districtTag, sortAsc, skip]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [listRes, usersRes] = await Promise.all([
-        fetch(`/api/telemarketing/contacts?${queryString}`),
-        fetch("/api/leads/users"),
-      ]);
-      const list = await listRes.json();
-      const usersData = await usersRes.json();
-      setItems(list.items || []);
-      setStatusCounts(list.statusCounts || {});
-      setDueReminders(list.dueReminders || []);
-      setUsers(usersData.items || []);
-    } finally {
-      setLoading(false);
-    }
-  }, [queryString]);
+  const refresh = useCallback(
+    async (mode: "replace" | "append" = "replace") => {
+      if (mode === "append") setLoadingMore(true);
+      else setLoading(true);
+      try {
+        const [listRes, usersRes, tagsRes] = await Promise.all([
+          fetch(`/api/telemarketing/contacts?${queryString}`),
+          fetch("/api/leads/users"),
+          fetch("/api/telemarketing/tags"),
+        ]);
+        const list = await listRes.json();
+        const usersData = await usersRes.json();
+        const tagsData = await tagsRes.json();
+        const nextItems: ContactRow[] = list.items || [];
+        setItems((prev) => (mode === "append" ? [...prev, ...nextItems] : nextItems));
+        setStatusCounts(list.statusCounts || {});
+        setHasMore(Boolean(list.hasMore));
+        setTotal(list.total || 0);
+        setUsers(usersData.items || []);
+        setTagOptions(tagsData.tags || []);
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [queryString]
+  );
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    setSkip(0);
+  }, [q, status, source, view, assignee, districtTag, sortAsc]);
+
+  useEffect(() => {
+    void refresh(skip === 0 ? "replace" : "append");
+  }, [refresh, skip]);
+
+  const districtTags = useMemo(
+    () => tagOptions.filter((t) => t.tag.includes("district") || t.tag === "area"),
+    [tagOptions]
+  );
+
+  async function patchField(id: string, field: string, value: string) {
+    const res = await fetch(`/api/telemarketing/contacts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [field]: value }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = typeof data.error === "string" ? data.error : "Update failed";
+      toast(msg, "error");
+      throw new Error(msg);
+    }
+    setItems((rows) =>
+      rows.map((r) => (r.id === id ? { ...r, [field]: value.trim() } : r))
+    );
+  }
+
+  async function patchStatus(id: string, callStatus: TelemarketingCallStatus) {
+    const res = await fetch(`/api/telemarketing/contacts/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callStatus }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast("Could not update status", "error");
+      return;
+    }
+    if (data.leadNumber) {
+      toast(`Lead ${data.leadNumber} created`, "success");
+    }
+    setItems((rows) => rows.map((r) => (r.id === id ? { ...r, callStatus } : r)));
+    void refresh("replace");
+  }
 
   async function patchAssignee(contactId: string, assignedToUserId: string | null) {
     await fetch(`/api/telemarketing/contacts/${contactId}`, {
@@ -105,16 +186,68 @@ export function TelemarketingWorkbench() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ assignedToUserId }),
     });
-    void refresh();
+    void refresh("replace");
   }
 
   async function moveToLead(contactId: string) {
-    await fetch(`/api/telemarketing/contacts/${contactId}`, {
+    if (!window.confirm("Move this contact to Leads?")) return;
+    const res = await fetch(`/api/telemarketing/contacts/${contactId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ moveToLead: true }),
     });
-    void refresh();
+    const data = await res.json();
+    if (res.ok && data.leadNumber) toast(`Lead ${data.leadNumber} created`, "success");
+    void refresh("replace");
+  }
+
+  async function archiveContact(contactId: string) {
+    if (!window.confirm("Archive this contact?")) return;
+    await fetch(`/api/telemarketing/contacts/${contactId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archive: true }),
+    });
+    void refresh("replace");
+  }
+
+  async function toggleExpand(parent: ContactRow) {
+    if (expanded[parent.id]) {
+      setExpanded((e) => {
+        const next = { ...e };
+        delete next[parent.id];
+        return next;
+      });
+      return;
+    }
+    const res = await fetch(`/api/telemarketing/contacts?primaryContactId=${parent.id}`);
+    const data = await res.json();
+    setExpanded((e) => ({ ...e, [parent.id]: data.items || [] }));
+  }
+
+  async function saveAlternative(primaryId: string) {
+    const draft = altDraft[primaryId];
+    if (!draft) return;
+    const res = await fetch(`/api/telemarketing/contacts/${primaryId}/alternatives`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      toast(typeof data.error === "string" ? data.error : "Could not add contact", "error");
+      return;
+    }
+    setAltDraft((d) => {
+      const next = { ...d };
+      delete next[primaryId];
+      return next;
+    });
+    const listRes = await fetch(`/api/telemarketing/contacts?primaryContactId=${primaryId}`);
+    const listData = await listRes.json();
+    setExpanded((e) => ({ ...e, [primaryId]: listData.items || [] }));
+    void refresh("replace");
+    toast("Alternative contact added", "success");
   }
 
   async function submitNewContacts() {
@@ -131,7 +264,7 @@ export function TelemarketingWorkbench() {
     setNewContacts([
       { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
     ]);
-    void refresh();
+    void refresh("replace");
   }
 
   function onImportFile(file: File) {
@@ -169,7 +302,7 @@ export function TelemarketingWorkbench() {
     setImportOpen(false);
     setImportStep(1);
     setImportRows([]);
-    void refresh();
+    void refresh("replace");
   }
 
   const statusChips = [
@@ -180,8 +313,158 @@ export function TelemarketingWorkbench() {
     })),
   ];
 
+  function toggleSelect(id: string) {
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function renderRow(row: ContactRow, index: number, opts?: { child?: boolean }) {
+    const child = opts?.child;
+    const altCount = row._count?.alternatives ?? 0;
+    return (
+      <tr
+        key={row.id}
+        className={`border-t border-dark-primary/6 text-[12px] hover:bg-[#faf9f6] ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
+        onClick={() => {
+          if (!child) setDrawerId(row.id);
+        }}
+      >
+        <td className="w-8 px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          {!child ? (
+            <input
+              type="checkbox"
+              checked={selected.has(row.id)}
+              onChange={() => toggleSelect(row.id)}
+              className="rounded border-dark-primary/20"
+            />
+          ) : null}
+        </td>
+        <td className="whitespace-nowrap px-2 py-1.5 text-mid-green">
+          <div className="flex items-center gap-0.5">
+            {!child && altCount > 0 ? (
+              <button
+                type="button"
+                className="rounded p-0.5 hover:bg-dark-secondary/10"
+                title="View linked contacts"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void toggleExpand(row);
+                }}
+              >
+                {expanded[row.id] ? (
+                  <ChevronDown className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronRight className="h-3.5 w-3.5" />
+                )}
+              </button>
+            ) : (
+              <span className="inline-block w-4" />
+            )}
+            {child ? <span className="text-mid-green">↳</span> : null}
+            {index + 1 + skip}
+          </div>
+        </td>
+        <td className="max-w-[10rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-1">
+            <InlineEditableCell
+              value={row.company}
+              placeholder="No company"
+              onSave={(v) => patchField(row.id, "company", v)}
+            />
+            {!child ? (
+              <button
+                type="button"
+                title="Add alternative contact"
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-mid-green/25 bg-[#e8f5e6] text-mid-green hover:bg-[#d4e7d0]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAltDraft((d) => ({
+                    ...d,
+                    [row.id]: d[row.id] || { name: "", phone: "", email: "", role: "" },
+                  }));
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+          </div>
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <InlineEditableCell
+            value={row.name}
+            placeholder="Unnamed contact"
+            onSave={(v) => patchField(row.id, "name", v)}
+          />
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <InlineEditableCell
+            value={row.phone}
+            emptyActionLabel="Add phone"
+            monospace
+            onSave={(v) => patchField(row.id, "phone", v)}
+          />
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <InlineEditableCell
+            value={row.email}
+            emptyActionLabel="Add email"
+            onSave={(v) => patchField(row.id, "email", v)}
+          />
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <InlineEditableCell
+            value={row.role}
+            placeholder="-"
+            onSave={(v) => patchField(row.id, "role", v)}
+          />
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <CallStatusDropdown
+            status={row.callStatus}
+            onChange={(s) => patchStatus(row.id, s)}
+            onMoveToLead={() => moveToLead(row.id)}
+          />
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <select
+            className="max-w-[8.5rem] rounded-md border border-mid-green/20 bg-[#e8f5e6]/60 px-2 py-1 text-[11px]"
+            value={row.assignedTo?.id || ""}
+            onChange={(e) => patchAssignee(row.id, e.target.value ? e.target.value : null)}
+          >
+            <option value="">Unassigned</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+          </select>
+        </td>
+        <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-mid-green">
+          {format(new Date(row.createdAt), "d MMM yyyy")}
+        </td>
+        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="flex items-center gap-1">
+            <IconAction title="Open timeline" onClick={() => setDrawerId(row.id)} tone="green">
+              <Clock className="h-4 w-4" />
+            </IconAction>
+            <IconAction title="Mark as lead" onClick={() => moveToLead(row.id)} tone="green-fill">
+              <UserRound className="h-4 w-4" />
+            </IconAction>
+            <IconAction title="Archive contact" onClick={() => archiveContact(row.id)} tone="danger">
+              <Archive className="h-4 w-4" />
+            </IconAction>
+          </div>
+        </td>
+      </tr>
+    );
+  }
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 pb-24">
       <PageHeader
         title="Telemarketing"
         actions={
@@ -192,41 +475,20 @@ export function TelemarketingWorkbench() {
                 setImportOpen(true);
                 setImportStep(1);
               }}
-              className="inline-flex items-center gap-1.5 rounded-full border border-dark-primary/10 px-3 py-2 text-sm text-dark-primary"
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#2f4a2b] px-3 py-2 text-sm font-medium text-white shadow-sm"
             >
               <Upload className="h-4 w-4" /> Import contacts
             </button>
             <button
               type="button"
               onClick={() => setNewOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-mid-green px-3 py-2 text-sm font-medium text-white"
+              className="inline-flex items-center gap-1.5 rounded-md bg-[#2f4a2b] px-3 py-2 text-sm font-medium text-white shadow-sm"
             >
               <Plus className="h-4 w-4" /> New contact
             </button>
           </>
         }
       />
-
-      {dueReminders.length > 0 ? (
-        <WorkbenchCard title="Due reminders" accent="amber">
-          <ul className="divide-y divide-dark-primary/6 text-sm">
-            {dueReminders.map((r) => (
-              <li key={r.id} className="flex items-center justify-between gap-2 py-2">
-                <button
-                  type="button"
-                  className="text-left text-dark-primary underline"
-                  onClick={() => setDrawerId(r.contact.id)}
-                >
-                  {r.contact.name || r.contact.company || r.contact.phone} — {r.type}
-                </button>
-                <span className="text-xs text-mid-green">
-                  {format(new Date(r.dueAt), "d MMM, h:mm a")}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </WorkbenchCard>
-      ) : null}
 
       <WorkbenchCard>
         <div className="flex flex-wrap items-center gap-2">
@@ -239,134 +501,216 @@ export function TelemarketingWorkbench() {
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
-          <select
-            className={fieldClass}
-            value={view}
-            onChange={(e) => setView(e.target.value as "active" | "archived")}
-          >
-            <option value="active">Active</option>
-            <option value="archived">Archived</option>
+          <select className={fieldClass} value={view} onChange={(e) => setView(e.target.value as "active" | "archived")}>
+            <option value="active">View: Active</option>
+            <option value="archived">View: Archived</option>
           </select>
-          <select
-            className={fieldClass}
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-          >
-            <option value="ALL">All sources</option>
+          <select className={fieldClass} value={source} onChange={(e) => setSource(e.target.value)}>
+            <option value="ALL">Source: All</option>
             <option value="IMPORTED">Imported</option>
             <option value="MANUAL">Manual</option>
           </select>
+          <select className={fieldClass} value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+            <option value="ALL">Assignee: All</option>
+            <option value="UNASSIGNED">Unassigned</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.email}
+              </option>
+            ))}
+          </select>
+          <select className={fieldClass} value={districtTag} onChange={(e) => setDistrictTag(e.target.value)}>
+            <option value="ALL">District / tag: All</option>
+            {districtTags.map((t) => (
+              <option key={t.tag} value={t.tag}>
+                {t.tag} ({t.count})
+              </option>
+            ))}
+            {tagOptions
+              .filter((t) => !districtTags.some((d) => d.tag === t.tag))
+              .slice(0, 40)
+              .map((t) => (
+                <option key={t.tag} value={t.tag}>
+                  {t.tag} ({t.count})
+                </option>
+              ))}
+          </select>
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {statusChips.map((chip) => (
-            <button
-              key={chip.key}
-              type="button"
-              onClick={() => setStatus(chip.key)}
-              className={`rounded-full px-3 py-1 text-xs font-medium ${
-                status === chip.key
-                  ? "bg-dark-primary text-white"
-                  : "bg-dark-secondary/8 text-mid-green"
-              }`}
-            >
-              {chip.label}
-              {statusCounts[chip.key] != null ? ` ${statusCounts[chip.key]}` : ""}
-            </button>
-          ))}
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {statusChips.map((chip) => {
+            const active = status === chip.key;
+            const count = statusCounts[chip.key];
+            return (
+              <button
+                key={chip.key}
+                type="button"
+                onClick={() => setStatus(chip.key)}
+                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[11px] font-semibold transition ${
+                  active
+                    ? "bg-[#2f4a2b] text-white"
+                    : "border border-dark-primary/10 bg-white text-dark-primary hover:bg-[#faf9f6]"
+                }`}
+              >
+                {chip.label}
+                {count != null ? (
+                  <span
+                    className={`rounded-full px-1.5 py-0 text-[10px] ${active ? "bg-white/20" : "bg-dark-secondary/10"}`}
+                  >
+                    {count}
+                  </span>
+                ) : null}
+              </button>
+            );
+          })}
         </div>
+        <p className="mt-2 text-[11px] text-mid-green">
+          Showing {items.length} of {total} contacts
+        </p>
       </WorkbenchCard>
 
-      <div className="min-h-0 flex-1 overflow-auto rounded-2xl border border-dark-primary/8 bg-white">
-        <table className="w-full min-w-[720px] text-left text-sm">
-          <thead className="sticky top-0 bg-dark-secondary/[0.04] text-xs text-mid-green">
+      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-dark-primary/10 bg-white shadow-sm">
+        <table className="w-full min-w-[1080px] text-left">
+          <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#faf9f6] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
             <tr>
-              <th className="px-3 py-2">Company</th>
-              <th className="px-3 py-2">Name</th>
-              <th className="px-3 py-2">Phone</th>
-              <th className="px-3 py-2">Call status</th>
-              <th className="px-3 py-2">Assigned to</th>
-              <th className="px-3 py-2">Added</th>
-              <th className="px-3 py-2">Actions</th>
+              <th className="w-8 px-2 py-2" />
+              <th className="px-2 py-2">S.No.</th>
+              <th className="px-2 py-2">Company</th>
+              <th className="px-2 py-2">Name</th>
+              <th className="px-2 py-2">Phone</th>
+              <th className="px-2 py-2">Email</th>
+              <th className="px-2 py-2">Role</th>
+              <th className="px-2 py-2">Call status</th>
+              <th className="px-2 py-2">Assigned to</th>
+              <th className="px-2 py-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 hover:text-dark-primary"
+                  onClick={() => setSortAsc((v) => !v)}
+                >
+                  Added {sortAsc ? "↑" : "↓"}
+                </button>
+              </th>
+              <th className="px-2 py-2">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && items.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-mid-green">
+                <td colSpan={11} className="px-3 py-10 text-center text-sm text-mid-green">
                   Loading…
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-mid-green">
+                <td colSpan={11} className="px-3 py-10 text-center text-sm text-mid-green">
                   No contacts yet.
                 </td>
               </tr>
             ) : (
-              items.map((row) => (
-                <tr key={row.id} className="border-t border-dark-primary/6 hover:bg-dark-secondary/[0.03]">
-                  <td className="px-3 py-2 text-dark-primary">{row.company || "—"}</td>
-                  <td className="px-3 py-2">{row.name || "—"}</td>
-                  <td className="px-3 py-2">{row.phone || row.email || "—"}</td>
-                  <td className="px-3 py-2">
-                    <CallStatusPill status={row.callStatus} />
-                    {row.reminders?.length ? (
-                      <p className="mt-1 text-[10px] text-amber-800">Reminder due</p>
-                    ) : null}
-                  </td>
-                  <td className="px-3 py-2">
-                    <select
-                      className="max-w-[9rem] rounded-full bg-dark-secondary/[0.06] px-2 py-1 text-xs"
-                      value={row.assignedTo?.id || ""}
-                      onChange={(e) =>
-                        patchAssignee(row.id, e.target.value ? e.target.value : null)
-                      }
-                    >
-                      <option value="">Unassigned</option>
-                      {users.map((u) => (
-                        <option key={u.id} value={u.id}>
-                          {u.name || u.email}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="px-3 py-2 text-xs text-mid-green">
-                    {format(new Date(row.createdAt), "d MMM yyyy")}
-                  </td>
-                  <td className="px-3 py-2">
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        title="Mark as lead"
-                        onClick={() => void moveToLead(row.id)}
-                        className="rounded p-1 text-mid-green hover:bg-emerald-50"
-                      >
-                        <UserRound className="h-4 w-4" />
-                      </button>
-                      <button
-                        type="button"
-                        title="Open timeline"
-                        onClick={() => setDrawerId(row.id)}
-                        className="rounded p-1 text-mid-green hover:bg-dark-secondary/10"
-                      >
-                        <Clock className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+              items.flatMap((row, i) => {
+                const rows = [renderRow(row, i)];
+                if (altDraft[row.id]) {
+                  const draft = altDraft[row.id];
+                  rows.push(
+                    <tr key={`${row.id}-draft`} className="border-t border-dark-primary/6 bg-rose-50/30">
+                      <td />
+                      <td className="px-2 py-2 text-mid-green">↳</td>
+                      <td className="px-2 py-2 text-xs text-mid-green" colSpan={2}>
+                        Alternative draft
+                      </td>
+                      <td className="px-2 py-1.5" colSpan={7}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <input
+                            className={fieldClass}
+                            placeholder="Unnamed contact"
+                            value={draft.name}
+                            onChange={(e) =>
+                              setAltDraft((d) => ({
+                                ...d,
+                                [row.id]: { ...draft, name: e.target.value },
+                              }))
+                            }
+                          />
+                          <input
+                            className={fieldClass}
+                            placeholder="Add phone"
+                            value={draft.phone}
+                            onChange={(e) =>
+                              setAltDraft((d) => ({
+                                ...d,
+                                [row.id]: { ...draft, phone: e.target.value },
+                              }))
+                            }
+                          />
+                          <input
+                            className={fieldClass}
+                            placeholder="Add email"
+                            value={draft.email}
+                            onChange={(e) =>
+                              setAltDraft((d) => ({
+                                ...d,
+                                [row.id]: { ...draft, email: e.target.value },
+                              }))
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="rounded-md bg-[#2f4a2b] px-3 py-1.5 text-xs text-white"
+                            onClick={() => void saveAlternative(row.id)}
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            title="Discard"
+                            className="rounded-md border border-rose-200 p-1.5 text-rose-700"
+                            onClick={() =>
+                              setAltDraft((d) => {
+                                const next = { ...d };
+                                delete next[row.id];
+                                return next;
+                              })
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                }
+                if (expanded[row.id]) {
+                  for (const child of expanded[row.id]) {
+                    rows.push(renderRow(child, i, { child: true }));
+                  }
+                }
+                return rows;
+              })
             )}
           </tbody>
         </table>
       </div>
+
+      {hasMore ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            disabled={loadingMore}
+            onClick={() => setSkip((s) => s + PAGE_SIZE)}
+            className="rounded-md border border-dark-primary/15 bg-white px-4 py-2 text-sm font-medium text-dark-primary hover:bg-[#faf9f6] disabled:opacity-50"
+          >
+            {loadingMore ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      ) : null}
 
       {drawerId ? (
         <TelemarketingContactDrawer
           contactId={drawerId}
           users={users}
           onClose={() => setDrawerId(null)}
-          onChanged={() => void refresh()}
+          onChanged={() => void refresh("replace")}
         />
       ) : null}
 
@@ -428,7 +772,7 @@ export function TelemarketingWorkbench() {
             <button
               type="button"
               onClick={() => void submitNewContacts()}
-              className="rounded-full bg-mid-green px-4 py-2 text-sm font-medium text-white"
+              className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white"
             >
               Add contact(s)
             </button>
@@ -478,9 +822,7 @@ export function TelemarketingWorkbench() {
                   <select
                     className={fieldClass}
                     value={importMapping[field]}
-                    onChange={(e) =>
-                      setImportMapping({ ...importMapping, [field]: e.target.value })
-                    }
+                    onChange={(e) => setImportMapping({ ...importMapping, [field]: e.target.value })}
                   >
                     <option value="">—</option>
                     {importHeaders.map((h) => (
@@ -491,21 +833,13 @@ export function TelemarketingWorkbench() {
                   </select>
                 </label>
               ))}
-              <ModalNav
-                onBack={() => setImportStep(1)}
-                onNext={() => setImportStep(3)}
-                nextLabel="Review"
-              />
+              <ModalNav onBack={() => setImportStep(1)} onNext={() => setImportStep(3)} nextLabel="Review" />
             </div>
           ) : null}
           {importStep === 3 ? (
             <div className="text-sm">
               <p className="text-mid-green">{importRows.length} rows ready to import.</p>
-              <ModalNav
-                onBack={() => setImportStep(2)}
-                onNext={() => void runImport()}
-                nextLabel="Import"
-              />
+              <ModalNav onBack={() => setImportStep(2)} onNext={() => void runImport()} nextLabel="Import" />
             </div>
           ) : null}
         </ModalShell>
@@ -514,13 +848,36 @@ export function TelemarketingWorkbench() {
   );
 }
 
-function PageHeader({
+function IconAction({
+  children,
   title,
-  actions,
+  onClick,
+  tone,
 }: {
+  children: ReactNode;
   title: string;
-  actions?: ReactNode;
+  onClick: () => void;
+  tone: "green" | "green-fill" | "danger";
 }) {
+  const cls =
+    tone === "green-fill"
+      ? "bg-[#2f4a2b] text-white hover:bg-[#243b22]"
+      : tone === "danger"
+        ? "border border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+        : "border border-mid-green/25 bg-[#e8f5e6] text-mid-green hover:bg-[#d4e7d0]";
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className={`inline-flex h-8 w-8 items-center justify-center rounded-md ${cls}`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PageHeader({ title, actions }: { title: string; actions?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <h1 className="text-xl font-semibold text-dark-primary">{title}</h1>
@@ -529,21 +886,9 @@ function PageHeader({
   );
 }
 
-function WorkbenchCard({
-  title,
-  children,
-  accent,
-}: {
-  title?: string;
-  children: ReactNode;
-  accent?: string;
-}) {
+function WorkbenchCard({ title, children }: { title?: string; children: ReactNode }) {
   return (
-    <div
-      className={`rounded-2xl border border-dark-primary/8 bg-white p-4 ${
-        accent === "amber" ? "border-amber-200/80 bg-amber-50/40" : ""
-      }`}
-    >
+    <div className="rounded-lg border border-dark-primary/10 bg-white p-4 shadow-sm">
       {title ? <p className="mb-2 text-sm font-medium text-dark-primary">{title}</p> : null}
       {children}
     </div>
@@ -591,7 +936,7 @@ function ModalNav({
       <button
         type="button"
         onClick={onNext}
-        className="rounded-full bg-mid-green px-4 py-2 text-sm font-medium text-white"
+        className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white"
       >
         {nextLabel}
       </button>

@@ -4,6 +4,15 @@ import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
 import { logTelemarketingTimeline } from "@/lib/telemarketing/timeline";
 import { moveContactToLead } from "@/lib/telemarketing/move-to-lead";
+import {
+  buildFieldUpdateBody,
+  buildStatusChangeBody,
+  buildTagsUpdateBody,
+  normalizeTagsInput,
+  parseTagsJson,
+  type ContactFieldKey,
+} from "@/lib/telemarketing/contact-update";
+import { validateEmailInput, validatePhoneInput } from "@/lib/telemarketing/validation";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -41,6 +50,10 @@ export async function GET(_req: NextRequest, { params }: Params) {
           phone: true,
           email: true,
           company: true,
+          callStatus: true,
+          assignedToUserId: true,
+          createdAt: true,
+          assignedTo: { select: { id: true, name: true, email: true } },
         },
       },
       convertedLead: {
@@ -70,7 +83,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ contact });
+  const tags = parseTagsJson(contact.tags as unknown);
+
+  return NextResponse.json({ contact: { ...contact, tags } });
 }
 
 const patchSchema = z.object({
@@ -79,6 +94,7 @@ const patchSchema = z.object({
   role: z.string().optional(),
   phone: z.string().optional(),
   email: z.string().optional(),
+  tags: z.array(z.string()).optional(),
   assignedToUserId: z.string().nullable().optional(),
   callStatus: z
     .enum([
@@ -92,6 +108,7 @@ const patchSchema = z.object({
     .optional(),
   archive: z.boolean().optional(),
   moveToLead: z.boolean().optional(),
+  note: z.string().min(1).max(2000).optional(),
 });
 
 export async function PATCH(req: NextRequest, { params }: Params) {
@@ -110,6 +127,17 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  if (parsed.data.note) {
+    await logTelemarketingTimeline({
+      contactId: id,
+      type: "NOTE",
+      title: "Note",
+      body: parsed.data.note.trim(),
+      actorId: session?.user?.id,
+    });
+    return NextResponse.json({ ok: true });
+  }
+
   if (parsed.data.moveToLead) {
     const rfq = await moveContactToLead({
       contact: existing,
@@ -118,46 +146,144 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     return NextResponse.json({ contactId: id, leadId: rfq.id, leadNumber: rfq.leadNumber });
   }
 
+  const actorId = session?.user?.id;
   const data: Record<string, unknown> = {};
-  for (const key of ["name", "company", "role", "phone", "email", "callStatus"] as const) {
-    if (parsed.data[key] !== undefined) data[key] = parsed.data[key];
-  }
-  if (parsed.data.assignedToUserId !== undefined) {
-    data.assignedToUserId = parsed.data.assignedToUserId;
-  }
-  if (parsed.data.archive === true) {
-    data.archivedAt = new Date();
-  }
-  if (parsed.data.archive === false) {
-    data.archivedAt = null;
+  const fieldKeys: ContactFieldKey[] = ["name", "company", "role", "phone", "email"];
+
+  for (const key of fieldKeys) {
+    if (parsed.data[key] === undefined) continue;
+    if (key === "phone") {
+      const v = validatePhoneInput(parsed.data.phone!);
+      if (!v.ok) {
+        return NextResponse.json({ error: v.error }, { status: 400 });
+      }
+      data.phone = v.value;
+      if (v.value !== existing.phone) {
+        await logTelemarketingTimeline({
+          contactId: id,
+          type: "CONTACT_UPDATED",
+          title: "Contact updated",
+          body: buildFieldUpdateBody("phone", existing.phone, v.value),
+          actorId,
+        });
+      }
+      continue;
+    }
+    if (key === "email") {
+      const v = validateEmailInput(parsed.data.email!);
+      if (!v.ok) {
+        return NextResponse.json({ error: v.error }, { status: 400 });
+      }
+      data.email = v.value;
+      if (v.value !== existing.email) {
+        await logTelemarketingTimeline({
+          contactId: id,
+          type: "CONTACT_UPDATED",
+          title: "Contact updated",
+          body: buildFieldUpdateBody("email", existing.email, v.value),
+          actorId,
+        });
+      }
+      continue;
+    }
+    const next = parsed.data[key]!.trim();
+    const prev = existing[key].trim();
+    if (next !== prev) {
+      data[key] = next;
+      await logTelemarketingTimeline({
+        contactId: id,
+        type: "CONTACT_UPDATED",
+        title: "Contact updated",
+        body: buildFieldUpdateBody(key, existing[key], next),
+        actorId,
+      });
+    }
   }
 
-  const contact = await prisma.telemarketingContact.update({
-    where: { id },
-    data,
-    include: {
-      assignedTo: { select: { id: true, name: true, email: true } },
-    },
-  });
+  if (parsed.data.tags) {
+    const before = parseTagsJson(existing.tags as unknown);
+    const after = normalizeTagsInput(parsed.data.tags);
+    const changed =
+      before.length !== after.length || before.some((t, i) => t !== after[i]);
+    if (changed) {
+      data.tags = after;
+      await logTelemarketingTimeline({
+        contactId: id,
+        type: "CONTACT_UPDATED",
+        title: "Contact updated",
+        body: buildTagsUpdateBody(before, after),
+        actorId,
+      });
+    }
+  }
 
   if (parsed.data.assignedToUserId !== undefined) {
+    const next = parsed.data.assignedToUserId;
+    if (next !== existing.assignedToUserId) {
+      data.assignedToUserId = next;
+      await logTelemarketingTimeline({
+        contactId: id,
+        type: "CONTACT_ASSIGNED",
+        title: "Assignment updated",
+        body: next ? "Contact assigned" : "Unassigned",
+        actorId,
+      });
+    }
+  }
+
+  if (parsed.data.callStatus !== undefined && parsed.data.callStatus !== existing.callStatus) {
+    const nextStatus = parsed.data.callStatus;
+    if (nextStatus === "MOVE_TO_LEAD") {
+      const rfq = await moveContactToLead({
+        contact: existing,
+        actorId,
+      });
+      return NextResponse.json({
+        contactId: id,
+        leadId: rfq.id,
+        leadNumber: rfq.leadNumber,
+      });
+    }
+    data.callStatus = nextStatus;
     await logTelemarketingTimeline({
       contactId: id,
-      type: "CONTACT_ASSIGNED",
-      title: "Assignment updated",
-      body: parsed.data.assignedToUserId ? "Contact assigned" : "Unassigned",
-      actorId: session?.user?.id,
+      type: "STATUS_CHANGED",
+      title: "Status changed",
+      body: buildStatusChangeBody(existing.callStatus, nextStatus),
+      actorId,
     });
   }
+
   if (parsed.data.archive === true) {
+    data.archivedAt = new Date();
     await logTelemarketingTimeline({
       contactId: id,
       type: "ARCHIVED",
       title: "Archived",
       body: "Contact archived",
-      actorId: session?.user?.id,
+      actorId,
     });
   }
+  if (parsed.data.archive === false) {
+    data.archivedAt = null;
+  }
 
-  return NextResponse.json({ contact });
+  const contact =
+    Object.keys(data).length > 0
+      ? await prisma.telemarketingContact.update({
+          where: { id },
+          data,
+          include: {
+            assignedTo: { select: { id: true, name: true, email: true } },
+          },
+        })
+      : await prisma.telemarketingContact.findUnique({
+          where: { id },
+          include: {
+            assignedTo: { select: { id: true, name: true, email: true } },
+          },
+        });
+
+  const tags = parseTagsJson(contact?.tags as unknown);
+  return NextResponse.json({ contact: contact ? { ...contact, tags } : null });
 }

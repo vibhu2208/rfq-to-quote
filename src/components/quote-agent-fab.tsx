@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { usePathname } from "next/navigation";
 import { GripVertical, Sparkles, X } from "lucide-react";
 import { AdminCopilot } from "@/components/admin-copilot";
 
@@ -32,6 +33,8 @@ function readStoredPos(): Pos | null {
 }
 
 export function QuoteAgentFab() {
+  const pathname = usePathname();
+  const telemarketingPage = pathname?.startsWith("/telemarketing");
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<Pos | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -55,18 +58,19 @@ export function QuoteAgentFab() {
       const el = rootRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
+      const bottomPad = telemarketingPage ? 112 : 24;
       setPos(
         clampPos(
           {
             x: window.innerWidth - rect.width - 24,
-            y: window.innerHeight - rect.height - 24,
+            y: window.innerHeight - rect.height - bottomPad,
           },
           rect.width,
           rect.height
         )
       );
     });
-  }, []);
+  }, [telemarketingPage]);
 
   useEffect(() => {
     if (!open) return;
