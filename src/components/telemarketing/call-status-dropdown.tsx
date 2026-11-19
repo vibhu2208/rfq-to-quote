@@ -15,6 +15,7 @@ export function CallStatusDropdown({
   onChange,
   onMoveToLead,
   onBeforeChange,
+  fullLabel = false,
 }: {
   status: TelemarketingCallStatus;
   disabled?: boolean;
@@ -23,6 +24,8 @@ export function CallStatusDropdown({
   onBeforeChange?: (
     next: TelemarketingCallStatus
   ) => boolean | void | Promise<boolean | void>;
+  /** Avoid truncating long status labels (e.g. drawer meta strip). */
+  fullLabel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -66,12 +69,18 @@ export function CallStatusDropdown({
           e.stopPropagation();
           setOpen((v) => !v);
         }}
-        className={`inline-flex w-full min-w-[8.5rem] max-w-[11rem] items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium leading-tight disabled:opacity-60 ${STATUS_CLASS[status]}`}
+        className={`inline-flex w-full items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-left text-[11px] font-medium leading-snug disabled:opacity-60 ${
+          fullLabel ? "min-w-[9.5rem] max-w-full" : "min-w-[8.5rem] max-w-[11rem]"
+        } ${STATUS_CLASS[status]}`}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Call status: ${TELEMARKETING_CALL_STATUS_LABELS[status]}. Change status`}
       >
-        <span className="min-w-0 truncate">{TELEMARKETING_CALL_STATUS_LABELS[status]}</span>
+        <span
+          className={`min-w-0 ${fullLabel ? "whitespace-normal text-center" : "truncate"}`}
+        >
+          {TELEMARKETING_CALL_STATUS_LABELS[status]}
+        </span>
         <ChevronDown
           className={`h-3.5 w-3.5 shrink-0 opacity-70 transition ${open ? "rotate-180" : ""}`}
           strokeWidth={2.2}

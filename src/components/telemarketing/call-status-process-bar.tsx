@@ -21,9 +21,9 @@ export function CallStatusProcessBar({
   const allSelected = !activeStatus || activeStatus === "ALL";
 
   return (
-    <div className="overflow-x-auto pb-0.5">
+    <div className="pb-0.5">
       <div
-        className="inline-flex min-w-full items-stretch"
+        className="flex w-max min-w-full flex-wrap items-stretch gap-y-1"
         role="tablist"
         aria-label="Call status process"
       >
@@ -85,13 +85,13 @@ function ChevronStep({
       title={title}
       onClick={onClick}
       style={{ clipPath: clip }}
-      className={`relative -ml-px flex min-h-[2.75rem] min-w-[7.25rem] flex-1 items-center justify-center gap-2 px-4 py-2 text-sm font-medium transition first:ml-0 ${
+      className={`relative -ml-px flex min-h-[2.75rem] min-w-[8.5rem] shrink-0 items-center justify-center gap-2 px-3 py-2 text-sm font-medium transition first:ml-0 sm:min-w-[7.25rem] sm:flex-1 ${
         selected
           ? "z-[1] bg-dark-secondary text-background"
           : "bg-white text-dark-primary ring-1 ring-inset ring-dark-primary/10 hover:bg-dark-secondary/[0.04]"
       } ${first ? "rounded-l-md" : ""} ${last ? "rounded-r-md" : ""}`}
     >
-      <span className="whitespace-nowrap">{label}</span>
+      <span className="text-center leading-tight sm:whitespace-nowrap">{label}</span>
       <span
         className={`inline-flex min-w-[1.5rem] items-center justify-center rounded px-1.5 py-0.5 text-xs font-semibold tabular-nums ${
           selected

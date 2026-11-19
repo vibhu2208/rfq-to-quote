@@ -266,15 +266,20 @@ export function DateTimePicker({
                 >
                   <button
                     type="button"
-                    onClick={() => pickDay(day)}
+                    disabled={past}
+                    onClick={() => {
+                      if (past) return;
+                      pickDay(day);
+                    }}
                     aria-pressed={active}
+                    aria-disabled={past}
                     aria-label={format(day, "EEEE, MMMM d, yyyy")}
                     className={[
                       "relative flex h-8 w-8 items-center justify-center rounded-full text-[13px] tabular-nums transition-all duration-150",
                       active
                         ? "bg-mid-green font-semibold text-white shadow-[0_6px_14px_rgba(45,106,79,0.28)]"
                         : past
-                          ? "text-mid-green/40 hover:bg-dark-secondary/8 hover:text-dark-primary"
+                          ? "cursor-not-allowed text-mid-green/35"
                           : "font-medium text-dark-primary hover:bg-mid-green/12",
                       !active && todayMark
                         ? "ring-2 ring-inset ring-mid-green/35"

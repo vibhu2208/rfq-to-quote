@@ -9,7 +9,7 @@ import { useTelemarketingChrome } from "@/components/telemarketing/telemarketing
 type Pos = { x: number; y: number };
 
 const STORAGE_KEY = "quote-agent-fab-pos";
-const DRAG_THRESHOLD = 6;
+const DRAG_THRESHOLD = 5;
 
 function clampPos(pos: Pos, width: number, height: number): Pos {
   const pad = 8;
@@ -61,7 +61,7 @@ export function QuoteAgentFab() {
       const el = rootRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const bottomPad = telemarketingPage ? 112 : 24;
+      const bottomPad = telemarketingPage ? 120 : 24;
       setPos(
         clampPos(
           {
@@ -115,6 +115,17 @@ export function QuoteAgentFab() {
     }
   }
 
+  function snapToEdge(next: Pos, width: number, height: number): Pos {
+    const pad = 8;
+    const midX = window.innerWidth / 2;
+    const midY = window.innerHeight / 2;
+    const cx = next.x + width / 2;
+    const cy = next.y + height / 2;
+    const snapX = cx < midX ? pad : Math.max(pad, window.innerWidth - width - pad);
+    const snapY = cy < midY ? pad : Math.max(pad, window.innerHeight - height - pad);
+    return clampPos({ x: snapX, y: snapY }, width, height);
+  }
+
   function startDrag(e: PointerEvent<HTMLElement>) {
     if (e.button !== 0) return;
     const el = rootRef.current;
@@ -129,14 +140,18 @@ export function QuoteAgentFab() {
     const startX = e.clientX;
     const startY = e.clientY;
     dragMovedRef.current = false;
+    let dragging = false;
 
     function move(ev: globalThis.PointerEvent) {
       if (
-        Math.abs(ev.clientX - startX) > DRAG_THRESHOLD ||
-        Math.abs(ev.clientY - startY) > DRAG_THRESHOLD
+        !dragging &&
+        (Math.abs(ev.clientX - startX) > DRAG_THRESHOLD ||
+          Math.abs(ev.clientY - startY) > DRAG_THRESHOLD)
       ) {
+        dragging = true;
         dragMovedRef.current = true;
       }
+      if (!dragging) return;
       const next = clampPos(
         { x: ev.clientX - dx, y: ev.clientY - dy },
         width,
@@ -148,8 +163,8 @@ export function QuoteAgentFab() {
     function up(ev: globalThis.PointerEvent) {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      if (dragMovedRef.current) {
-        const next = clampPos(
+      if (dragging) {
+        const next = snapToEdge(
           { x: ev.clientX - dx, y: ev.clientY - dy },
           width,
           height
