@@ -372,7 +372,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
       <div className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
         <button
           type="button"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background xl:hidden"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background min-[1440px]:hidden"
           onClick={() => setMobileOpen(true)}
           aria-label="Open menu"
         >
@@ -386,7 +386,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto xl:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 min-[1440px]:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {desktopLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
@@ -409,7 +409,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold text-background">
                 {initialsFromEmail(userEmail)}
               </span>
-              <span className="hidden max-w-[10rem] truncate text-sm text-light-green xl:inline">
+              <span className="hidden max-w-[10rem] truncate text-sm text-light-green min-[1440px]:inline">
                 {userEmail}
               </span>
               <ChevronDown
@@ -441,7 +441,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
       </div>
 
       {mobileOpen ? (
-        <div className="fixed inset-0 z-50 xl:hidden">
+        <div className="fixed inset-0 z-50 min-[1440px]:hidden">
           <button
             type="button"
             aria-label="Close menu"

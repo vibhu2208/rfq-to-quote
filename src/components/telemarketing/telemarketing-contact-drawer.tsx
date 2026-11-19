@@ -1,8 +1,7 @@
 "use client";
 
-import { format } from "date-fns";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   Building2,
@@ -30,6 +29,11 @@ import {
 import { useToast } from "@/components/app-toast";
 import type { TelemarketingCallStatus } from "@prisma/client";
 import { CallbackDueModal } from "@/components/telemarketing/callback-due-modal";
+import { ConfirmActionModal } from "@/components/telemarketing/confirm-action-modal";
+import {
+  validateEmailInput,
+  validatePhoneInput,
+} from "@/lib/telemarketing/validation";
 import {
   defaultLogCallStatus,
   formatTelemarketingInstant,
@@ -133,6 +137,39 @@ export function TelemarketingContactDrawer({
   const [callbackOpen, setCallbackOpen] = useState(false);
   const [editField, setEditField] = useState<string | null>(null);
   const [fieldDraft, setFieldDraft] = useState("");
+  const [fieldError, setFieldError] = useState("");
+  const [confirmMoveLead, setConfirmMoveLead] = useState(false);
+  const [moveLeadBusy, setMoveLeadBusy] = useState(false);
+  const [nowMs] = useState(() => Date.now());
+
+  const logFollowUpDate = useMemo(
+    () => (logFollowUp ? parseLocalDateTimeValue(logFollowUp) : null),
+    [logFollowUp]
+  );
+  const logFollowUpInvalid = Boolean(
+    logFollowUpDate && validateFutureDateTime(logFollowUpDate)
+  );
+  const logSubmitDisabled =
+    !logNote.trim() || saving || logFollowUpInvalid;
+  const logDisabledReason = !logNote.trim()
+    ? "Add a call update before logging."
+    : logFollowUpInvalid
+      ? validateFutureDateTime(logFollowUpDate!) || "Follow-up must be in the future."
+      : "";
+
+  const reminderDueDate = useMemo(
+    () => parseLocalDateTimeValue(reminderDue),
+    [reminderDue]
+  );
+  const reminderInvalid = Boolean(
+    reminderDueDate && validateFutureDateTime(reminderDueDate)
+  );
+  const reminderSubmitDisabled = !reminderNotes.trim() || saving || reminderInvalid;
+  const reminderDisabledReason = !reminderNotes.trim()
+    ? "Reminder notes are required."
+    : reminderInvalid
+      ? validateFutureDateTime(reminderDueDate!) || "Due time must be in the future."
+      : "";
 
   const load = useCallback(async () => {
     const gen = ++loadGenRef.current;
@@ -159,11 +196,13 @@ export function TelemarketingContactDrawer({
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (logOpen || reminderOpen || callbackOpen || confirmMoveLead) return;
+      onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, logOpen, reminderOpen, callbackOpen, confirmMoveLead]);
 
   async function patch(body: Record<string, unknown>) {
     const res = await fetch(`/api/telemarketing/contacts/${contactId}`, {
@@ -200,12 +239,26 @@ export function TelemarketingContactDrawer({
     }
   }
 
-  async function moveToLead() {
-    if (!window.confirm("Move this contact to Leads?")) return;
-    await patch({ moveToLead: true });
+  function requestMoveToLead() {
+    setConfirmMoveLead(true);
   }
 
   async function saveField(field: string, value: string) {
+    if (field === "phone") {
+      const v = validatePhoneInput(value);
+      if (!v.ok) {
+        setFieldError(v.error);
+        throw new Error(v.error);
+      }
+    }
+    if (field === "email") {
+      const v = validateEmailInput(value);
+      if (!v.ok) {
+        setFieldError(v.error);
+        throw new Error(v.error);
+      }
+    }
+    setFieldError("");
     await patch({ [field]: value });
     setEditField(null);
   }
@@ -396,12 +449,14 @@ export function TelemarketingContactDrawer({
               <SummaryItem
                 label="Status"
                 value={
-                  <CallStatusDropdown
-                    status={contact.callStatus}
-                    onBeforeChange={handleDrawerStatusPick}
-                    onChange={patchStatus}
-                    onMoveToLead={moveToLead}
-                  />
+                  <div className="max-w-full overflow-visible">
+                    <CallStatusDropdown
+                      status={contact.callStatus}
+                      onBeforeChange={handleDrawerStatusPick}
+                      onChange={patchStatus}
+                      onMoveToLead={requestMoveToLead}
+                    />
+                  </div>
                 }
               />
               <SummaryItem
@@ -480,10 +535,15 @@ export function TelemarketingContactDrawer({
                   onStart={() => {
                     setEditField("name");
                     setFieldDraft(contact.name);
+                    setFieldError("");
                   }}
                   onDraft={setFieldDraft}
+                  error={editField === "name" ? fieldError : ""}
                   onSave={() => void saveField("name", fieldDraft)}
-                  onCancel={() => setEditField(null)}
+                  onCancel={() => {
+                    setEditField(null);
+                    setFieldError("");
+                  }}
                 />
                 <DetailField
                   icon={<Building2 className="h-3.5 w-3.5" />}
@@ -495,10 +555,15 @@ export function TelemarketingContactDrawer({
                   onStart={() => {
                     setEditField("company");
                     setFieldDraft(contact.company);
+                    setFieldError("");
                   }}
                   onDraft={setFieldDraft}
+                  error={editField === "company" ? fieldError : ""}
                   onSave={() => void saveField("company", fieldDraft)}
-                  onCancel={() => setEditField(null)}
+                  onCancel={() => {
+                    setEditField(null);
+                    setFieldError("");
+                  }}
                 />
                 <DetailField
                   icon={<UserCircle className="h-3.5 w-3.5" />}
@@ -510,10 +575,15 @@ export function TelemarketingContactDrawer({
                   onStart={() => {
                     setEditField("role");
                     setFieldDraft(contact.role);
+                    setFieldError("");
                   }}
                   onDraft={setFieldDraft}
+                  error={editField === "role" ? fieldError : ""}
                   onSave={() => void saveField("role", fieldDraft)}
-                  onCancel={() => setEditField(null)}
+                  onCancel={() => {
+                    setEditField(null);
+                    setFieldError("");
+                  }}
                 />
                 <DetailField
                   icon={<Phone className="h-3.5 w-3.5" />}
@@ -525,10 +595,15 @@ export function TelemarketingContactDrawer({
                   onStart={() => {
                     setEditField("phone");
                     setFieldDraft(contact.phone);
+                    setFieldError("");
                   }}
                   onDraft={setFieldDraft}
-                  onSave={() => void saveField("phone", fieldDraft)}
-                  onCancel={() => setEditField(null)}
+                  error={editField === "phone" ? fieldError : ""}
+                  onSave={() => void saveField("phone", fieldDraft).catch(() => undefined)}
+                  onCancel={() => {
+                    setEditField(null);
+                    setFieldError("");
+                  }}
                 />
                 <DetailField
                   icon={<Mail className="h-3.5 w-3.5" />}
@@ -540,10 +615,15 @@ export function TelemarketingContactDrawer({
                   onStart={() => {
                     setEditField("email");
                     setFieldDraft(contact.email);
+                    setFieldError("");
                   }}
                   onDraft={setFieldDraft}
-                  onSave={() => void saveField("email", fieldDraft)}
-                  onCancel={() => setEditField(null)}
+                  error={editField === "email" ? fieldError : ""}
+                  onSave={() => void saveField("email", fieldDraft).catch(() => undefined)}
+                  onCancel={() => {
+                    setEditField(null);
+                    setFieldError("");
+                  }}
                 />
               </div>
             </div>
@@ -639,14 +719,28 @@ export function TelemarketingContactDrawer({
                     />
                   ) : (
                     <ul className="space-y-2">
-                      {contact.reminders.map((r) => (
+                      {contact.reminders.map((r) => {
+                        const overdue =
+                          r.status === "PENDING" && new Date(r.dueAt).getTime() < nowMs;
+                        return (
                         <li
                           key={r.id}
-                          className="rounded-lg border border-dark-primary/8 bg-white p-3 text-sm"
+                          className={`rounded-lg border bg-white p-3 text-sm ${
+                            overdue
+                              ? "border-rose-200 bg-rose-50/40"
+                              : "border-dark-primary/8"
+                          }`}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
-                              <p className="font-medium text-dark-primary">{r.type}</p>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="font-medium text-dark-primary">{r.type}</p>
+                                {overdue ? (
+                                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-rose-800">
+                                    Overdue
+                                  </span>
+                                ) : null}
+                              </div>
                               <p className="text-xs text-mid-green">
                                 Due {formatTelemarketingInstant(r.dueAt, { withTime: true })}
                               </p>
@@ -665,7 +759,8 @@ export function TelemarketingContactDrawer({
                             )}
                           </div>
                         </li>
-                      ))}
+                      );
+                      })}
                     </ul>
                   )}
                 </div>
@@ -782,20 +877,24 @@ export function TelemarketingContactDrawer({
                 </div>
               </label>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setLogOpen(false)} className="rounded-full px-4 py-2 text-sm">
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!logNote.trim() || saving}
-                title={!logNote.trim() ? "Call update is required" : undefined}
-                onClick={() => void submitLogCall()}
-                className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              >
-                {saving ? "Logging…" : "Log call"}
-              </button>
-              {logError ? <p className="mt-2 text-sm text-rose-600">{logError}</p> : null}
+            <div className="mt-4 flex flex-col items-end gap-1">
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setLogOpen(false)} className="rounded-full px-4 py-2 text-sm">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={logSubmitDisabled}
+                  onClick={() => void submitLogCall()}
+                  className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  {saving ? "Logging…" : "Log call"}
+                </button>
+              </div>
+              {logDisabledReason ? (
+                <p className="text-xs text-mid-green">{logDisabledReason}</p>
+              ) : null}
+              {logError ? <p className="text-sm text-rose-600">{logError}</p> : null}
             </div>
           </Modal>
         ) : null}
@@ -847,20 +946,45 @@ export function TelemarketingContactDrawer({
                 />
               </label>
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setReminderOpen(false)} className="rounded-full px-4 py-2 text-sm">
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={!reminderNotes.trim() || saving}
-                onClick={() => void submitReminder()}
-                className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-              >
-                Create reminder
-              </button>
+            <div className="mt-4 flex flex-col items-end gap-1">
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => setReminderOpen(false)} className="rounded-full px-4 py-2 text-sm">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={reminderSubmitDisabled}
+                  onClick={() => void submitReminder()}
+                  className="rounded-md bg-[#2f4a2b] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                >
+                  Create reminder
+                </button>
+              </div>
+              {reminderDisabledReason ? (
+                <p className="text-xs text-mid-green">{reminderDisabledReason}</p>
+              ) : null}
             </div>
           </Modal>
+        ) : null}
+
+        {confirmMoveLead ? (
+          <ConfirmActionModal
+            open
+            title="Move to Leads?"
+            message="This contact will be converted into a lead. You can continue working it from the Leads workspace."
+            confirmLabel="Move to Leads"
+            busy={moveLeadBusy}
+            onCancel={() => setConfirmMoveLead(false)}
+            onConfirm={async () => {
+              setMoveLeadBusy(true);
+              try {
+                await patch({ moveToLead: true });
+                setConfirmMoveLead(false);
+              } finally {
+                setMoveLeadBusy(false);
+              }
+            }}
+          />
         ) : null}
       </aside>
     </div>
@@ -883,6 +1007,7 @@ function DetailField({
   placeholder,
   editing,
   draft,
+  error,
   onStart,
   onDraft,
   onSave,
@@ -894,6 +1019,7 @@ function DetailField({
   placeholder: string;
   editing: boolean;
   draft: string;
+  error?: string;
   onStart: () => void;
   onDraft: (v: string) => void;
   onSave: () => void;
@@ -906,17 +1032,20 @@ function DetailField({
       <div className="min-w-0 flex-1">
         <p className="text-[9px] uppercase text-mid-green">{label}</p>
         {editing ? (
-          <input
-            autoFocus
-            className="mt-0.5 w-full rounded border border-mid-green/30 px-1.5 py-0.5 text-xs"
-            value={draft}
-            onChange={(e) => onDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onSave();
-              if (e.key === "Escape") onCancel();
-            }}
-            onBlur={onSave}
-          />
+          <>
+            <input
+              autoFocus
+              className="mt-0.5 w-full rounded border border-mid-green/30 px-1.5 py-0.5 text-xs"
+              value={draft}
+              onChange={(e) => onDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onSave();
+                if (e.key === "Escape") onCancel();
+              }}
+              onBlur={onSave}
+            />
+            {error ? <p className="mt-0.5 text-[10px] text-rose-600">{error}</p> : null}
+          </>
         ) : (
           <button
             type="button"
@@ -964,9 +1093,36 @@ function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    panel?.querySelector<HTMLElement>("button, input, textarea, select")?.focus();
+
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
-    <div className="absolute inset-0 z-10 flex items-end justify-center bg-dark-primary/40 p-4 sm:items-center">
-      <div className="w-full max-w-md rounded-xl bg-background p-5 shadow-xl">
+    <div className="absolute inset-0 z-10 flex items-end justify-center p-4 sm:items-center">
+      <button
+        type="button"
+        className="absolute inset-0 bg-dark-primary/40"
+        aria-label="Close dialog"
+        onClick={onClose}
+      />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        className="relative w-full max-w-md rounded-xl bg-background p-5 shadow-xl"
+      >
         <h3 className="text-lg font-semibold text-dark-primary">{title}</h3>
         {children}
       </div>

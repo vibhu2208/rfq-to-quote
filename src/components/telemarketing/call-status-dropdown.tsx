@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { TelemarketingCallStatus } from "@prisma/client";
+import { Check } from "lucide-react";
 import { CallStatusPill, STATUS_DOT_CLASS } from "@/components/telemarketing/status-chip";
 import {
   TELEMARKETING_CALL_STATUSES,
@@ -70,7 +71,7 @@ export function CallStatusDropdown({
         aria-expanded={open}
         aria-label={`Call status: ${TELEMARKETING_CALL_STATUS_LABELS[status]}. Change status`}
       >
-        <CallStatusPill status={status} className="max-w-[9rem] truncate" />
+        <CallStatusPill status={status} className="max-w-[9rem]" />
       </button>
       {open ? (
         <div
@@ -93,9 +94,14 @@ export function CallStatusDropdown({
                 className={`h-2 w-2 shrink-0 rounded-full ${STATUS_DOT_CLASS[s]}`}
                 aria-hidden
               />
-              <span className="truncate text-dark-primary">
+              <span className="min-w-0 flex-1 truncate text-dark-primary">
                 {TELEMARKETING_CALL_STATUS_LABELS[s]}
               </span>
+              {s === status ? (
+                <Check className="h-3.5 w-3.5 shrink-0 text-mid-green" aria-hidden />
+              ) : (
+                <span className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              )}
             </button>
           ))}
         </div>

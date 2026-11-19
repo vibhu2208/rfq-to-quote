@@ -10,13 +10,13 @@ import {
   isBefore,
   isSameDay,
   isSameMonth,
-  isToday,
   parse,
   startOfDay,
   startOfMonth,
   startOfWeek,
 } from "date-fns";
 import { ChevronLeft, ChevronRight, Globe } from "lucide-react";
+import { QUOTE_TIME_ZONE } from "@/lib/quote-format";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -54,11 +54,61 @@ const TIME_SLOTS = (() => {
 
 const WEEKDAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
+function calendarDayKey(date: Date, timeZone?: string) {
+  if (!timeZone) return format(date, "yyyy-MM-dd");
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function nowForZone(timeZone?: string): Date {
+  if (!timeZone) return new Date();
+  return new Date(new Date().toLocaleString("en-US", { timeZone }));
+}
+
+function partsInZone(date: Date, timeZone?: string) {
+  const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === type)?.value || 0);
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour"),
+    minute: get("minute"),
+  };
+}
+
+function isSlotPast(day: Date, h: number, m: number, timeZone?: string): boolean {
+  const selectedKey = calendarDayKey(day, timeZone);
+  const todayKey = calendarDayKey(new Date(), timeZone);
+  if (selectedKey !== todayKey) return false;
+  const now = nowForZone(timeZone);
+  const nowParts = partsInZone(now, timeZone);
+  if (h < nowParts.hour) return true;
+  if (h === nowParts.hour && m <= nowParts.minute) return true;
+  return false;
+}
+
 type Props = {
   value: string;
   onChange: (value: string) => void;
   optional?: boolean;
   id?: string;
+  /** When set, past time slots on "today" in this zone are disabled (e.g. Asia/Kolkata). */
+  timeZone?: string;
 };
 
 function timezoneLabel() {
@@ -69,7 +119,13 @@ function timezoneLabel() {
   }
 }
 
-export function DateTimePicker({ value, onChange, optional = false, id }: Props) {
+export function DateTimePicker({
+  value,
+  onChange,
+  optional = false,
+  id,
+  timeZone = QUOTE_TIME_ZONE,
+}: Props) {
   const selected = parseLocalDateTimeValue(value);
   const [viewMonth, setViewMonth] = useState(
     () => startOfMonth(selected || new Date())
@@ -78,7 +134,7 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
   const [sideBySide, setSideBySide] = useState(false);
   const calendarRef = useRef<HTMLDivElement>(null);
   const selectedSlotRef = useRef<HTMLButtonElement>(null);
-  const today = startOfDay(new Date());
+  const today = startOfDay(nowForZone(timeZone));
 
   const days = useMemo(() => {
     const start = startOfWeek(startOfMonth(viewMonth), { weekStartsOn: 1 });
@@ -191,7 +247,7 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
             {days.map((day) => {
               const inMonth = isSameMonth(day, viewMonth);
               const active = selected ? isSameDay(day, selected) : false;
-              const todayMark = isToday(day);
+              const todayMark = calendarDayKey(day, timeZone) === calendarDayKey(new Date(), timeZone);
               const past = isBefore(startOfDay(day), today);
 
               if (!inMonth) {
@@ -275,6 +331,10 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
           >
             {TIME_SLOTS.map((slot) => {
               const active = selectedKey === slot.key;
+              const slotPast =
+                hasDate && selected
+                  ? isSlotPast(selected, slot.h, slot.m, timeZone)
+                  : false;
               return (
                 <button
                   key={slot.key}
@@ -282,12 +342,15 @@ export function DateTimePicker({ value, onChange, optional = false, id }: Props)
                   type="button"
                   role="option"
                   aria-selected={active}
+                  disabled={slotPast}
                   onClick={() => pickSlot(slot.h, slot.m)}
                   className={[
                     "flex h-9 w-full shrink-0 items-center justify-center rounded-lg border text-[13px] font-semibold tabular-nums transition-all duration-150",
                     active
                       ? "border-mid-green bg-mid-green text-white shadow-[0_6px_14px_rgba(45,106,79,0.22)]"
-                      : "border-mid-green/35 bg-white text-mid-green hover:border-mid-green hover:bg-mid-green/[0.06]",
+                      : slotPast
+                        ? "cursor-not-allowed border-dark-primary/8 bg-dark-secondary/[0.04] text-mid-green/40"
+                        : "border-mid-green/35 bg-white text-mid-green hover:border-mid-green hover:bg-mid-green/[0.06]",
                   ].join(" ")}
                 >
                   {slot.label}

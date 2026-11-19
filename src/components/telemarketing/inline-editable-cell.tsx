@@ -8,6 +8,7 @@ export function InlineEditableCell({
   placeholder,
   display,
   emptyActionLabel,
+  fieldLabel,
   onSave,
   monospace,
   className = "",
@@ -16,6 +17,8 @@ export function InlineEditableCell({
   placeholder?: string;
   display?: string;
   emptyActionLabel?: string;
+  /** Accessible name for the edit control, e.g. "Company" or contact name. */
+  fieldLabel?: string;
   onSave: (next: string) => Promise<void>;
   monospace?: boolean;
   className?: string;
@@ -55,6 +58,11 @@ export function InlineEditableCell({
   }
 
   const shown = display ?? (value.trim() || "");
+  const editAriaLabel = fieldLabel
+    ? `Edit ${fieldLabel}`
+    : placeholder && placeholder !== "—"
+      ? `Edit ${placeholder}`
+      : "Edit field";
 
   if (editing) {
     return (
@@ -113,7 +121,7 @@ export function InlineEditableCell({
       </span>
       <button
         type="button"
-        aria-label={`Edit ${placeholder || "field"}`}
+        aria-label={editAriaLabel}
         className={`shrink-0 rounded p-0.5 text-mid-green hover:bg-dark-secondary/10 ${hover ? "opacity-100" : "opacity-0"} focus:opacity-100`}
         onClick={(e) => {
           e.stopPropagation();
