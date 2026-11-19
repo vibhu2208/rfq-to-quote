@@ -88,6 +88,19 @@ export async function GET(req: NextRequest) {
   const take = Math.min(Number(searchParams.get("take") || 50) || 50, 200);
   const skip = Math.max(Number(searchParams.get("skip") || 0) || 0, 0);
   const sort = searchParams.get("sort") === "asc" ? "asc" : "desc";
+  const sortByRaw = searchParams.get("sortBy") || "createdAt";
+  const sortBy =
+    sortByRaw === "company" || sortByRaw === "name" || sortByRaw === "callStatus"
+      ? sortByRaw
+      : "createdAt";
+  const orderBy: Prisma.TelemarketingContactOrderByWithRelationInput[] =
+    sortBy === "company"
+      ? [{ company: sort }, { id: sort }]
+      : sortBy === "name"
+        ? [{ name: sort }, { id: sort }]
+        : sortBy === "callStatus"
+          ? [{ callStatus: sort }, { id: sort }]
+          : [{ createdAt: sort }, { id: sort }];
 
   const baseWhere: Prisma.TelemarketingContactWhereInput = {
     archivedAt: where.archivedAt,
@@ -97,7 +110,7 @@ export async function GET(req: NextRequest) {
   const [items, total, statusGroups, dueReminders] = await Promise.all([
     prisma.telemarketingContact.findMany({
       where,
-      orderBy: { createdAt: sort },
+      orderBy,
       take,
       skip,
       select: {
@@ -189,7 +202,7 @@ export async function POST(req: NextRequest) {
     const phone = row.phone.trim();
     const email = row.email.trim();
     if (!phone && !email) {
-      errors.push({ index: i, error: "Phone or email required" });
+      errors.push({ index: i, error: "Phone or email is required" });
       continue;
     }
 

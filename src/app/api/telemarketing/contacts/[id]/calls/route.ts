@@ -2,12 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import { prisma } from "@/lib/prisma";
-import {
-  callStatusLabelForTimeline,
-  moveContactToLead,
-} from "@/lib/telemarketing/move-to-lead";
+import { moveContactToLead } from "@/lib/telemarketing/move-to-lead";
 import { logTelemarketingTimeline } from "@/lib/telemarketing/timeline";
 import { TELEMARKETING_CALL_STATUS_LABELS } from "@/lib/telemarketing/constants";
+import {
+  buildCallLoggedTimelineBody,
+  formatFollowUpTimelineBody,
+  validateFutureDateTime,
+} from "@/lib/telemarketing/datetime";
+import { buildStatusChangeBody } from "@/lib/telemarketing/contact-update";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -40,6 +43,12 @@ export async function POST(req: NextRequest, { params }: Params) {
   }
 
   const followUpAt = parsed.data.followUpAt ? new Date(parsed.data.followUpAt) : null;
+  if (followUpAt) {
+    const followUpError = validateFutureDateTime(followUpAt);
+    if (followUpError) {
+      return NextResponse.json({ error: followUpError }, { status: 400 });
+    }
+  }
 
   const call = await prisma.telemarketingCall.create({
     data: {
@@ -61,10 +70,20 @@ export async function POST(req: NextRequest, { params }: Params) {
     contactId: id,
     type: "CALL_LOGGED",
     title: "Call logged",
-    body: `Call outcome: ${callStatusLabelForTimeline(parsed.data.status)}`,
+    body: buildCallLoggedTimelineBody(parsed.data.status, parsed.data.note),
     actorId: session?.user?.id,
     meta: { callId: call.id, status: parsed.data.status, note: parsed.data.note },
   });
+
+  if (parsed.data.status !== contact.callStatus) {
+    await logTelemarketingTimeline({
+      contactId: id,
+      type: "STATUS_CHANGED",
+      title: "Status changed",
+      body: buildStatusChangeBody(contact.callStatus, parsed.data.status),
+      actorId: session?.user?.id,
+    });
+  }
 
   let lead: { id: string; leadNumber: string } | null = null;
   if (parsed.data.status === "MOVE_TO_LEAD") {
@@ -91,7 +110,7 @@ export async function POST(req: NextRequest, { params }: Params) {
       contactId: id,
       type: "REMINDER_CREATED",
       title: "Follow-up scheduled",
-      body: `Call follow-up at ${followUpAt.toISOString()}`,
+      body: formatFollowUpTimelineBody(followUpAt),
       actorId: session?.user?.id,
     });
   }
