@@ -331,7 +331,12 @@ export function AppNav({ email: userEmail }: { email: string }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [menuPath, setMenuPath] = useState(pathname);
+  const [compactNav, setCompactNav] = useState(true);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const navMeasureRef = useRef<HTMLDivElement>(null);
+  const userSlotRef = useRef<HTMLDivElement>(null);
+  const brandRef = useRef<HTMLAnchorElement>(null);
 
   if (pathname !== menuPath) {
     setMenuPath(pathname);
@@ -364,29 +369,73 @@ export function AppNav({ email: userEmail }: { email: string }) {
     };
   }, [mobileOpen]);
 
+  useLayoutEffect(() => {
+    const bar = barRef.current;
+    const measure = navMeasureRef.current;
+  const brand = brandRef.current;
+    const userSlot = userSlotRef.current;
+    if (!bar || !measure || !brand || !userSlot) return;
+
+    const sync = () => {
+      const wideScreen = window.matchMedia("(min-width: 1440px)").matches;
+      if (!wideScreen) {
+        setCompactNav(true);
+        return;
+      }
+      const gap = 16;
+      const available =
+        bar.clientWidth - brand.offsetWidth - userSlot.offsetWidth - gap;
+      const needed = measure.scrollWidth;
+      setCompactNav(needed > available - 4);
+    };
+
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(bar);
+    ro.observe(measure);
+    ro.observe(brand);
+    ro.observe(userSlot);
+    window.addEventListener("resize", sync);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+    };
+  }, [pathname]);
+
   // Insert Ledger after Invoices on desktop.
   const ledgerInsertAfter = "/invoices";
+  const showInlineNav = !compactNav;
 
   return (
     <header className="sticky top-0 z-40 shrink-0 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
-      <div className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
-        <button
-          type="button"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background xl:hidden"
-          onClick={() => setMobileOpen(true)}
-          aria-label="Open menu"
-        >
-          <Menu className="h-5 w-5" strokeWidth={1.6} />
-        </button>
+      <div ref={barRef} className="flex h-14 items-center gap-2 px-3 sm:px-4 lg:px-5">
+        {compactNav ? (
+          <button
+            type="button"
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-light-green hover:bg-background/10 hover:text-background"
+            onClick={() => setMobileOpen(true)}
+            aria-label="Open menu"
+          >
+            <Menu className="h-5 w-5" strokeWidth={1.6} />
+          </button>
+        ) : null}
 
-        <Link href="/dashboard" className="mr-1 flex shrink-0 items-center gap-2.5">
+        <Link
+          ref={brandRef}
+          href="/dashboard"
+          className="mr-1 flex shrink-0 items-center gap-2.5"
+        >
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-mid-green text-sm font-semibold tracking-tight">
             Q
           </span>
           <span className="text-[15px] font-semibold tracking-tight">QuoteFlow</span>
         </Link>
 
-        <nav className="hidden min-w-0 flex-1 items-center gap-0.5 overflow-x-auto xl:flex [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <nav
+          className={`min-w-0 flex-1 items-center gap-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+            showInlineNav ? "flex" : "hidden"
+          }`}
+        >
           {desktopLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
@@ -397,23 +446,44 @@ export function AppNav({ email: userEmail }: { email: string }) {
           ))}
         </nav>
 
-        <div className="relative z-10 ml-auto flex shrink-0 items-center gap-1.5 bg-dark-secondary pl-1">
+        <div
+          aria-hidden
+          className="pointer-events-none invisible absolute -left-[9999px] top-0 flex w-max items-center gap-0.5"
+          ref={navMeasureRef}
+        >
+          {desktopLinks.map((item) => (
+            <span key={item.href} className="contents">
+              <NavLink item={item} pathname={pathname} />
+              {item.href === ledgerInsertAfter ? (
+                <LedgerDropdown pathname={pathname} />
+              ) : null}
+            </span>
+          ))}
+        </div>
+
+        <div
+          ref={userSlotRef}
+          className="relative z-10 ml-auto flex shrink-0 items-center gap-1.5 bg-dark-secondary pl-1"
+        >
           <div className="relative" ref={userMenuRef}>
             <button
               type="button"
               onClick={() => setUserOpen((v) => !v)}
-              className="inline-flex items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-background/10"
+              className="inline-flex max-w-full shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-2 hover:bg-background/10"
               aria-expanded={userOpen}
               aria-haspopup="menu"
+              aria-label={`Account menu for ${userEmail}`}
             >
-              <span className="flex h-8 w-8 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold text-background">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold text-background">
                 {initialsFromEmail(userEmail)}
               </span>
-              <span className="hidden max-w-[10rem] truncate text-sm text-light-green xl:inline">
-                {userEmail}
-              </span>
+              {showInlineNav ? (
+                <span className="hidden max-w-[12rem] truncate text-sm text-light-green sm:inline">
+                  {userEmail}
+                </span>
+              ) : null}
               <ChevronDown
-                className={`h-3.5 w-3.5 text-light-green transition ${userOpen ? "rotate-180" : ""}`}
+                className={`h-3.5 w-3.5 shrink-0 text-light-green transition ${userOpen ? "rotate-180" : ""}`}
               />
             </button>
             {userOpen ? (
@@ -440,8 +510,8 @@ export function AppNav({ email: userEmail }: { email: string }) {
         </div>
       </div>
 
-      {mobileOpen ? (
-        <div className="fixed inset-0 z-50 xl:hidden">
+      {mobileOpen && compactNav ? (
+        <div className="fixed inset-0 z-50">
           <button
             type="button"
             aria-label="Close menu"

@@ -26,6 +26,13 @@ import type { TelemarketingCallStatus } from "@prisma/client";
 import { useToast } from "@/components/app-toast";
 import { CallbackDueModal } from "@/components/telemarketing/callback-due-modal";
 import { ConfirmModal } from "@/components/telemarketing/confirm-modal";
+import { useTelemarketingChrome } from "@/components/telemarketing/telemarketing-chrome";
+import { partitionTelemarketingTags } from "@/lib/telemarketing/tag-groups";
+import {
+  contactRequiresPhoneOrEmail,
+  validateEmailInput,
+  validatePhoneInput,
+} from "@/lib/telemarketing/validation";
 
 const NEW_CONTACT_FIELD_LABELS: Record<string, string> = {
   name: "Name",
@@ -65,6 +72,7 @@ const PAGE_SIZE = 50;
 
 export function TelemarketingWorkbench() {
   const { toast } = useToast();
+  const { setDrawerOpen } = useTelemarketingChrome();
   const [items, setItems] = useState<ContactRow[]>([]);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
   const [tagOptions, setTagOptions] = useState<TagOption[]>([]);
@@ -79,6 +87,8 @@ export function TelemarketingWorkbench() {
   const [view, setView] = useState<"active" | "archived">("active");
   const [assignee, setAssignee] = useState("ALL");
   const [districtTag, setDistrictTag] = useState("ALL");
+  const [boardTag, setBoardTag] = useState("ALL");
+  const [altDraftErrors, setAltDraftErrors] = useState<Record<string, string>>({});
   const [sortBy, setSortBy] = useState<SortColumn>("createdAt");
   const [sortAsc, setSortAsc] = useState(false);
   const [page, setPage] = useState(0);
@@ -119,7 +129,8 @@ export function TelemarketingWorkbench() {
     { name: "", company: "", role: "", phone: "", email: "", assignedToUserId: "" },
   ]);
 
-  const moreFiltersActive = assignee !== "ALL" || districtTag !== "ALL";
+  const moreFiltersActive =
+    assignee !== "ALL" || districtTag !== "ALL" || boardTag !== "ALL";
 
   useEffect(() => {
     if (!moreFiltersOpen) return;
@@ -148,13 +159,14 @@ export function TelemarketingWorkbench() {
     if (status !== "ALL") p.set("status", status);
     if (source !== "ALL") p.set("source", source);
     if (assignee !== "ALL") p.set("assignee", assignee === "UNASSIGNED" ? "unassigned" : assignee);
-    if (districtTag !== "ALL") p.set("tag", districtTag);
+    const activeTag = districtTag !== "ALL" ? districtTag : boardTag !== "ALL" ? boardTag : null;
+    if (activeTag) p.set("tag", activeTag);
     p.set("view", view);
     p.set("sort", sortAsc ? "asc" : "desc");
     p.set("sortBy", sortBy);
     p.set("take", String(PAGE_SIZE));
     return p.toString();
-  }, [qDebounced, status, source, view, assignee, districtTag, sortAsc, sortBy]);
+  }, [qDebounced, status, source, view, assignee, districtTag, boardTag, sortAsc, sortBy]);
 
   const initialLoadedRef = useRef(false);
 
@@ -206,7 +218,6 @@ export function TelemarketingWorkbench() {
 
   useEffect(() => {
     setPage(0);
-    setItems([]);
     initialLoadedRef.current = false;
     setInitialLoaded(false);
   }, [listQueryBase]);
@@ -223,16 +234,17 @@ export function TelemarketingWorkbench() {
     }
   }
 
-  const filtersActive =
+  const searchFiltersActive =
     Boolean(qDebounced) ||
-    status !== "ALL" ||
     source !== "ALL" ||
     assignee !== "ALL" ||
-    districtTag !== "ALL";
+    districtTag !== "ALL" ||
+    boardTag !== "ALL";
 
   function emptyTableMessage() {
     if (view === "archived") return "No archived contacts";
-    if (filtersActive) return "No contacts match your search";
+    if (searchFiltersActive) return "No contacts match your search";
+    if (status !== "ALL") return "No contacts in this status";
     return "No contacts yet";
   }
 
@@ -241,12 +253,39 @@ export function TelemarketingWorkbench() {
     void loadContactsPage(0);
   }, [loadContactsPage]);
 
-  const districtTags = useMemo(
-    () => tagOptions.filter((t) => t.tag.includes("district") || t.tag === "area"),
+  const { district: districtTags, board: boardTags } = useMemo(
+    () => partitionTelemarketingTags(tagOptions),
     [tagOptions]
   );
 
+  const openDrawer = useCallback(
+    (id: string) => {
+      setDrawerId(id);
+      setDrawerOpen(true);
+    },
+    [setDrawerOpen]
+  );
+
+  const closeDrawer = useCallback(() => {
+    setDrawerId(null);
+    setDrawerOpen(false);
+  }, [setDrawerOpen]);
+
   async function patchField(id: string, field: string, value: string) {
+    if (field === "phone") {
+      const v = validatePhoneInput(value);
+      if (!v.ok) {
+        toast(v.error, "error");
+        throw new Error(v.error);
+      }
+    }
+    if (field === "email") {
+      const v = validateEmailInput(value);
+      if (!v.ok) {
+        toast(v.error, "error");
+        throw new Error(v.error);
+      }
+    }
     const res = await fetch(`/api/telemarketing/contacts/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -376,6 +415,26 @@ export function TelemarketingWorkbench() {
   async function saveAlternative(primaryId: string) {
     const draft = altDraft[primaryId];
     if (!draft) return;
+    if (!contactRequiresPhoneOrEmail(draft.phone, draft.email)) {
+      const msg = "Phone or email is required";
+      setAltDraftErrors((e) => ({ ...e, [primaryId]: msg }));
+      return;
+    }
+    const phoneV = validatePhoneInput(draft.phone);
+    if (!phoneV.ok) {
+      setAltDraftErrors((e) => ({ ...e, [primaryId]: phoneV.error }));
+      return;
+    }
+    const emailV = validateEmailInput(draft.email);
+    if (!emailV.ok) {
+      setAltDraftErrors((e) => ({ ...e, [primaryId]: emailV.error }));
+      return;
+    }
+    setAltDraftErrors((e) => {
+      const next = { ...e };
+      delete next[primaryId];
+      return next;
+    });
     const res = await fetch(`/api/telemarketing/contacts/${primaryId}/alternatives`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -505,7 +564,7 @@ export function TelemarketingWorkbench() {
         key={row.id}
         className={`group border-t border-dark-primary/6 text-[12px] hover:bg-background ${child ? "bg-dark-secondary/[0.04]" : "cursor-pointer"}`}
         onClick={() => {
-          if (!child) setDrawerId(row.id);
+          if (!child) openDrawer(row.id);
         }}
       >
         <td className="w-8 px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
@@ -549,6 +608,7 @@ export function TelemarketingWorkbench() {
               <InlineEditableCell
                 value={row.company}
                 placeholder="No company"
+                fieldLabel="Company"
                 fullWidth
                 onSave={(v) => patchField(row.id, "company", v)}
               />
@@ -581,6 +641,7 @@ export function TelemarketingWorkbench() {
           <InlineEditableCell
             value={row.name}
             placeholder="Unnamed contact"
+            fieldLabel={row.company?.trim() || row.name?.trim() || "contact"}
             onSave={(v) => patchField(row.id, "name", v)}
           />
         </td>
@@ -588,6 +649,7 @@ export function TelemarketingWorkbench() {
           <InlineEditableCell
             value={row.phone}
             emptyActionLabel="Add phone"
+            fieldLabel="Phone"
             monospace
             onSave={(v) => patchField(row.id, "phone", v)}
           />
@@ -596,10 +658,14 @@ export function TelemarketingWorkbench() {
           <InlineEditableCell
             value={row.email}
             emptyActionLabel="Add email"
+            fieldLabel="Email"
             onSave={(v) => patchField(row.id, "email", v)}
           />
         </td>
-        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+        <td
+          className="relative z-0 px-2 py-1.5"
+          onClick={(e) => e.stopPropagation()}
+        >
           <CallStatusDropdown
             status={row.callStatus}
             onBeforeChange={(s) => handleStatusPick(row, s)}
@@ -607,8 +673,8 @@ export function TelemarketingWorkbench() {
             onMoveToLead={() => requestMoveToLead(row)}
           />
         </td>
-        <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
-          <div className="relative max-w-[9.5rem]">
+        <td className="min-w-[8.5rem] px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
+          <div className="relative w-full min-w-[7.5rem] max-w-[9.5rem]">
             <select
               className="h-8 w-full appearance-none rounded-lg border-0 bg-dark-primary/[0.06] py-1.5 pl-2.5 pr-7 text-[11px] font-medium text-dark-primary outline-none"
               value={row.assignedTo?.id || ""}
@@ -628,13 +694,13 @@ export function TelemarketingWorkbench() {
           {format(new Date(row.createdAt), "d MMM yyyy")}
         </td>
         <td
-          className="sticky right-0 bg-white px-2 py-1.5 shadow-[-4px_0_8px_rgba(0,0,0,0.04)] group-hover:bg-background"
+          className="sticky right-0 z-20 w-[6.75rem] border-l border-dark-primary/8 bg-white px-2 py-1.5 shadow-[-8px_0_12px_rgba(11,43,38,0.08)] group-hover:bg-background"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-1">
             <IconAction
               label="Open timeline"
-              onClick={() => setDrawerId(row.id)}
+              onClick={() => openDrawer(row.id)}
               tone="green"
             >
               <Clock className="h-4 w-4" />
@@ -655,7 +721,7 @@ export function TelemarketingWorkbench() {
     "h-9 appearance-none rounded-lg border border-dark-primary/10 bg-white py-1.5 pl-3 pr-8 text-[13px] text-dark-primary outline-none focus:border-mid-green/40";
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 pb-32">
       <div className="shrink-0 rounded-xl border border-dark-primary/8 bg-gradient-to-b from-white to-[#f3f5f4] px-3 py-2.5 shadow-sm">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="mr-auto flex min-w-0 items-center gap-2.5">
@@ -702,8 +768,8 @@ export function TelemarketingWorkbench() {
               onChange={(e) => setSource(e.target.value)}
             >
               <option value="ALL">Source: All</option>
-              <option value="IMPORTED">Imported</option>
-              <option value="MANUAL">Manual</option>
+              <option value="IMPORTED">Source: Imported</option>
+              <option value="MANUAL">Source: Manual</option>
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-dark-primary/45" />
           </div>
@@ -744,11 +810,14 @@ export function TelemarketingWorkbench() {
                   </select>
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-[11px] font-medium text-mid-green">District / tag</span>
+                  <span className="text-[11px] font-medium text-mid-green">District</span>
                   <select
                     className={`${fieldClass} w-full`}
                     value={districtTag}
-                    onChange={(e) => setDistrictTag(e.target.value)}
+                    onChange={(e) => {
+                      setDistrictTag(e.target.value);
+                      if (e.target.value !== "ALL") setBoardTag("ALL");
+                    }}
                   >
                     <option value="ALL">All</option>
                     {districtTags.map((t) => (
@@ -756,14 +825,24 @@ export function TelemarketingWorkbench() {
                         {t.tag} ({t.count})
                       </option>
                     ))}
-                    {tagOptions
-                      .filter((t) => !districtTags.some((d) => d.tag === t.tag))
-                      .slice(0, 40)
-                      .map((t) => (
-                        <option key={t.tag} value={t.tag}>
-                          {t.tag} ({t.count})
-                        </option>
-                      ))}
+                  </select>
+                </label>
+                <label className="block space-y-1">
+                  <span className="text-[11px] font-medium text-mid-green">Board</span>
+                  <select
+                    className={`${fieldClass} w-full`}
+                    value={boardTag}
+                    onChange={(e) => {
+                      setBoardTag(e.target.value);
+                      if (e.target.value !== "ALL") setDistrictTag("ALL");
+                    }}
+                  >
+                    <option value="ALL">All</option>
+                    {boardTags.map((t) => (
+                      <option key={t.tag} value={t.tag}>
+                        {t.tag} ({t.count})
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {moreFiltersActive ? (
@@ -773,6 +852,7 @@ export function TelemarketingWorkbench() {
                     onClick={() => {
                       setAssignee("ALL");
                       setDistrictTag("ALL");
+                      setBoardTag("ALL");
                     }}
                   >
                     Clear filters
@@ -802,21 +882,19 @@ export function TelemarketingWorkbench() {
         </div>
       </div>
 
-      <div className="shrink-0">
-        <CallStatusProcessBar
-          activeStatus={status}
-          statusCounts={statusCounts}
-          onSelect={(next) => {
-            setStatus(next);
-            setPage(0);
-          }}
-          countsPending={!initialLoaded}
-        />
-      </div>
-
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-dark-primary/10 bg-white shadow-sm">
         <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full min-w-[1040px] table-fixed text-left">
+          <div className="min-w-[1040px]">
+            <CallStatusProcessBar
+              activeStatus={status}
+              statusCounts={statusCounts}
+              onSelect={(next) => {
+                setStatus(next);
+                setPage(0);
+              }}
+              countsPending={!initialLoaded}
+            />
+        <table className="w-full table-fixed text-left">
           <thead className="sticky top-0 z-10 border-b border-dark-primary/10 bg-[#f7f8f7] text-[10px] font-semibold uppercase tracking-wide text-mid-green">
             <tr>
               <th className="w-8 px-2 py-2" />
@@ -829,14 +907,14 @@ export function TelemarketingWorkbench() {
               </th>
               <th className="w-[7.5rem] px-2 py-2">Phone Number</th>
               <th className="w-[9rem] px-2 py-2">Email</th>
-              <th className="w-[9.5rem] px-2 py-2">
+              <th className="w-[10.5rem] px-2 py-2">
                 <SortHeader label="Call Status" active={sortBy === "callStatus"} asc={sortAsc} onClick={() => toggleSort("callStatus")} />
               </th>
-              <th className="w-[7.5rem] px-2 py-2">Assigned to</th>
+              <th className="w-[8.5rem] px-2 py-2">Assigned to</th>
               <th className="w-[5.5rem] px-2 py-2">
                 <SortHeader label="Added" active={sortBy === "createdAt"} asc={sortAsc} onClick={() => toggleSort("createdAt")} />
               </th>
-              <th className="sticky right-0 z-20 w-[7.5rem] bg-background px-2 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.04)]">
+              <th className="sticky right-0 z-20 w-[6.75rem] border-l border-dark-primary/8 bg-[#f7f8f7] px-2 py-2 shadow-[-8px_0_12px_rgba(11,43,38,0.08)]">
                 Actions
               </th>
             </tr>
@@ -844,7 +922,7 @@ export function TelemarketingWorkbench() {
           <tbody>
             {loading && items.length === 0 ? (
               <TableSkeletonRows />
-            ) : !loading && items.length === 0 ? (
+            ) : items.length === 0 && !listFetching ? (
               <tr>
                 <td colSpan={10} className="px-3 py-10 text-center text-sm text-mid-green">
                   {emptyTableMessage()}
@@ -863,6 +941,7 @@ export function TelemarketingWorkbench() {
                         Alternative draft
                       </td>
                       <td className="px-2 py-1.5" colSpan={6}>
+                        <div className="flex flex-col gap-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <input
                             className={fieldClass}
@@ -907,6 +986,7 @@ export function TelemarketingWorkbench() {
                           <button
                             type="button"
                             title="Discard"
+                            aria-label="Discard alternative contact draft"
                             className="rounded-md border border-rose-200 p-1.5 text-rose-700"
                             onClick={() =>
                               setAltDraft((d) => {
@@ -918,6 +998,10 @@ export function TelemarketingWorkbench() {
                           >
                             <Trash2 className="h-4 w-4" />
                           </button>
+                        </div>
+                        {altDraftErrors[row.id] ? (
+                          <p className="text-xs text-rose-600">{altDraftErrors[row.id]}</p>
+                        ) : null}
                         </div>
                       </td>
                     </tr>
@@ -933,6 +1017,7 @@ export function TelemarketingWorkbench() {
             )}
           </tbody>
         </table>
+          </div>
         </div>
         <TelemarketingPagination
           page={page}
@@ -977,7 +1062,7 @@ export function TelemarketingWorkbench() {
         <TelemarketingContactDrawer
           contactId={drawerId}
           users={users}
-          onClose={() => setDrawerId(null)}
+          onClose={closeDrawer}
           onChanged={() => refreshList()}
         />
       ) : null}

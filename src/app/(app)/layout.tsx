@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
 import { AppNav } from "@/components/app-nav";
-import { QuoteAgentFab } from "@/components/quote-agent-fab";
+import { AppShellClient } from "@/components/telemarketing/app-shell-client";
 import { ToastProvider } from "@/components/app-toast";
 import {
   NavigationProgress,
@@ -21,15 +21,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <ToastProvider>
       <RouteTransitionProvider>
-        <div className="relative flex h-dvh flex-col overflow-hidden bg-background">
-          <NavigationProgress />
-          <AppNav email={session.user?.email ?? ""} />
-          <main className="relative mx-auto flex min-h-0 w-full max-w-[110rem] flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 lg:px-5">
-            {children}
-            <RouteTransitionOverlay />
-          </main>
-          <QuoteAgentFab />
-        </div>
+        <AppShellClient>
+          <div className="relative flex h-dvh flex-col overflow-hidden bg-background">
+            <NavigationProgress />
+            <AppNav email={session.user?.email ?? ""} />
+            <main className="relative mx-auto flex min-h-0 w-full max-w-[110rem] flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 lg:px-5">
+              {children}
+              <RouteTransitionOverlay />
+            </main>
+          </div>
+        </AppShellClient>
       </RouteTransitionProvider>
     </ToastProvider>
   );
