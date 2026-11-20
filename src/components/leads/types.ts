@@ -28,6 +28,7 @@ export type LeadRow = {
   quotes: {
     id: string;
     quoteNumber: string;
+    quoteName?: string;
     status: string;
     grandTotal: string | number;
     version: number;

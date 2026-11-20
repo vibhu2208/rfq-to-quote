@@ -5,6 +5,7 @@ import { logLeadActivity } from "@/lib/leads/activity";
 import { buildReminderCopy } from "@/lib/leads/reminder-copy";
 import { prisma } from "@/lib/prisma";
 import { sendWhatsAppText } from "@/lib/whatsapp";
+import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 
 export type FollowUpNotifyChannelResult = {
   sent: boolean;
@@ -34,6 +35,11 @@ export async function createFollowUp(input: {
   emailBody?: string;
   whatsappBody?: string;
 }) {
+  const futureErr = validateFutureDateTime(input.dueAt);
+  if (futureErr) {
+    throw new Error(futureErr);
+  }
+
   const notifyChannels = [
     ...(input.notifyEmail ? (["EMAIL"] as const) : []),
     ...(input.notifyWhatsapp ? (["WHATSAPP"] as const) : []),

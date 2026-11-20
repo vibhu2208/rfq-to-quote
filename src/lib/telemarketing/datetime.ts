@@ -51,12 +51,7 @@ export function buildCallLoggedTimelineBody(status: TelemarketingCallStatus, not
   return `Call outcome: ${outcome}\n${trimmed}`;
 }
 
-export function validateFutureDateTime(d: Date, now: Date = new Date()): string | null {
-  if (d.getTime() < now.getTime() - 30_000) {
-    return "Follow-up must be in the future";
-  }
-  return null;
-}
+export { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 
 export function defaultLogCallStatus(
   contactStatus: TelemarketingCallStatus

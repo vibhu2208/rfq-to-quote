@@ -3993,17 +3993,25 @@ export function QuoteBuilder({
                   </label>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
-                      Amount{form.manualOverrides.otherTaxAmount ? " · man" : ""}
+                      Amount
                     </span>
                     <input
                       type="number"
                       min={0}
                       step="0.01"
-                      value={calc.otherTaxAmount}
+                      value={form.otherTaxAmount}
                       onChange={(e) =>
-                        setOverride("otherTaxAmount", Number(e.target.value))
+                        setForm((f) => ({
+                          ...f,
+                          otherTaxAmount: Number(e.target.value) || 0,
+                          manualOverrides: {
+                            ...f.manualOverrides,
+                            otherTaxAmount: false,
+                          },
+                        }))
                       }
                       className={`${chargeInput} w-[6.5rem]`}
+                      title="Other tax value — rolls into grand total (not a manual override)"
                     />
                   </label>
                 </div>
@@ -4083,22 +4091,17 @@ export function QuoteBuilder({
                       <span className="tabular-nums font-medium">{formatMoney(calc.igstAmount)}</span>
                     </div>
                   ) : null}
-                  <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
+                  <div className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
                     <span className="text-sm font-semibold">
                       {form.withGst ? "Grand total incl. GST" : "Grand total"}
-                      {form.manualOverrides.grandTotal ? " · man" : ""}
                     </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={calc.grandTotal}
-                      onChange={(e) =>
-                        setOverride("grandTotal", Number(e.target.value))
-                      }
+                    <span
                       aria-label={form.withGst ? "Grand total incl. GST" : "Grand total"}
-                      className="w-36 bg-transparent text-right text-lg font-bold tabular-nums text-background outline-none"
-                    />
-                  </label>
+                      className="text-right text-lg font-bold tabular-nums text-background"
+                    >
+                      {formatMoney(calc.grandTotal)}
+                    </span>
+                  </div>
                 </div>
               </div>
             </section>

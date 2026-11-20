@@ -58,6 +58,7 @@ async function getDrawerLead(id: string) {
       nextFollowUpAt: true,
       disqualifyReason: true,
       createdAt: true,
+      updatedAt: true,
       assignedTo: { select: { id: true, name: true, email: true } },
       quotes: {
         orderBy: { createdAt: "desc" },

@@ -331,7 +331,9 @@ export function AppNav({ email: userEmail }: { email: string }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
   const [menuPath, setMenuPath] = useState(pathname);
-  const [compactNav, setCompactNav] = useState(true);
+  const [compactNav, setCompactNav] = useState(false);
+  const [navLayoutReady, setNavLayoutReady] = useState(false);
+  const compactRef = useRef(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const navMeasureRef = useRef<HTMLDivElement>(null);
@@ -376,30 +378,56 @@ export function AppNav({ email: userEmail }: { email: string }) {
     const userSlot = userSlotRef.current;
     if (!bar || !measure || !brand || !userSlot) return;
 
+    const HYST_IN = 6;
+    const HYST_OUT = 20;
+    const HAMBURGER_W = 36;
+
     const sync = () => {
       const gap = 12;
+      const hamburger = compactRef.current ? HAMBURGER_W : 0;
       const available =
-        bar.clientWidth - brand.offsetWidth - userSlot.offsetWidth - gap * 2;
+        bar.clientWidth -
+        brand.offsetWidth -
+        userSlot.offsetWidth -
+        gap * 2 -
+        hamburger;
       const needed = measure.scrollWidth;
-      setCompactNav(needed > available - 2);
+      const compact = compactRef.current;
+      if (compact) {
+        if (needed <= available - HYST_OUT) {
+          compactRef.current = false;
+          setCompactNav(false);
+        }
+      } else if (needed > available - HYST_IN) {
+        compactRef.current = true;
+        setCompactNav(true);
+      }
+      setNavLayoutReady(true);
+    };
+
+    let raf = 0;
+    const schedule = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(sync);
     };
 
     sync();
-    const ro = new ResizeObserver(sync);
+    const ro = new ResizeObserver(schedule);
     ro.observe(bar);
     ro.observe(measure);
     ro.observe(brand);
     ro.observe(userSlot);
-    window.addEventListener("resize", sync);
+    window.addEventListener("resize", schedule);
     return () => {
+      cancelAnimationFrame(raf);
       ro.disconnect();
-      window.removeEventListener("resize", sync);
+      window.removeEventListener("resize", schedule);
     };
-  }, [pathname]);
+  }, []);
 
   // Insert Ledger after Invoices on desktop.
   const ledgerInsertAfter = "/invoices";
-  const showInlineNav = !compactNav;
+  const showInlineNav = !navLayoutReady || !compactNav;
 
   return (
     <header className="sticky top-0 z-40 shrink-0 border-b border-white/10 bg-dark-secondary/95 text-background backdrop-blur-md">
@@ -407,7 +435,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
         ref={barRef}
         className="flex h-14 min-w-0 items-center gap-1.5 overflow-x-hidden px-2 sm:gap-2 sm:px-4 lg:px-5"
       >
-        {compactNav ? (
+        {navLayoutReady && compactNav ? (
           <button
             type="button"
             className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-light-green outline-none ring-mid-green/60 hover:bg-background/10 hover:text-background focus-visible:ring-2"
@@ -439,7 +467,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
 
         <nav
           className={`min-w-0 flex-1 items-center gap-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
-            showInlineNav ? "flex" : "hidden"
+            showInlineNav ? "flex" : "pointer-events-none invisible absolute h-0 w-0 overflow-hidden"
           }`}
         >
           {desktopLinks.map((item) => (
@@ -516,7 +544,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
         </div>
       </div>
 
-      {mobileOpen && compactNav ? (
+      {mobileOpen && navLayoutReady && compactNav ? (
         <div className="fixed inset-0 z-50">
           <button
             type="button"
