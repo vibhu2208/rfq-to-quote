@@ -9,6 +9,7 @@ import {
   createFollowUp,
   rescheduleFollowUp,
 } from "@/lib/leads/follow-ups";
+import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -53,10 +54,19 @@ export async function POST(req: NextRequest, { params }: Params) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
+  const dueAt = new Date(parsed.data.dueAt);
+  if (Number.isNaN(dueAt.getTime())) {
+    return NextResponse.json({ error: "A valid due date is required" }, { status: 400 });
+  }
+  const futureErr = validateFutureDateTime(dueAt);
+  if (futureErr) {
+    return NextResponse.json({ error: futureErr }, { status: 400 });
+  }
+
   const result = await createFollowUp({
     rfqId: id,
     type: parsed.data.type,
-    dueAt: new Date(parsed.data.dueAt),
+    dueAt,
     title: parsed.data.title,
     notes: parsed.data.notes,
     assignedToId: parsed.data.assignedToId,
@@ -110,6 +120,10 @@ export async function PATCH(req: NextRequest, { params }: Params) {
     const due = parsed.data.dueAt ? new Date(parsed.data.dueAt) : null;
     if (!due || Number.isNaN(due.getTime())) {
       return NextResponse.json({ error: "A valid due date is required" }, { status: 400 });
+    }
+    const futureErr = validateFutureDateTime(due);
+    if (futureErr) {
+      return NextResponse.json({ error: futureErr }, { status: 400 });
     }
     try {
       const followUp = await rescheduleFollowUp({
