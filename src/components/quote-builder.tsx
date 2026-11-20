@@ -36,6 +36,7 @@ import {
   describeGstAuto,
   formatMoney,
   hasManualMoneyOverride,
+  stripAdjustmentAmountOverrides,
   type ManualOverrides,
 } from "@/lib/tax";
 import {
@@ -464,10 +465,10 @@ function quoteSavePayload(
     showHsn: form.showHsn,
     showUnit: form.showUnit,
     gstMode: form.gstMode,
-    deliveryCharge: calc.deliveryCharge,
+    deliveryCharge: form.deliveryCharge,
     discountPercent: form.discountPercent,
-    discountAmount: calc.discountAmount,
-    otherTaxAmount: calc.otherTaxAmount,
+    discountAmount: form.discountAmount,
+    otherTaxAmount: form.otherTaxAmount,
     otherTaxLabel: form.otherTaxLabel,
     notes: "",
     quoteNumber: form.quoteNumber,
@@ -477,7 +478,7 @@ function quoteSavePayload(
     closingText: form.closingText,
     quoteDate: form.quoteDate,
     ...(status ? { status } : {}),
-    manualOverrides: form.manualOverrides,
+    manualOverrides: stripAdjustmentAmountOverrides(form.manualOverrides),
     subtotal: calc.subtotal,
     gstAmount: calc.gstAmount,
     grandTotal: calc.grandTotal,
@@ -1142,14 +1143,13 @@ export function QuoteBuilder({
       discountPercent: form.discountPercent,
       discountAmount: form.discountAmount,
       otherTaxAmount: form.otherTaxAmount,
-      overrides: { ...form.manualOverrides, gstAmount: false },
+      overrides: stripAdjustmentAmountOverrides({
+        ...form.manualOverrides,
+        gstAmount: false,
+      }),
       previous: {
-        subtotal: form.subtotal,
-        gstAmount: form.gstAmount,
-        otherTaxAmount: form.otherTaxAmount,
-        deliveryCharge: form.deliveryCharge,
-        discountAmount: form.discountAmount,
-        grandTotal: form.grandTotal,
+        subtotal: form.manualOverrides.subtotal ? form.subtotal : undefined,
+        gstAmount: form.manualOverrides.gstAmount ? form.gstAmount : undefined,
       },
     });
   }, [form, sellerState]);
@@ -3917,6 +3917,19 @@ export function QuoteBuilder({
                   </div>
                   <div className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {hasAppliedMarkup && vendorCostTotal > 0
+                        ? formatMoney(Math.max(0, calc.subtotal - vendorCostTotal))
+                        : "—"}
+                    </div>
+                  </div>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Discount
                     </span>
                     <div className="inline-flex items-center gap-1">
@@ -3965,21 +3978,54 @@ export function QuoteBuilder({
                       </span>
                     ) : null}
                   </div>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {calc.discountAmount > 0
+                        ? formatMoney(calc.discountAmount)
+                        : "—"}
+                    </div>
+                  </div>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
-                      Freight{form.manualOverrides.deliveryCharge ? " · man" : ""}
+                      Freight
                     </span>
                     <input
                       type="number"
                       min={0}
                       step="0.01"
-                      value={calc.deliveryCharge}
+                      value={form.deliveryCharge}
                       onChange={(e) =>
-                        setOverride("deliveryCharge", Number(e.target.value))
+                        setForm((f) => ({
+                          ...f,
+                          deliveryCharge: Number(e.target.value) || 0,
+                          manualOverrides: {
+                            ...f.manualOverrides,
+                            deliveryCharge: false,
+                          },
+                        }))
                       }
                       className={`${chargeInput} w-[6.5rem]`}
                     />
                   </label>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {form.deliveryCharge > 0
+                        ? formatMoney(calc.deliveryCharge)
+                        : "—"}
+                    </div>
+                  </div>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">Other tax</span>
                     <input
@@ -3993,7 +4039,7 @@ export function QuoteBuilder({
                   </label>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
-                      Amount
+                      Value
                     </span>
                     <input
                       type="number"
@@ -4011,9 +4057,22 @@ export function QuoteBuilder({
                         }))
                       }
                       className={`${chargeInput} w-[6.5rem]`}
-                      title="Other tax value — rolls into grand total (not a manual override)"
+                      title="Other tax value applied to the quote"
                     />
                   </label>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {calc.otherTaxAmount > 0
+                        ? formatMoney(calc.otherTaxAmount)
+                        : "—"}
+                    </div>
+                  </div>
                 </div>
                 <div className="min-w-[18rem] flex-1 space-y-1.5 text-sm sm:max-w-md sm:flex-none">
                   <div className="mb-1 flex items-center justify-between">

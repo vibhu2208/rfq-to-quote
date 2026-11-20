@@ -3,7 +3,11 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
-import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
+import {
+  calculateQuoteTotals,
+  stripAdjustmentAmountOverrides,
+  type ManualOverrides,
+} from "@/lib/tax";
 import { decimalToNumber, nextQuoteNumber } from "@/lib/quotes";
 import { parseQuoteDate } from "@/lib/quote-format";
 import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
@@ -186,7 +190,9 @@ export async function POST(req: NextRequest) {
 
   const data = parsed.data;
   const company = getCompanyConfig();
-  const overrides = (data.manualOverrides || {}) as ManualOverrides;
+  const overrides = stripAdjustmentAmountOverrides(
+    (data.manualOverrides || {}) as ManualOverrides
+  );
 
   const calc = calculateQuoteTotals({
     lines: data.lineItems.map((l) => ({
@@ -205,12 +211,8 @@ export async function POST(req: NextRequest) {
     otherTaxAmount: data.otherTaxAmount,
     overrides,
     previous: {
-      subtotal: data.subtotal,
-      gstAmount: data.gstAmount,
-      otherTaxAmount: data.otherTaxAmount,
-      deliveryCharge: data.deliveryCharge,
-      discountAmount: data.discountAmount,
-      grandTotal: data.grandTotal,
+      subtotal: overrides.subtotal ? data.subtotal : undefined,
+      gstAmount: overrides.gstAmount ? data.gstAmount : undefined,
     },
   });
 

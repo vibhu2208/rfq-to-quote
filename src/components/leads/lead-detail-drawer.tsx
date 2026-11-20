@@ -21,6 +21,7 @@ import {
   formatLeadCompactTimestamp,
 } from "@/components/leads/leads-workbench-helpers";
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
+import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { parseLocalDateTimeValue } from "@/components/ui/date-time-picker";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
@@ -274,6 +275,10 @@ export function LeadDetailDrawer({
   const [activityOpen, setActivityOpen] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
   const [quotesOpen, setQuotesOpen] = useState(false);
+  const followDueFutureError = useFutureDateTimeField(
+    followDue,
+    open && followOpen
+  );
 
   const users = usersProp;
   const {
@@ -876,10 +881,16 @@ export function LeadDetailDrawer({
                 value={followDue}
                 onChange={setFollowDue}
               />
+              {followDueFutureError ? (
+                <p className="text-xs text-red-700" role="alert">
+                  {followDueFutureError}
+                </p>
+              ) : null}
               <button
                 type="button"
+                disabled={Boolean(followDueFutureError)}
                 onClick={() => void scheduleFollowUp()}
-                className="text-sm font-medium text-mid-green hover:text-dark-primary"
+                className="text-sm font-medium text-mid-green hover:text-dark-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Schedule follow-up
               </button>

@@ -67,6 +67,7 @@ import {
 } from "@/components/ui/date-time-picker";
 import { buildReminderCopy } from "@/lib/leads/reminder-copy";
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
+import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { formatAttachmentSize } from "@/lib/quote-attachments";
 import { useLeadsList } from "@/hooks/use-leads-list";
 import {
@@ -303,6 +304,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     followUpDue: string;
     saving: boolean;
   } | null>(null);
+  const remindDueFutureError = useFutureDateTimeField(
+    remindForm?.due ?? "",
+    Boolean(remindForm)
+  );
+  const callFollowFutureError = useFutureDateTimeField(
+    callLogForm?.followUpDue ?? "",
+    Boolean(callLogForm)
+  );
   const [callOutcomeOpen, setCallOutcomeOpen] = useState(false);
   const [uploadForm, setUploadForm] = useState<{
     leadId: string;
@@ -2488,6 +2497,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                         value={remindForm.due}
                         onChange={(due) => patchRemindForm({ due })}
                       />
+                      {remindDueFutureError ? (
+                        <p className="text-xs text-red-700" role="alert">
+                          {remindDueFutureError}
+                        </p>
+                      ) : null}
 
                       <div className="grid gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_minmax(0,1.1fr)]">
                         <label className="block space-y-1">
@@ -2776,7 +2790,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                   <button
                     type="button"
-                    disabled={remindForm.saving}
+                    disabled={remindForm.saving || Boolean(remindDueFutureError)}
                     onClick={() => void submitRemind()}
                     className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-4 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(45,106,79,0.28)] transition hover:bg-dark-secondary disabled:opacity-60"
                   >
@@ -2999,6 +3013,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                         )
                       }
                     />
+                    {callFollowFutureError ? (
+                      <p className="text-xs text-red-700" role="alert">
+                        {callFollowFutureError}
+                      </p>
+                    ) : null}
                     <span className="block text-[10px] text-mid-green/80">
                       Optional — schedules a call follow-up on this lead
                     </span>
@@ -3018,7 +3037,9 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                   <button
                     type="button"
-                    disabled={callLogForm.saving}
+                    disabled={
+                      callLogForm.saving || Boolean(callFollowFutureError)
+                    }
                     onClick={() => void submitLogCall()}
                     className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-4 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
                   >
