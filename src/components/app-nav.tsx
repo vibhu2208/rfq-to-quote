@@ -4,6 +4,10 @@ import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  navLinksAvailableWidth,
+  nextNavCompactState,
+} from "@/components/nav-collapse";
 import { useOptimisticPathname } from "@/components/navigation-progress";
 import {
   BookMarked,
@@ -336,12 +340,18 @@ export function AppNav({ email: userEmail }: { email: string }) {
   const [menuPath, setMenuPath] = useState(pathname);
   const [compactNav, setCompactNav] = useState(false);
   const [navLayoutReady, setNavLayoutReady] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const compactRef = useRef(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const navMeasureRef = useRef<HTMLDivElement>(null);
+  const userSlotMeasureRef = useRef<HTMLDivElement>(null);
   const userSlotRef = useRef<HTMLDivElement>(null);
   const brandRef = useRef<HTMLAnchorElement>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   if (pathname !== menuPath) {
     setMenuPath(pathname);
@@ -377,33 +387,21 @@ export function AppNav({ email: userEmail }: { email: string }) {
   useLayoutEffect(() => {
     const bar = barRef.current;
     const measure = navMeasureRef.current;
-  const brand = brandRef.current;
-    const userSlot = userSlotRef.current;
-    if (!bar || !measure || !brand || !userSlot) return;
-
-    const HYST_IN = 6;
-    const HYST_OUT = 20;
-    const HAMBURGER_W = 36;
+    const brand = brandRef.current;
+    const userSlotMeasure = userSlotMeasureRef.current;
+    if (!bar || !measure || !brand || !userSlotMeasure) return;
 
     const sync = () => {
-      const gap = 12;
-      const hamburger = compactRef.current ? HAMBURGER_W : 0;
-      const available =
-        bar.clientWidth -
-        brand.offsetWidth -
-        userSlot.offsetWidth -
-        gap * 2 -
-        hamburger;
+      const available = navLinksAvailableWidth(
+        bar.clientWidth,
+        brand.offsetWidth,
+        userSlotMeasure.offsetWidth
+      );
       const needed = measure.scrollWidth;
-      const compact = compactRef.current;
-      if (compact) {
-        if (needed <= available - HYST_OUT) {
-          compactRef.current = false;
-          setCompactNav(false);
-        }
-      } else if (needed > available - HAMBURGER_W - HYST_IN) {
-        compactRef.current = true;
-        setCompactNav(true);
+      const next = nextNavCompactState(compactRef.current, needed, available);
+      if (next !== compactRef.current) {
+        compactRef.current = next;
+        setCompactNav(next);
       }
       setNavLayoutReady(true);
     };
@@ -419,7 +417,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
     ro.observe(bar);
     ro.observe(measure);
     ro.observe(brand);
-    ro.observe(userSlot);
+    ro.observe(userSlotMeasure);
     window.addEventListener("resize", schedule);
     return () => {
       cancelAnimationFrame(raf);
@@ -513,6 +511,22 @@ export function AppNav({ email: userEmail }: { email: string }) {
         </div>
 
         <div
+          aria-hidden
+          ref={userSlotMeasureRef}
+          className="pointer-events-none invisible absolute -left-[9999px] top-0 flex w-max shrink-0 items-center gap-1.5 pl-1"
+        >
+          <span className="inline-flex max-w-full shrink-0 items-center gap-2 rounded-full py-1 pl-1 pr-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-light-green/25 text-xs font-semibold">
+              {initialsFromEmail(userEmail)}
+            </span>
+            <span className="max-w-[12rem] truncate text-sm text-light-green sm:inline">
+              {userEmail}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-light-green" />
+          </span>
+        </div>
+
+        <div
           ref={userSlotRef}
           className="relative z-10 ml-auto flex shrink-0 items-center gap-1.5 bg-dark-secondary pl-1"
         >
@@ -561,68 +575,74 @@ export function AppNav({ email: userEmail }: { email: string }) {
         </div>
       </div>
 
-      {mobileOpen && navLayoutReady && compactNav ? (
-        <div className="fixed inset-0 z-50">
-          <button
-            type="button"
-            aria-label="Close menu"
-            className="absolute inset-0 bg-dark-primary/50"
-            onClick={() => setMobileOpen(false)}
-          />
-          <aside
-            id="app-mobile-nav"
-            className="relative flex h-full w-80 max-w-[85vw] flex-col bg-dark-secondary shadow-2xl"
-          >
-            <div className="flex h-14 items-center justify-between border-b border-white/10 px-4">
-              <span className="flex items-center gap-2.5 text-[15px] font-semibold">
-                <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-mid-green text-sm">
-                  Q
-                </span>
-                QuoteFlow
-              </span>
+      {mounted && mobileOpen && navLayoutReady && compactNav
+        ? createPortal(
+            <div className="fixed inset-0 z-[200]">
               <button
                 type="button"
-                className="rounded-lg p-2 text-light-green hover:bg-background/10 hover:text-background"
-                onClick={() => setMobileOpen(false)}
                 aria-label="Close menu"
+                className="absolute inset-0 bg-dark-primary/60"
+                onClick={() => setMobileOpen(false)}
+              />
+              <aside
+                id="app-mobile-nav"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Main menu"
+                className="relative flex h-dvh w-80 max-w-[min(85vw,20rem)] flex-col bg-dark-secondary text-background shadow-2xl"
               >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <nav className="flex-1 overflow-y-auto px-3 py-4">
-              {groups.map((group) => (
-                <div key={group.title} className="mb-5">
-                  <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-light-green/70">
-                    {group.title}
-                  </p>
-                  <div className="space-y-0.5">
-                    {group.items.map((item) => (
-                      <NavLink
-                        key={item.href}
-                        item={item}
-                        pathname={pathname}
-                        compact
-                        onClick={() => setMobileOpen(false)}
-                      />
-                    ))}
-                  </div>
+                <div className="flex h-14 shrink-0 items-center justify-between border-b border-white/10 px-4">
+                  <span className="flex items-center gap-2.5 text-[15px] font-semibold">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-mid-green text-sm">
+                      Q
+                    </span>
+                    QuoteFlow
+                  </span>
+                  <button
+                    type="button"
+                    className="rounded-lg p-2 text-light-green hover:bg-background/10 hover:text-background"
+                    onClick={() => setMobileOpen(false)}
+                    aria-label="Close menu"
+                  >
+                    <X className="h-5 w-5" />
+                  </button>
                 </div>
-              ))}
-            </nav>
-            <div className="border-t border-white/10 p-3">
-              <p className="truncate px-3 pb-2 text-xs text-light-green">{userEmail}</p>
-              <button
-                type="button"
-                onClick={() => signOut({ callbackUrl: "/login" })}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-light-green hover:bg-background/10 hover:text-background"
-              >
-                <LogOut className="h-4 w-4" strokeWidth={1.6} />
-                Sign out
-              </button>
-            </div>
-          </aside>
-        </div>
-      ) : null}
+                <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+                  {groups.map((group) => (
+                    <div key={group.title} className="mb-5">
+                      <p className="px-3 pb-1.5 text-[11px] font-medium uppercase tracking-wide text-light-green/70">
+                        {group.title}
+                      </p>
+                      <div className="flex flex-col gap-0.5">
+                        {group.items.map((item) => (
+                          <NavLink
+                            key={item.href}
+                            item={item}
+                            pathname={pathname}
+                            compact
+                            onClick={() => setMobileOpen(false)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </nav>
+                <div className="shrink-0 border-t border-white/10 p-3">
+                  <p className="truncate px-3 pb-2 text-xs text-light-green">{userEmail}</p>
+                  <button
+                    type="button"
+                    onClick={() => signOut({ callbackUrl: "/login" })}
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-sm text-light-green hover:bg-background/10 hover:text-background"
+                  >
+                    <LogOut className="h-4 w-4" strokeWidth={1.6} />
+                    Sign out
+                  </button>
+                </div>
+              </aside>
+            </div>,
+            document.body
+          )
+        : null}
     </header>
   );
 }
