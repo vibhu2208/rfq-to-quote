@@ -67,7 +67,7 @@ const admin: NavItem[] = [
   { href: "/admin/vendors", label: "Vendor mapping", icon: Settings2 },
 ];
 
-const desktopLinks: NavItem[] = [
+const desktopNavLinks: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/leads", label: "Leads", icon: Target },
   { href: "/telemarketing", label: "Telemarketing", icon: PhoneCall },
@@ -75,8 +75,11 @@ const desktopLinks: NavItem[] = [
   ...sales,
   ...operations,
   ...finance,
-  ...admin,
 ];
+
+function isAdminActive(pathname: string) {
+  return admin.some((item) => isActive(pathname, item.href));
+}
 
 const groups = [
   { title: "Overview", items: overview },
@@ -398,7 +401,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           compactRef.current = false;
           setCompactNav(false);
         }
-      } else if (needed > available - HYST_IN) {
+      } else if (needed > available - HAMBURGER_W - HYST_IN) {
         compactRef.current = true;
         setCompactNav(true);
       }
@@ -470,7 +473,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
             showInlineNav ? "flex" : "pointer-events-none invisible absolute h-0 w-0 overflow-hidden"
           }`}
         >
-          {desktopLinks.map((item) => (
+          {desktopNavLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
               {item.href === ledgerInsertAfter ? (
@@ -478,6 +481,13 @@ export function AppNav({ email: userEmail }: { email: string }) {
               ) : null}
             </span>
           ))}
+          <NavDropdown
+            pathname={pathname}
+            label="Admin"
+            icon={Settings2}
+            items={admin}
+            active={isAdminActive(pathname)}
+          />
         </nav>
 
         <div
@@ -485,7 +495,7 @@ export function AppNav({ email: userEmail }: { email: string }) {
           className="pointer-events-none invisible absolute -left-[9999px] top-0 flex w-max items-center gap-0.5"
           ref={navMeasureRef}
         >
-          {desktopLinks.map((item) => (
+          {desktopNavLinks.map((item) => (
             <span key={item.href} className="contents">
               <NavLink item={item} pathname={pathname} />
               {item.href === ledgerInsertAfter ? (
@@ -493,6 +503,13 @@ export function AppNav({ email: userEmail }: { email: string }) {
               ) : null}
             </span>
           ))}
+          <NavDropdown
+            pathname={pathname}
+            label="Admin"
+            icon={Settings2}
+            items={admin}
+            active={isAdminActive(pathname)}
+          />
         </div>
 
         <div

@@ -4,7 +4,11 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireSession } from "@/lib/api";
 import { getCompanyConfig } from "@/lib/company";
-import { calculateQuoteTotals, type ManualOverrides } from "@/lib/tax";
+import {
+  calculateQuoteTotals,
+  stripAdjustmentAmountOverrides,
+  type ManualOverrides,
+} from "@/lib/tax";
 import { parseQuoteDate } from "@/lib/quote-format";
 import { decimalToNumber } from "@/lib/quotes";
 import {
@@ -191,7 +195,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
   const data = parsed.data;
   const company = getCompanyConfig();
   const lineItems = data.lineItems ?? [];
-  const overrides = (data.manualOverrides ?? {}) as ManualOverrides;
+  const overrides = stripAdjustmentAmountOverrides(
+    (data.manualOverrides ?? {}) as ManualOverrides
+  );
   const nextNumber = data.quoteNumber?.trim() || "";
   const issuedAt =
     data.quoteDate !== undefined ? parseQuoteDate(data.quoteDate) : undefined;
@@ -214,12 +220,8 @@ export async function PUT(req: NextRequest, { params }: Params) {
     otherTaxAmount: data.otherTaxAmount ?? 0,
     overrides,
     previous: {
-      subtotal: data.subtotal,
-      gstAmount: data.gstAmount,
-      otherTaxAmount: data.otherTaxAmount,
-      deliveryCharge: data.deliveryCharge,
-      discountAmount: data.discountAmount,
-      grandTotal: data.grandTotal,
+      subtotal: overrides.subtotal ? data.subtotal : undefined,
+      gstAmount: overrides.gstAmount ? data.gstAmount : undefined,
     },
   });
 

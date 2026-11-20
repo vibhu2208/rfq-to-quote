@@ -33,6 +33,25 @@ export function hasManualMoneyOverride(overrides: ManualOverrides | null | undef
   return MONEY_OVERRIDE_KEYS.some((key) => Boolean(overrides[key]));
 }
 
+/** Quote adjustments bar amounts are always derived — ignore client manual overrides. */
+const ADJUSTMENT_DERIVED_OVERRIDE_KEYS = [
+  "otherTaxAmount",
+  "deliveryCharge",
+  "discountAmount",
+  "grandTotal",
+] as const;
+
+export function stripAdjustmentAmountOverrides(
+  overrides: ManualOverrides | null | undefined
+): ManualOverrides {
+  if (!overrides) return {};
+  const next = { ...overrides };
+  for (const key of ADJUSTMENT_DERIVED_OVERRIDE_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 export type LineInput = {
   qty: number;
   unitPrice: number;
