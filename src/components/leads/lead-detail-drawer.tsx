@@ -16,7 +16,13 @@ import {
   LEAD_STAGE_LABELS,
   LEAD_STAGES,
 } from "@/lib/leads/constants";
-import { continueQuoteTarget } from "@/components/leads/leads-workbench-helpers";
+import {
+  continueQuoteTarget,
+  formatLeadCompactTimestamp,
+} from "@/components/leads/leads-workbench-helpers";
+import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
+import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
+import { parseLocalDateTimeValue } from "@/components/ui/date-time-picker";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
 
@@ -172,6 +178,7 @@ type LeadDetail = {
   nextFollowUpAt: string | null;
   disqualifyReason: string;
   createdAt: string;
+  updatedAt: string;
   assignedTo: { id: string; name: string; email: string } | null;
   quotes: {
     id: string;
@@ -268,6 +275,10 @@ export function LeadDetailDrawer({
   const [activityOpen, setActivityOpen] = useState(false);
   const [followOpen, setFollowOpen] = useState(false);
   const [quotesOpen, setQuotesOpen] = useState(false);
+  const followDueFutureError = useFutureDateTimeField(
+    followDue,
+    open && followOpen
+  );
 
   const users = usersProp;
   const {
@@ -517,7 +528,17 @@ export function LeadDetailDrawer({
 
   async function scheduleFollowUp() {
     if (!leadId || !followDue) return;
-    const dueIso = new Date(followDue).toISOString();
+    const due = parseLocalDateTimeValue(followDue) ?? new Date(followDue);
+    if (Number.isNaN(due.getTime())) {
+      window.alert("Pick a valid date and time");
+      return;
+    }
+    const futureErr = validateFutureDateTime(due);
+    if (futureErr) {
+      window.alert(futureErr);
+      return;
+    }
+    const dueIso = due.toISOString();
     const res = await fetch(`/api/leads/${leadId}/follow-ups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -527,7 +548,13 @@ export function LeadDetailDrawer({
         title: followTitle,
       }),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      window.alert(
+        typeof data.error === "string" ? data.error : "Could not schedule follow-up"
+      );
+      return;
+    }
     const created = (await res.json().catch(() => null)) as {
       id?: string;
       type?: string;
@@ -668,6 +695,11 @@ export function LeadDetailDrawer({
                 {lead.intakeKind !== "REQUIREMENT"
                   ? ` · ${LEAD_INTAKE_LABELS[lead.intakeKind]}`
                   : ""}
+              </p>
+              <p className="mt-1 text-xs text-mid-green/90">
+                Created {formatLeadCompactTimestamp(lead.createdAt)}
+                {" · Updated "}
+                {formatLeadCompactTimestamp(lead.updatedAt)}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2 pt-0.5">
@@ -849,10 +881,16 @@ export function LeadDetailDrawer({
                 value={followDue}
                 onChange={setFollowDue}
               />
+              {followDueFutureError ? (
+                <p className="text-xs text-red-700" role="alert">
+                  {followDueFutureError}
+                </p>
+              ) : null}
               <button
                 type="button"
+                disabled={Boolean(followDueFutureError)}
                 onClick={() => void scheduleFollowUp()}
-                className="text-sm font-medium text-mid-green hover:text-dark-primary"
+                className="text-sm font-medium text-mid-green hover:text-dark-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Schedule follow-up
               </button>

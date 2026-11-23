@@ -42,6 +42,7 @@ const leadListSelect = {
     select: {
       id: true,
       quoteNumber: true,
+      quoteName: true,
       status: true,
       grandTotal: true,
       version: true,

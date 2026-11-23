@@ -16,6 +16,7 @@ import type { LeadRow } from "@/components/leads/types";
 import {
   COLUMN_CELL_CLASS,
   continueQuoteTarget,
+  formatLeadCompactTimestamp,
   money,
   relativeTime,
   slaLabel,
@@ -407,17 +408,22 @@ export const LeadsTableRow = memo(function LeadsTableRow({
               </span>
             </span>
           ) : null}
+          {col === "createdAt" ? (
+            <span className="block truncate text-[11px] text-mid-green">
+              {formatLeadCompactTimestamp(row.createdAt)}
+            </span>
+          ) : null}
+          {col === "updatedAt" ? (
+            <span className="block truncate text-[11px] text-mid-green">
+              {formatLeadCompactTimestamp(row.updatedAt)}
+            </span>
+          ) : null}
           {col === "expected" ? (
-            <div className="min-w-0 space-y-0.5 text-[11px]">
-              <p className="truncate font-medium text-dark-primary">
-                {money(row.expectedValue)}
-              </p>
-              <p className="truncate text-mid-green">
-                {row.expectedClosureAt
-                  ? new Date(row.expectedClosureAt).toLocaleDateString()
-                  : "—"}
-              </p>
-            </div>
+            <span className="block truncate text-[11px] text-mid-green">
+              {row.expectedClosureAt
+                ? formatLeadCompactTimestamp(row.expectedClosureAt)
+                : "—"}
+            </span>
           ) : null}
           {col === "nextFollowUp" ? (
             <span className="block truncate text-[11px] text-mid-green">
@@ -453,8 +459,8 @@ export const LeadsTableRow = memo(function LeadsTableRow({
                   onRemind();
                 }}
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-mid-green hover:bg-dark-secondary/10 hover:text-dark-primary"
-                aria-label="Set reminder"
-                title="Remind"
+                aria-label="Remind client"
+                title="Remind client"
               >
                 <Bell className="h-3.5 w-3.5" strokeWidth={1.75} />
               </button>

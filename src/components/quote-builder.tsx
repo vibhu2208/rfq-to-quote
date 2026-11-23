@@ -36,6 +36,7 @@ import {
   describeGstAuto,
   formatMoney,
   hasManualMoneyOverride,
+  stripAdjustmentAmountOverrides,
   type ManualOverrides,
 } from "@/lib/tax";
 import {
@@ -130,6 +131,7 @@ import { collectReadinessGaps, type ReadinessGap } from "@/lib/quote-readiness";
 import {
   composeCommercialTerms,
   extractIndianState,
+  extractDeliveryAsk,
   extractWarrantyAsk,
   parseCommercialTerms,
   rfqMentionsWarranty,
@@ -463,10 +465,10 @@ function quoteSavePayload(
     showHsn: form.showHsn,
     showUnit: form.showUnit,
     gstMode: form.gstMode,
-    deliveryCharge: calc.deliveryCharge,
+    deliveryCharge: form.deliveryCharge,
     discountPercent: form.discountPercent,
-    discountAmount: calc.discountAmount,
-    otherTaxAmount: calc.otherTaxAmount,
+    discountAmount: form.discountAmount,
+    otherTaxAmount: form.otherTaxAmount,
     otherTaxLabel: form.otherTaxLabel,
     notes: "",
     quoteNumber: form.quoteNumber,
@@ -476,7 +478,7 @@ function quoteSavePayload(
     closingText: form.closingText,
     quoteDate: form.quoteDate,
     ...(status ? { status } : {}),
-    manualOverrides: form.manualOverrides,
+    manualOverrides: stripAdjustmentAmountOverrides(form.manualOverrides),
     subtotal: calc.subtotal,
     gstAmount: calc.gstAmount,
     grandTotal: calc.grandTotal,
@@ -1141,14 +1143,13 @@ export function QuoteBuilder({
       discountPercent: form.discountPercent,
       discountAmount: form.discountAmount,
       otherTaxAmount: form.otherTaxAmount,
-      overrides: { ...form.manualOverrides, gstAmount: false },
+      overrides: stripAdjustmentAmountOverrides({
+        ...form.manualOverrides,
+        gstAmount: false,
+      }),
       previous: {
-        subtotal: form.subtotal,
-        gstAmount: form.gstAmount,
-        otherTaxAmount: form.otherTaxAmount,
-        deliveryCharge: form.deliveryCharge,
-        discountAmount: form.discountAmount,
-        grandTotal: form.grandTotal,
+        subtotal: form.manualOverrides.subtotal ? form.subtotal : undefined,
+        gstAmount: form.manualOverrides.gstAmount ? form.gstAmount : undefined,
       },
     });
   }, [form, sellerState]);
@@ -1888,6 +1889,10 @@ export function QuoteBuilder({
   ]
     .filter(Boolean)
     .join("\n");
+  const deliveryAsk = useMemo(
+    () => extractDeliveryAsk(requirementText),
+    [requirementText]
+  );
   const warrantyAsk = useMemo(
     () => extractWarrantyAsk(requirementText),
     [requirementText]
@@ -1910,13 +1915,16 @@ export function QuoteBuilder({
         stockByProductId,
         termsMissing:
           /\bdeliver/i.test(requirementText) && !commercial.delivery.trim(),
+        rfqItems: requirementContext?.items ?? [],
         lines: form.lineItems.map((line) => ({
-          name: line.aliasName,
+          name: line.aliasName || line.description,
           unitPrice: line.unitPrice,
           hsnCode: line.hsnCode,
           warrantyQty: line.warrantyQty,
           productId: line.productId,
           customItem: line.customItem,
+          qty: line.qty,
+          unit: line.unit,
         })),
       }),
     [
@@ -1927,6 +1935,7 @@ export function QuoteBuilder({
       requirementText,
       stockByProductId,
       commercial.delivery,
+      requirementContext?.items,
     ]
   );
   const readinessKey = readinessGaps.map((gap) => gap.id).join("|");
@@ -1961,8 +1970,11 @@ export function QuoteBuilder({
     else if (gap.fix === "hsn" && gap.lineIndex != null)
       focusLineField(gap.lineIndex, "hsn");
     else if (gap.fix === "stock" && gap.lineIndex != null)
-      focusLineField(gap.lineIndex, "price");
-    else if (gap.fix === "warranty" || gap.fix === "terms") {
+      focusLineField(gap.lineIndex, "qty");
+    else if (gap.fix === "rfq") {
+      document.getElementById("quote-line-table")?.scrollIntoView({ block: "center" });
+      if (gap.lineIndex != null) focusLineField(gap.lineIndex, "qty");
+    } else if (gap.fix === "warranty" || gap.fix === "terms") {
       document.getElementById("quote-commercial")?.scrollIntoView({ block: "center" });
     }
   }
@@ -3037,7 +3049,10 @@ export function QuoteBuilder({
       ) : null}
 
       <div className="space-y-3">
-            <section className="min-w-0 rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]">
+            <section
+              id="quote-line-table"
+              className="min-w-0 rounded-xl bg-white/80 shadow-[0_4px_16px_rgba(11,43,38,0.06)]"
+            >
               <div className="flex flex-wrap items-center gap-2 border-b border-light-green/20 px-3 py-1.5">
                 <h2 className="text-sm font-semibold text-dark-primary">
                   Line items
@@ -3825,6 +3840,15 @@ export function QuoteBuilder({
                     className={field}
                   />
                 </label>
+                {deliveryAsk && !commercial.delivery.trim() ? (
+                  <button
+                    type="button"
+                    className="text-left text-xs text-mid-green underline sm:col-span-3"
+                    onClick={() => updateCommercial({ delivery: deliveryAsk.label })}
+                  >
+                    RFQ asks for {deliveryAsk.label} — apply to delivery
+                  </button>
+                ) : null}
                 {warrantyAsk ? (
                   <button
                     type="button"
@@ -3893,6 +3917,19 @@ export function QuoteBuilder({
                   </div>
                   <div className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {hasAppliedMarkup && vendorCostTotal > 0
+                        ? formatMoney(Math.max(0, calc.subtotal - vendorCostTotal))
+                        : "—"}
+                    </div>
+                  </div>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
                       Discount
                     </span>
                     <div className="inline-flex items-center gap-1">
@@ -3941,21 +3978,54 @@ export function QuoteBuilder({
                       </span>
                     ) : null}
                   </div>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {calc.discountAmount > 0
+                        ? formatMoney(calc.discountAmount)
+                        : "—"}
+                    </div>
+                  </div>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
-                      Freight{form.manualOverrides.deliveryCharge ? " · man" : ""}
+                      Freight
                     </span>
                     <input
                       type="number"
                       min={0}
                       step="0.01"
-                      value={calc.deliveryCharge}
+                      value={form.deliveryCharge}
                       onChange={(e) =>
-                        setOverride("deliveryCharge", Number(e.target.value))
+                        setForm((f) => ({
+                          ...f,
+                          deliveryCharge: Number(e.target.value) || 0,
+                          manualOverrides: {
+                            ...f.manualOverrides,
+                            deliveryCharge: false,
+                          },
+                        }))
                       }
                       className={`${chargeInput} w-[6.5rem]`}
                     />
                   </label>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {form.deliveryCharge > 0
+                        ? formatMoney(calc.deliveryCharge)
+                        : "—"}
+                    </div>
+                  </div>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">Other tax</span>
                     <input
@@ -3969,19 +4039,40 @@ export function QuoteBuilder({
                   </label>
                   <label className="block">
                     <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
-                      Amount{form.manualOverrides.otherTaxAmount ? " · man" : ""}
+                      Value
                     </span>
                     <input
                       type="number"
                       min={0}
                       step="0.01"
-                      value={calc.otherTaxAmount}
+                      value={form.otherTaxAmount}
                       onChange={(e) =>
-                        setOverride("otherTaxAmount", Number(e.target.value))
+                        setForm((f) => ({
+                          ...f,
+                          otherTaxAmount: Number(e.target.value) || 0,
+                          manualOverrides: {
+                            ...f.manualOverrides,
+                            otherTaxAmount: false,
+                          },
+                        }))
                       }
                       className={`${chargeInput} w-[6.5rem]`}
+                      title="Other tax value applied to the quote"
                     />
                   </label>
+                  <div className="block">
+                    <span className="mb-0.5 block text-[10px] uppercase tracking-wide text-mid-green">
+                      Amount
+                    </span>
+                    <div
+                      className={`${chargeInput} flex h-8 w-[6.5rem] items-center justify-end bg-light-green/10 px-2.5 text-sm tabular-nums text-dark-primary`}
+                      aria-readonly="true"
+                    >
+                      {calc.otherTaxAmount > 0
+                        ? formatMoney(calc.otherTaxAmount)
+                        : "—"}
+                    </div>
+                  </div>
                 </div>
                 <div className="min-w-[18rem] flex-1 space-y-1.5 text-sm sm:max-w-md sm:flex-none">
                   <div className="mb-1 flex items-center justify-between">
@@ -4059,22 +4150,17 @@ export function QuoteBuilder({
                       <span className="tabular-nums font-medium">{formatMoney(calc.igstAmount)}</span>
                     </div>
                   ) : null}
-                  <label className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
+                  <div className="flex items-center justify-between gap-3 rounded-md bg-dark-secondary px-3 py-2 text-background">
                     <span className="text-sm font-semibold">
                       {form.withGst ? "Grand total incl. GST" : "Grand total"}
-                      {form.manualOverrides.grandTotal ? " · man" : ""}
                     </span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={calc.grandTotal}
-                      onChange={(e) =>
-                        setOverride("grandTotal", Number(e.target.value))
-                      }
+                    <span
                       aria-label={form.withGst ? "Grand total incl. GST" : "Grand total"}
-                      className="w-36 bg-transparent text-right text-lg font-bold tabular-nums text-background outline-none"
-                    />
-                  </label>
+                      className="text-right text-lg font-bold tabular-nums text-background"
+                    >
+                      {formatMoney(calc.grandTotal)}
+                    </span>
+                  </div>
                 </div>
               </div>
             </section>

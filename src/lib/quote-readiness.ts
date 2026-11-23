@@ -1,5 +1,6 @@
 import { isHsnMissingOrInvalid } from "@/lib/hsn";
 import { buyerRequiredGaps } from "@/lib/quote-buyer-required";
+import { normalizeQuoteUnit } from "@/lib/quote-format";
 
 export type ReadinessFix =
   | "buyer"
@@ -7,7 +8,8 @@ export type ReadinessFix =
   | "hsn"
   | "warranty"
   | "stock"
-  | "terms";
+  | "terms"
+  | "rfq";
 
 export type ReadinessGap = {
   id: string;
@@ -23,7 +25,36 @@ export type ReadinessLine = {
   warrantyQty?: number | null;
   productId?: string | null;
   customItem?: boolean;
+  qty?: number;
+  unit?: string;
 };
+
+export type RfqCoverageItem = {
+  lineNumber?: number;
+  description: string;
+  quantity: number;
+  unit: string;
+};
+
+function normName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function unitsDiffer(a?: string | null, b?: string | null) {
+  const left = normalizeQuoteUnit(a || "pcs");
+  const right = normalizeQuoteUnit(b || "pcs");
+  return left !== right;
+}
+
+function lineCoversRfqItem(
+  line: ReadinessLine,
+  item: RfqCoverageItem
+): boolean {
+  const lineName = normName(line.name || "");
+  const itemName = normName(item.description || "");
+  if (!lineName || !itemName) return false;
+  return lineName.includes(itemName) || itemName.includes(lineName);
+}
 
 export function collectReadinessGaps(input: {
   buyerCompany?: string | null;
@@ -31,20 +62,21 @@ export function collectReadinessGaps(input: {
   buyerState?: string | null;
   lines: ReadinessLine[];
   warrantyAsked?: boolean;
-  /** productId → quantity on hand. Missing ids are unknown, not out of stock. */
+  /** productId → quantity available to quote. Missing ids are unknown, not out of stock. */
   stockByProductId?: Record<string, number | undefined>;
   termsMissing?: boolean;
+  rfqItems?: RfqCoverageItem[];
 }): ReadinessGap[] {
   const gaps: ReadinessGap[] = [];
-  const buyer = buyerRequiredGaps({
+  const buyerFields = buyerRequiredGaps({
     buyerCompany: input.buyerCompany,
     buyerAddress: input.buyerAddress,
     buyerState: input.buyerState,
   });
-  if (buyer.length > 0) {
+  for (const field of buyerFields) {
     gaps.push({
-      id: "buyer",
-      message: `Buyer details incomplete (${buyer.join(", ")})`,
+      id: `buyer-${field.replace(/\s+/g, "-")}`,
+      message: `Buyer details incomplete (${field})`,
       fix: "buyer",
     });
   }
@@ -71,7 +103,21 @@ export function collectReadinessGaps(input: {
       line.productId && input.stockByProductId
         ? input.stockByProductId[line.productId]
         : undefined;
-    if (line.productId && stock != null && stock <= 0) {
+    const lineQty = Number(line.qty);
+    if (
+      line.productId &&
+      stock != null &&
+      Number.isFinite(lineQty) &&
+      lineQty > 0 &&
+      lineQty > stock
+    ) {
+      gaps.push({
+        id: `stock-${index}`,
+        message: `${name} exceeds available stock (${stock} on hand)`,
+        fix: "stock",
+        lineIndex: index,
+      });
+    } else if (line.productId && stock != null && stock <= 0 && lineQty > 0) {
       gaps.push({
         id: `stock-${index}`,
         message: `${name} is out of stock`,
@@ -94,6 +140,51 @@ export function collectReadinessGaps(input: {
       id: "terms",
       message: "Delivery was asked in the RFQ and is not specified",
       fix: "terms",
+    });
+  }
+
+  const rfqItems = input.rfqItems ?? [];
+  if (rfqItems.length > 0) {
+    const uncovered = rfqItems.filter(
+      (item) => !input.lines.some((line) => lineCoversRfqItem(line, item))
+    );
+    for (const item of uncovered) {
+      const label = item.description.trim() || `Line ${item.lineNumber ?? "?"}`;
+      gaps.push({
+        id: `rfq-missing-${item.lineNumber ?? label}`,
+        message: `RFQ item not on quote: ${label}`,
+        fix: "rfq",
+      });
+    }
+
+    input.lines.forEach((line, index) => {
+      const name = line.name?.trim() || `Line ${index + 1}`;
+      const match = rfqItems.find((item) => lineCoversRfqItem(line, item));
+      if (!match) return;
+      const lineQty = Number(line.qty);
+      const rfqQty = Number(match.quantity);
+      if (
+        Number.isFinite(lineQty) &&
+        Number.isFinite(rfqQty) &&
+        lineQty > 0 &&
+        rfqQty > 0 &&
+        lineQty !== rfqQty
+      ) {
+        gaps.push({
+          id: `rfq-qty-${index}`,
+          message: `${name} qty ${lineQty} does not match RFQ (${rfqQty})`,
+          fix: "rfq",
+          lineIndex: index,
+        });
+      }
+      if (unitsDiffer(line.unit, match.unit)) {
+        gaps.push({
+          id: `rfq-unit-${index}`,
+          message: `${name} unit (${line.unit || "pcs"}) does not match RFQ (${match.unit || "pcs"})`,
+          fix: "rfq",
+          lineIndex: index,
+        });
+      }
     });
   }
 

@@ -1,6 +1,7 @@
 import { formatDistanceToNowStrict } from "date-fns";
 import type { LeadRow } from "@/components/leads/types";
 import { DEFAULT_LEAD_COLUMNS, type LeadColumnId } from "@/lib/leads/constants";
+import { formatTelemarketingInstant } from "@/lib/telemarketing/datetime";
 
 export const COLUMN_LABELS: Record<LeadColumnId, string> = {
   leadId: "Lead / Source",
@@ -10,11 +11,37 @@ export const COLUMN_LABELS: Record<LeadColumnId, string> = {
   priority: "Priority",
   quoteDetails: "Quotes",
   assignedTo: "Owner",
-  expected: "Expected",
+  createdAt: "Created",
+  updatedAt: "Updated",
+  expected: "Expected revert",
   nextFollowUp: "Follow-up",
   sla: "SLA",
   actions: "Actions",
 };
+
+export const COLUMN_HEADER_TOOLTIPS: Partial<Record<LeadColumnId, string>> = {
+  expected: "Expected time of revert",
+};
+
+/** Compact IST timestamp for leads table cells. */
+export function formatLeadCompactTimestamp(
+  value: string | null | undefined
+): string {
+  if (!value) return "—";
+  try {
+    return formatTelemarketingInstant(value, { withTime: true });
+  } catch {
+    return "—";
+  }
+}
+
+export function quotePopoverTitle(input: {
+  quoteNumber: string;
+  quoteName?: string | null;
+}): string {
+  const name = input.quoteName?.trim();
+  return name || "Untitled quote";
+}
 
 /** Per-column table classes: fixed layout + hide secondary cols on smaller screens. */
 export const COLUMN_CELL_CLASS: Record<LeadColumnId, string> = {
@@ -25,6 +52,8 @@ export const COLUMN_CELL_CLASS: Record<LeadColumnId, string> = {
   priority: "hidden min-w-0 overflow-hidden sm:table-cell sm:w-[9%] lg:w-[7%]",
   quoteDetails: "hidden min-w-0 overflow-visible sm:table-cell sm:w-[15%] lg:w-[12%]",
   assignedTo: "hidden min-w-0 overflow-hidden lg:table-cell lg:w-[9%]",
+  createdAt: "hidden min-w-0 overflow-hidden xl:table-cell xl:w-[8%]",
+  updatedAt: "hidden min-w-0 overflow-hidden xl:table-cell xl:w-[8%]",
   expected: "hidden min-w-0 overflow-hidden lg:table-cell lg:w-[8%]",
   nextFollowUp: "hidden min-w-0 overflow-hidden md:table-cell md:w-[9%] lg:w-[8%]",
   sla: "hidden min-w-0 overflow-hidden xl:table-cell xl:w-[5%]",

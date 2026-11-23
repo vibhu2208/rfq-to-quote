@@ -136,6 +136,8 @@ export const DEFAULT_LEAD_COLUMNS = [
   "priority",
   "quoteDetails",
   "assignedTo",
+  "createdAt",
+  "updatedAt",
   "expected",
   "nextFollowUp",
   "sla",
@@ -165,6 +167,10 @@ export function normalizeLeadColumns(raw: unknown): LeadColumnId[] {
       next = "requirement";
     } else if (item === "expectedValue" || item === "expectedClosure") {
       next = "expected";
+    } else if (item === "created" || item === "created_on") {
+      next = "createdAt";
+    } else if (item === "updated" || item === "lastUpdated") {
+      next = "updatedAt";
     } else if (item === "lastActivity") {
       continue;
     }

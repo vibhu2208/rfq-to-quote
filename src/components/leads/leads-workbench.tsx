@@ -20,20 +20,16 @@ import {
   Check,
   CheckCircle2,
   ChevronDown,
-  ChevronLeft,
   ChevronRight,
   Columns3,
   Download,
   Filter,
-  Inbox,
   Mail,
-  MailWarning,
   MessageCircle,
   Phone,
   Plus,
   RefreshCw,
   Search,
-  SkipForward,
   SquareKanban,
   Table2,
   Trash2,
@@ -50,8 +46,10 @@ import { LeadsPagination } from "@/components/leads/leads-pagination";
 import { LeadsTableRow } from "@/components/leads/leads-table-row";
 import {
   COLUMN_CELL_CLASS,
+  COLUMN_HEADER_TOOLTIPS,
   COLUMN_LABELS,
   customDateRangeError,
+  quotePopoverTitle,
   fixedPopoverCoords,
   isDatePresetFilterActive,
   money,
@@ -68,12 +66,13 @@ import {
   toLocalDateTimeValue,
 } from "@/components/ui/date-time-picker";
 import { buildReminderCopy } from "@/lib/leads/reminder-copy";
+import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
+import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { formatAttachmentSize } from "@/lib/quote-attachments";
 import { useLeadsList } from "@/hooks/use-leads-list";
 import {
   DEFAULT_LEAD_COLUMNS,
   LEAD_CHANNEL_LABELS,
-  LEAD_INTAKE_LABELS,
   LEAD_PRIORITIES,
   LEAD_PRIORITY_LABELS,
   LEAD_STAGE_LABELS,
@@ -289,6 +288,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     }[];
     scheduledLoading: boolean;
     saving: boolean;
+    confirmClientSend: boolean;
   } | null>(null);
   const [actionToast, setActionToast] = useState<{
     title: string;
@@ -304,6 +304,14 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     followUpDue: string;
     saving: boolean;
   } | null>(null);
+  const remindDueFutureError = useFutureDateTimeField(
+    remindForm?.due ?? "",
+    Boolean(remindForm)
+  );
+  const callFollowFutureError = useFutureDateTimeField(
+    callLogForm?.followUpDue ?? "",
+    Boolean(callLogForm)
+  );
   const [callOutcomeOpen, setCallOutcomeOpen] = useState(false);
   const [uploadForm, setUploadForm] = useState<{
     leadId: string;
@@ -327,7 +335,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   );
   const listFiltersRef = useRef<LeadsListFilters | null>(null);
   // Defaults only on first paint — localStorage is applied after mount to avoid hydration mismatch.
-  const [intakeOpen, setIntakeOpen] = useState(false);
   const [columns, setColumns] = useState<LeadColumnId[]>([
     ...DEFAULT_LEAD_COLUMNS,
   ]);
@@ -534,11 +541,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const rows = listData?.items ?? [];
   const total = listData?.total ?? 0;
   const stageCounts = listData?.stageCounts ?? {};
-  const intakeKindCounts = listData?.intakeKindCounts ?? {
-    REQUIREMENT: 0,
-    JUNK: 0,
-    SKIPPED: 0,
-  };
   const loading = isLoading && rows.length === 0;
   const countsPending = isLoading && !listData;
 
@@ -664,10 +666,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         localStorage.getItem("quoteflow.leadColumns.v3") ||
         localStorage.getItem("quoteflow.leadColumns");
       if (raw) setColumns(normalizeLeadColumns(JSON.parse(raw)));
-      // Collapsed by default (v2 key so older expanded prefs don't stick).
-      if (localStorage.getItem("quoteflow.leadIntakeOpen.v2") === "1") {
-        setIntakeOpen(true);
-      }
     } catch {
       /* keep defaults */
     }
@@ -678,14 +676,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     if (!prefsReady) return;
     localStorage.setItem("quoteflow.leadColumns.v3", JSON.stringify(columns));
   }, [columns, prefsReady]);
-
-  useEffect(() => {
-    if (!prefsReady) return;
-    localStorage.setItem(
-      "quoteflow.leadIntakeOpen.v2",
-      intakeOpen ? "1" : "0"
-    );
-  }, [intakeOpen, prefsReady]);
 
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
@@ -869,6 +859,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       scheduled: [],
       scheduledLoading: true,
       saving: false,
+      confirmClientSend: false,
     });
     void (async () => {
       try {
@@ -1000,7 +991,17 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     }
 
     if (callLogForm.followUpDue) {
-      const due = new Date(callLogForm.followUpDue);
+      const due =
+        parseLocalDateTimeValue(callLogForm.followUpDue) ??
+        new Date(callLogForm.followUpDue);
+      const futureErr = Number.isNaN(due.getTime())
+        ? "Pick a valid date and time"
+        : validateFutureDateTime(due);
+      if (futureErr) {
+        setCallLogForm((prev) => (prev ? { ...prev, saving: false } : prev));
+        window.alert(futureErr);
+        return;
+      }
       if (!Number.isNaN(due.getTime())) {
         const followRes = await fetch(
           `/api/leads/${callLogForm.leadId}/follow-ups`,
@@ -1068,16 +1069,29 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
   async function submitRemind() {
     if (!remindForm) return;
-    const due = new Date(remindForm.due);
+    const due =
+      parseLocalDateTimeValue(remindForm.due) ?? new Date(remindForm.due);
     if (Number.isNaN(due.getTime())) {
       window.alert("Pick a valid date and time");
       return;
     }
-    setRemindForm((prev) => (prev ? { ...prev, saving: true } : prev));
+    const futureErr = validateFutureDateTime(due);
+    if (futureErr) {
+      window.alert(futureErr);
+      return;
+    }
     const notifyEmail =
       remindForm.notifyEmail && Boolean(remindForm.customerEmail);
     const notifyWhatsapp =
       remindForm.notifyWhatsapp && Boolean(remindForm.customerPhone);
+    if (
+      (notifyEmail || notifyWhatsapp) &&
+      !remindForm.confirmClientSend
+    ) {
+      patchRemindForm({ confirmClientSend: true });
+      return;
+    }
+    setRemindForm((prev) => (prev ? { ...prev, saving: true } : prev));
     const res = await fetch(`/api/leads/${remindForm.leadId}/follow-ups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1648,45 +1662,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     [stageCounts]
   );
 
-  const intakeTotal =
-    intakeKindCounts.REQUIREMENT +
-    intakeKindCounts.JUNK +
-    intakeKindCounts.SKIPPED;
-  const reviewTotal = intakeKindCounts.JUNK + intakeKindCounts.SKIPPED;
-
-  const intakeNav: {
-    id: LeadIntakeFilter;
-    label: string;
-    count: number;
-    icon: typeof Inbox;
-  }[] = [
-    { id: "all", label: "All mail", count: intakeTotal, icon: Inbox },
-    {
-      id: "REQUIREMENT",
-      label: LEAD_INTAKE_LABELS.REQUIREMENT,
-      count: intakeKindCounts.REQUIREMENT,
-      icon: Inbox,
-    },
-    {
-      id: "review",
-      label: "Needs review",
-      count: reviewTotal,
-      icon: MailWarning,
-    },
-    {
-      id: "JUNK",
-      label: LEAD_INTAKE_LABELS.JUNK,
-      count: intakeKindCounts.JUNK,
-      icon: MailWarning,
-    },
-    {
-      id: "SKIPPED",
-      label: LEAD_INTAKE_LABELS.SKIPPED,
-      count: intakeKindCounts.SKIPPED,
-      icon: SkipForward,
-    },
-  ];
-
   const selectedView = savedViews.find((v) => v.id === selectedViewId) || null;
   const viewModified = selectedView
     ? !savedViewFiltersMatch(selectedView.filters || {}, {
@@ -1705,112 +1680,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="flex min-h-0 flex-1 gap-3">
-        <aside
-          className={`hidden shrink-0 flex-col sm:flex ${
-            intakeOpen ? "w-44 gap-1" : "w-10 items-center gap-1"
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => setIntakeOpen((v) => !v)}
-            className={`mb-0.5 flex items-center rounded-xl px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-mid-green transition hover:bg-dark-secondary/8 ${
-              intakeOpen ? "w-full justify-between" : "justify-center"
-            }`}
-            aria-expanded={intakeOpen}
-            aria-label={intakeOpen ? "Collapse intake filter" : "Expand intake filter"}
-            title={intakeOpen ? "Collapse" : "Intake filter"}
-          >
-            {intakeOpen ? (
-              <>
-                <span>Intake</span>
-                <ChevronLeft className="h-3.5 w-3.5" strokeWidth={1.75} />
-              </>
-            ) : (
-              <ChevronRight className="h-3.5 w-3.5" strokeWidth={1.75} />
-            )}
-          </button>
-          {intakeOpen ? (
-            <>
-              {intakeNav.map((item) => {
-                const Icon = item.icon;
-                const active = intakeKind === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => setIntakeKind(item.id)}
-                    className={`flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 text-left text-sm transition ${
-                      active
-                        ? "bg-dark-primary text-background"
-                        : "text-dark-primary hover:bg-dark-secondary/8"
-                    }`}
-                  >
-                    <span className="inline-flex items-center gap-1.5">
-                      <Icon
-                        className="h-3.5 w-3.5 shrink-0 opacity-80"
-                        strokeWidth={1.75}
-                      />
-                      <span className="leading-tight">{item.label}</span>
-                    </span>
-                    <span
-                      className={`rounded-full px-1.5 text-[11px] tabular-nums ${
-                        active
-                          ? "bg-white/20"
-                          : "bg-dark-secondary/10 text-mid-green"
-                      }`}
-                    >
-                      {countsPending ? "…" : item.count}
-                    </span>
-                  </button>
-                );
-              })}
-              <p className="mt-2 px-2 text-[11px] leading-snug text-mid-green/80">
-                Junk & skipped stay here for review — promote if they are real
-                enquiries.
-              </p>
-            </>
-          ) : (
-            intakeNav.map((item) => {
-              const Icon = item.icon;
-              const active = intakeKind === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setIntakeKind(item.id)}
-                  title={`${item.label} (${countsPending ? "…" : item.count})`}
-                  className={`flex h-8 w-8 items-center justify-center rounded-xl transition ${
-                    active
-                      ? "bg-dark-primary text-background"
-                      : "text-dark-primary hover:bg-dark-secondary/8"
-                  }`}
-                >
-                  <Icon className="h-3.5 w-3.5" strokeWidth={1.75} />
-                </button>
-              );
-            })
-          )}
-        </aside>
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-          <div className="flex flex-wrap gap-1.5 sm:hidden">
-            {intakeNav.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setIntakeKind(item.id)}
-                className={`rounded-full px-2.5 py-1 text-xs font-medium ${
-                  intakeKind === item.id
-                    ? "bg-dark-primary text-background"
-                    : "bg-dark-secondary/8 text-dark-primary"
-                }`}
-              >
-                {item.label} · {countsPending ? "…" : item.count}
-              </button>
-            ))}
-          </div>
-
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="mr-1 flex min-w-0 items-baseline gap-2.5">
           <h1 className="truncate text-2xl font-semibold tracking-tight text-dark-primary sm:text-[1.75rem]">
@@ -2277,7 +2147,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                     title={
                       filterOn
                         ? `${COLUMN_LABELS[col]} · filter active`
-                        : COLUMN_LABELS[col] || undefined
+                        : COLUMN_HEADER_TOOLTIPS[col] || COLUMN_LABELS[col] || undefined
                     }
                   >
                     {filterable ? (
@@ -2447,7 +2317,6 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           onPageChange={setPage}
         />
       </div>
-        </div>
       </div>
 
       <CaptureRequirementDrawer
@@ -2491,7 +2360,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                       id="remind-title"
                       className="text-sm font-semibold tracking-tight text-dark-primary"
                     >
-                      Reminder
+                      Remind client
                     </p>
                     <p className="truncate text-xs text-mid-green">
                       {remindForm.leadNumber}
@@ -2628,6 +2497,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                         value={remindForm.due}
                         onChange={(due) => patchRemindForm({ due })}
                       />
+                      {remindDueFutureError ? (
+                        <p className="text-xs text-red-700" role="alert">
+                          {remindDueFutureError}
+                        </p>
+                      ) : null}
 
                       <div className="grid gap-2 sm:grid-cols-[8rem_minmax(0,1fr)_minmax(0,1.1fr)]">
                         <label className="block space-y-1">
@@ -2874,22 +2748,58 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </div>
                 </div>
 
+                {remindForm.confirmClientSend ? (
+                  <div className="shrink-0 border-t border-amber-200/80 bg-amber-50/90 px-5 py-3">
+                    <p className="text-sm font-semibold text-dark-primary">
+                      Confirm before messaging the client
+                    </p>
+                    <ul className="mt-2 space-y-1 text-sm text-mid-green">
+                      {remindForm.notifyEmail && remindForm.customerEmail ? (
+                        <li>
+                          Email → {remindForm.customerEmail}
+                        </li>
+                      ) : null}
+                      {remindForm.notifyWhatsapp && remindForm.customerPhone ? (
+                        <li>
+                          WhatsApp → {remindForm.customerPhone}
+                        </li>
+                      ) : null}
+                      <li>
+                        Scheduled for{" "}
+                        {format(
+                          parseLocalDateTimeValue(remindForm.due) ??
+                            new Date(remindForm.due),
+                          "dd MMM yyyy · h:mm a"
+                        )}
+                      </li>
+                    </ul>
+                  </div>
+                ) : null}
+
                 <div className="flex shrink-0 items-center justify-end gap-2 border-t border-dark-primary/8 bg-dark-secondary/[0.02] px-5 py-3">
                   <button
                     type="button"
-                    onClick={() => setRemindForm(null)}
+                    onClick={() =>
+                      remindForm.confirmClientSend
+                        ? patchRemindForm({ confirmClientSend: false })
+                        : setRemindForm(null)
+                    }
                     className="h-9 rounded-full px-4 text-sm font-medium text-mid-green transition-colors hover:bg-dark-secondary/8 hover:text-dark-primary"
                   >
-                    Cancel
+                    {remindForm.confirmClientSend ? "Back" : "Cancel"}
                   </button>
                   <button
                     type="button"
-                    disabled={remindForm.saving}
+                    disabled={remindForm.saving || Boolean(remindDueFutureError)}
                     onClick={() => void submitRemind()}
                     className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-4 text-sm font-semibold text-white shadow-[0_8px_18px_rgba(45,106,79,0.28)] transition hover:bg-dark-secondary disabled:opacity-60"
                   >
                     <Bell className="h-3.5 w-3.5" strokeWidth={1.75} />
-                    {remindForm.saving ? "Saving…" : "Confirm"}
+                    {remindForm.saving
+                      ? "Saving…"
+                      : remindForm.confirmClientSend
+                        ? "Send to client"
+                        : "Continue"}
                   </button>
                 </div>
               </div>
@@ -3103,6 +3013,11 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                         )
                       }
                     />
+                    {callFollowFutureError ? (
+                      <p className="text-xs text-red-700" role="alert">
+                        {callFollowFutureError}
+                      </p>
+                    ) : null}
                     <span className="block text-[10px] text-mid-green/80">
                       Optional — schedules a call follow-up on this lead
                     </span>
@@ -3122,7 +3037,9 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   </button>
                   <button
                     type="button"
-                    disabled={callLogForm.saving}
+                    disabled={
+                      callLogForm.saving || Boolean(callFollowFutureError)
+                    }
                     onClick={() => void submitLogCall()}
                     className="inline-flex h-9 items-center gap-1.5 rounded-full bg-mid-green px-4 text-sm font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
                   >
@@ -3362,6 +3279,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   >
                     <span className="block truncate text-xs font-medium text-dark-primary">
                       {q.quoteNumber}
+                      <span className="font-normal text-mid-green">
+                        {" "}
+                        · {quotePopoverTitle(q)}
+                      </span>
                     </span>
                     <span className="block truncate text-[10px] text-mid-green">
                       {q.status.replaceAll("_", " ")}
