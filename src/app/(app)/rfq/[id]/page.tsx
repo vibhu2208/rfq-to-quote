@@ -2471,6 +2471,8 @@ export default function RfqDetailPage() {
   // Defer stock map until core RFQ is on screen so balances don't contend
   // with the RFQ / matches / vendors boot path.
   const { inventoryMap } = useInventoryMap(!loading && !!rfq);
+  const inventoryMapRef = useRef(inventoryMap);
+  inventoryMapRef.current = inventoryMap;
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [draftSyncPreview, setDraftSyncPreview] = useState<{
@@ -2573,8 +2575,8 @@ export default function RfqDetailPage() {
   }
 
   const catalogStockLookup = useCallback(
-    (productId: string) => inventoryMap[productId],
-    [inventoryMap]
+    (productId: string) => inventoryMapRef.current[productId],
+    []
   );
 
   const applySavedSelections = useCallback((

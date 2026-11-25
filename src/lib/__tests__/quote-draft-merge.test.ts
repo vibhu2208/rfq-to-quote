@@ -185,6 +185,181 @@ describe("mergeDraftQuoteLines", () => {
     expect(second.lines).toHaveLength(2);
   });
 
+  it("KAN-151: second sync with legacy unmatched rows is a no-op when rfq/workspace aligns", () => {
+    const existing = [
+      {
+        id: "q1",
+        rfqLineId: 1,
+        productId: "sw-16",
+        aliasName: "16-port switch",
+        description: "",
+        qty: 3,
+        unit: "nos",
+        unitPrice: 4500,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 0,
+      },
+      {
+        id: "q2",
+        rfqLineId: 2,
+        productId: "patch-1m",
+        aliasName: "CAT6 patch cord 1 m",
+        description: "",
+        qty: 50,
+        unit: "pcs",
+        unitPrice: 120,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 1,
+      },
+      {
+        id: "q3",
+        rfqLineId: 3,
+        productId: "panel-24",
+        aliasName: "24-port patch panel",
+        description: "",
+        qty: 2,
+        unit: "pcs",
+        unitPrice: 890,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 2,
+      },
+      {
+        id: "q4",
+        rfqLineId: 4,
+        productId: "ups-1k",
+        aliasName: "1000 VA / 1 kVA UPS",
+        description: "",
+        qty: 5,
+        unit: "pcs",
+        unitPrice: 6200,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 3,
+      },
+      {
+        id: "q5",
+        rfqLineId: 5,
+        productId: "mon-24",
+        aliasName: "24-inch FHD IPS monitor",
+        description: "",
+        qty: 15,
+        unit: "pcs",
+        unitPrice: 9800,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 4,
+      },
+      {
+        id: "q6",
+        rfqLineId: 6,
+        productId: "mon-27",
+        aliasName: "27-inch QHD monitor",
+        description: "",
+        qty: 4,
+        unit: "pcs",
+        unitPrice: 14500,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 5,
+      },
+      {
+        id: "legacy-ups-monitor",
+        rfqLineId: null,
+        productId: "ups-1k",
+        aliasName: "UPS + monitor bundle (legacy)",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 9000,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 7,
+      },
+      {
+        id: "legacy-spare",
+        rfqLineId: null,
+        productId: "spare-cat",
+        aliasName: "Misc networking spare",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 500,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 8,
+      },
+      {
+        id: "legacy-manual",
+        rfqLineId: null,
+        productId: null,
+        aliasName: "On-site cabling labour",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 2500,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 9,
+        customItem: true,
+      },
+    ];
+    const incoming = [
+      {
+        rfqLineId: 1,
+        productId: "sw-16",
+        aliasName: "16-port switch x3",
+        qty: 3,
+        unit: "pcs",
+      },
+      {
+        rfqLineId: 2,
+        productId: "patch-1m",
+        aliasName: "CAT6 patch cord 1 m x50",
+        qty: 50,
+        unit: "pcs",
+      },
+      {
+        rfqLineId: 3,
+        productId: "panel-24",
+        aliasName: "24-port patch panel x2",
+        qty: 2,
+        unit: "pcs",
+      },
+      {
+        rfqLineId: 4,
+        productId: "ups-1k",
+        aliasName: "1000 VA / 1 kVA UPS x 5",
+        qty: 5,
+        unit: "nos",
+      },
+      {
+        rfqLineId: 5,
+        productId: "mon-24",
+        aliasName: "24-inch FHD IPS monitor, qty 15",
+        qty: 15,
+        unit: "pcs",
+      },
+      {
+        rfqLineId: 6,
+        productId: "mon-27",
+        aliasName: "27-inch QHD monitor x 4",
+        qty: 4,
+        unit: "pcs",
+      },
+    ];
+    const { changes, unmatchedExisting } = mergeDraftQuoteLines(existing, incoming);
+    expect(unmatchedExisting).toBe(2);
+    expect(draftMergeActionableChanges(changes)).toHaveLength(0);
+    const again = mergeDraftQuoteLines(
+      existing.map((row) => ({ ...row })),
+      incoming
+    );
+    expect(draftMergeActionableChanges(again.changes)).toHaveLength(0);
+  });
+
   it("adds a new RFQ line once without duplicating", () => {
     const { lines } = mergeDraftQuoteLines(existing, [
       {
