@@ -11,7 +11,7 @@ import {
   WON_QUOTE_STATUSES,
 } from "@/lib/quote-list";
 import { format, startOfMonth, subDays } from "date-fns";
-import { formatQuoteInstant } from "@/lib/quote-format";
+import { formatQuoteListUpdated } from "@/lib/quote-format";
 import {
   ArrowUpRight,
   CircleAlert,
@@ -81,7 +81,7 @@ export default async function DashboardPage() {
       where: { status: { in: ["ISSUED", "PARTIALLY_PAID"] }, balanceDue: { gt: 0 } },
     }),
     prisma.quote.findMany({
-      orderBy: { updatedAt: "desc" },
+      orderBy: [{ needsAssistance: "desc" }, { updatedAt: "desc" }],
       take: 6,
     }),
     prisma.quote.findMany({
@@ -611,7 +611,7 @@ export default async function DashboardPage() {
                       <StatusBadge status={q.status} />
                     </td>
                     <td className="px-4 py-3 text-mid-green">
-                      {formatQuoteInstant(q.updatedAt, "dd MMM yyyy")}
+                      {formatQuoteListUpdated(q.updatedAt)}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Money value={decimalToNumber(q.grandTotal)} />

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Money, StatusBadge } from "@/components/ui";
 import { QuoteRowActions } from "@/components/quote-row-actions";
-import { formatQuoteInstant } from "@/lib/quote-format";
+import { formatQuoteListUpdated } from "@/lib/quote-format";
 import {
   quoteListExportHref,
   quoteListQuery,
@@ -345,10 +345,7 @@ function QuotesTableBody({
                     ) : null}
                   </td>
                   <td className="px-3 py-2 align-middle whitespace-nowrap text-mid-green">
-                    {formatQuoteInstant(
-                      q.issuedAt ? new Date(q.issuedAt) : new Date(q.updatedAt),
-                      "dd MMM yyyy"
-                    )}
+                    {formatQuoteListUpdated(q.updatedAt)}
                   </td>
                   <td className="px-3 py-2 align-middle text-right font-medium tabular-nums">
                     <Money value={q.grandTotal} />

@@ -28,3 +28,21 @@ export function sanitizePercentDraft(raw: string): string {
 export function sanitizeAmountDraft(raw: string): string {
   return sanitizePercentDraft(raw);
 }
+
+/** Money field while typing — allow enough decimals; commit rounds with round2. */
+export function sanitizeMoneyDraft(raw: string): string {
+  const cleaned = raw.replace(/[^\d.]/g, "");
+  if (cleaned === "") return "";
+  const dot = cleaned.indexOf(".");
+  if (dot === -1) {
+    return String(Number(cleaned));
+  }
+  const whole = cleaned.slice(0, dot);
+  const frac = cleaned.slice(dot + 1).replace(/\./g, "").slice(0, 8);
+  const wholeNorm = whole === "" ? "" : String(Number(whole));
+  if (cleaned.endsWith(".") && frac === "") {
+    return `${wholeNorm || "0"}.`;
+  }
+  if (frac === "") return wholeNorm;
+  return `${wholeNorm || "0"}.${frac}`;
+}

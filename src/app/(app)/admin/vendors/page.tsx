@@ -632,6 +632,14 @@ function AdminVendorsPageInner() {
 
   useEffect(() => {
     if (tab !== "vendor") return;
+    if (!vendorQuery.trim()) {
+      setSelectedVendorId("");
+      setSelectedVendor(null);
+    }
+  }, [tab, vendorQuery]);
+
+  useEffect(() => {
+    if (tab !== "vendor") return;
     const q = vendorQuery.trim();
     const handle = window.setTimeout(() => {
       void (async () => {

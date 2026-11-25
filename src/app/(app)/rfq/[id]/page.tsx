@@ -58,6 +58,7 @@ import {
   restoreVisibleLineSelection,
   sortMatchesByScore,
   visibleSuggestions,
+  rfqRequirementsMissingFromProductPanel,
 } from "@/lib/rfq-workspace";
 import { structureEmailBodyForDisplay } from "@/lib/email-text";
 import {
@@ -2455,6 +2456,7 @@ export default function RfqDetailPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [parseBannerDismissed, setParseBannerDismissed] = useState(false);
   const [matches, setMatches] = useState<ProductMatch[]>([]);
   const [itemMatches, setItemMatches] = useState<RequirementMatch[]>([]);
   const [requirements, setRequirements] = useState<RfqRequirementItem[]>([]);
@@ -2592,9 +2594,6 @@ export default function RfqDetailPage() {
         autoWhenEmpty: true,
       });
       const auto = new Set<string>(Object.values(autoLines));
-      if (perItem.length === 0 && list[0] && list[0].score >= 22) {
-        auto.add(list[0].product.id);
-      }
       setSelected(auto);
       setLineSelection(autoLines);
       setLineVendorSelection({});
@@ -3719,7 +3718,7 @@ export default function RfqDetailPage() {
           );
           return;
         }
-        if (previewData.preview) {
+        if (previewData.preview?.changes?.length) {
           setDraftSyncPreview(previewData.preview);
           return;
         }
@@ -4332,6 +4331,12 @@ export default function RfqDetailPage() {
   const uncoveredRequirements = parsedRequirements.filter(
     (req) => !itemMatches.some((row) => row.lineNumber === req.lineNumber)
   );
+  const missingFromProductsPanel = rfqRequirementsMissingFromProductPanel(
+    parsedRequirements,
+    itemMatches
+  );
+  const showCoverageWarning =
+    uncoveredRequirements.length > 0 || missingFromProductsPanel.length > 0;
 
   return (
     <div className="w-full space-y-4">
@@ -4348,6 +4353,16 @@ export default function RfqDetailPage() {
           {rfq.channel.replaceAll("_", " ")}
           {rfq.parsedCategory ? ` · ${rfq.parsedCategory}` : ""}
         </span>
+        {showCoverageWarning ? (
+          <span className="w-full rounded-md border border-amber-200/80 bg-amber-50 px-2 py-1 text-[11px] text-amber-950 sm:w-auto">
+            {Math.max(uncoveredRequirements.length, missingFromProductsPanel.length)} RFQ
+            line
+            {Math.max(uncoveredRequirements.length, missingFromProductsPanel.length) === 1
+              ? ""
+              : "s"}{" "}
+            not covered in the products panel — review before quoting.
+          </span>
+        ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           <button
             type="button"
@@ -4500,8 +4515,8 @@ export default function RfqDetailPage() {
           </div>
         </div>
       ) : null}
-      {rfq.parseError ? (
-        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
+      {rfq.parseError && !parseBannerDismissed ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200/70 bg-amber-50/80 px-3 py-2 text-sm text-amber-950">
           <p className="min-w-0 flex-1">{userFacingParseError(rfq.parseError)}</p>
           <button
             type="button"
@@ -4510,6 +4525,13 @@ export default function RfqDetailPage() {
             className="inline-flex h-7 shrink-0 items-center rounded-full bg-mid-green/15 px-2.5 text-xs font-medium text-dark-primary hover:bg-mid-green/25 disabled:opacity-60"
           >
             {busy === "parse" ? "Parsing…" : "Retry parse"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setParseBannerDismissed(true)}
+            className="inline-flex h-7 shrink-0 items-center rounded-full px-2 text-xs font-medium text-amber-900 hover:bg-amber-100/80"
+          >
+            Dismiss
           </button>
         </div>
       ) : null}

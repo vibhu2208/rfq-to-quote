@@ -247,8 +247,6 @@ function NavDropdown({
             role="menu"
             style={{ top: menuPos.top, left: menuPos.left }}
             className="fixed z-[100] max-h-[70vh] min-w-[13rem] overflow-y-auto overflow-x-hidden rounded-xl border border-dark-primary/10 bg-white py-1 text-dark-primary shadow-[0_12px_40px_rgba(11,43,38,0.22)]"
-            onMouseEnter={openMenu}
-            onMouseLeave={scheduleClose}
           >
             {items.map((item) => {
               const Icon = item.icon;
@@ -280,11 +278,7 @@ function NavDropdown({
       : null;
 
   return (
-    <div
-      className="relative shrink-0"
-      onMouseEnter={openMenu}
-      onMouseLeave={scheduleClose}
-    >
+    <div className="relative shrink-0">
       <button
         ref={buttonRef}
         type="button"

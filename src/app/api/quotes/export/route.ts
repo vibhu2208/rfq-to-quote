@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
       quoteName: quote.quoteName,
       buyer: quote.buyerCompany || quote.buyerName,
       status: quote.status,
-      updated: formatQuoteInstant(quote.issuedAt ?? quote.updatedAt, "yyyy-MM-dd"),
+      updated: formatQuoteInstant(quote.updatedAt, "yyyy-MM-dd"),
       grandTotal: decimalToNumber(quote.grandTotal),
       withGst: quote.withGst,
     }))

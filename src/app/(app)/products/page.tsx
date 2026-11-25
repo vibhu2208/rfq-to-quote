@@ -4,6 +4,7 @@ import {
   FormEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -78,7 +79,10 @@ export default function ProductsPage() {
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
   const [activeFilter, setActiveFilter] = useState<"all" | "true" | "false">("all");
-  const [page, setPage] = useState(1);
+  const pageFromUrl = useMemo(() => {
+    const raw = Number(searchParams.get("page") || "1");
+    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+  }, [searchParams]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filtering, setFiltering] = useState(false);
@@ -102,16 +106,13 @@ export default function ProductsPage() {
     setFiltering(true);
     const timeout = setTimeout(() => {
       setDebouncedQ(q.trim());
-      setPage(1);
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("page");
+      const qs = params.toString();
+      router.replace(qs ? `/products?${qs}` : "/products");
     }, 250);
     return () => clearTimeout(timeout);
-  }, [q]);
-
-  useEffect(() => {
-    const raw = Number(searchParams.get("page") || "1");
-    const next = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
-    setPage((current) => (current === next ? current : next));
-  }, [searchParams]);
+  }, [q, router, searchParams]);
 
   const load = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -121,7 +122,7 @@ export default function ProductsPage() {
     if (!hasRowsRef.current) setLoading(true);
     setFiltering(true);
     const params = new URLSearchParams({
-      page: String(page),
+      page: String(pageFromUrl),
       pageSize: String(PAGE_SIZE),
     });
     if (debouncedQ) params.set("q", debouncedQ);
@@ -158,7 +159,7 @@ export default function ProductsPage() {
         setFiltering(false);
       }
     }
-  }, [activeFilter, debouncedQ, page]);
+  }, [activeFilter, debouncedQ, pageFromUrl]);
 
   useEffect(() => {
     void load();
@@ -247,13 +248,12 @@ export default function ProductsPage() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const to = Math.min(page * PAGE_SIZE, total);
+  const from = total === 0 ? 0 : (pageFromUrl - 1) * PAGE_SIZE + 1;
+  const to = Math.min(pageFromUrl * PAGE_SIZE, total);
   const pending = loading || filtering;
 
   function goPage(next: number) {
     const clamped = Math.max(1, Math.min(next, totalPages));
-    setPage(clamped);
     const params = new URLSearchParams(searchParams.toString());
     if (clamped <= 1) params.delete("page");
     else params.set("page", String(clamped));
@@ -322,7 +322,10 @@ export default function ProductsPage() {
           value={activeFilter}
           onChange={(e) => {
             setActiveFilter(e.target.value as typeof activeFilter);
-            setPage(1);
+            const params = new URLSearchParams(searchParams.toString());
+            params.delete("page");
+            const qs = params.toString();
+            router.replace(qs ? `/products?${qs}` : "/products");
           }}
           className="rounded-lg border border-light-green/40 bg-white/50 px-3 py-2 text-sm outline-none"
         >
@@ -330,13 +333,13 @@ export default function ProductsPage() {
           <option value="true">Active</option>
           <option value="false">Inactive</option>
         </select>
-        {pending && products.length > 0 ? (
-          <span className="text-sm text-mid-green">Updating…</span>
-        ) : (
-          <span className="text-sm text-mid-green">
-            {total === 0 ? "No products" : `${from}–${to} of ${total}`}
-          </span>
-        )}
+        <span className="text-sm text-mid-green tabular-nums">
+          {total === 0
+            ? "No products"
+            : pending && products.length > 0
+              ? `${from}–${to} of …`
+              : `${from}–${to} of ${total}`}
+        </span>
       </div>
 
       <div className="overflow-x-auto rounded-xl bg-white/40 shadow-[0_4px_20px_rgba(11,43,38,0.06)]">
@@ -443,21 +446,21 @@ export default function ProductsPage() {
       {total > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
           <p className="text-mid-green tabular-nums">
-            {from}–{to} of {pending ? "…" : total} · Page {page} of {totalPages}
+            {from}–{to} of {pending ? "…" : total} · Page {pageFromUrl} of {totalPages}
           </p>
           <div className="flex gap-2">
             <button
               type="button"
-              disabled={page <= 1 || pending}
-              onClick={() => goPage(page - 1)}
+              disabled={pageFromUrl <= 1 || pending}
+              onClick={() => goPage(pageFromUrl - 1)}
               className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-1.5 disabled:opacity-50"
             >
               Previous
             </button>
             <button
               type="button"
-              disabled={page >= totalPages || pending}
-              onClick={() => goPage(page + 1)}
+              disabled={pageFromUrl >= totalPages || pending}
+              onClick={() => goPage(pageFromUrl + 1)}
               className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-1.5 disabled:opacity-50"
             >
               Next
