@@ -7,7 +7,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { parseRfqWithAi, statusFromConfidence } from "@/lib/ai/parse-rfq";
 import { parseRfqHeuristic } from "@/lib/heuristic-parse-rfq";
-import { extractRequirementsFromText, resolveParsedItems } from "@/lib/rfq-items";
+import { finalizeParsedItemsForRfq } from "@/lib/rfq-items";
 import { resolveProductCategory } from "@/lib/categories";
 import { normalizeParsedItemCategories } from "@/lib/categories";
 import { applyAssignmentRules } from "@/lib/leads/assignment";
@@ -283,44 +283,27 @@ export async function parseAndUpdateRfq(rfqId: string) {
   );
   let items = normalized.items;
   if (!fromSpreadsheet) {
-    const fromText = extractRequirementsFromText(rfq.rawText);
-    if (fromText.length >= 2) {
-      const textNormalized = normalizeParsedItemCategories(
-        fromText.map((row) => ({
-          description: row.description,
-          brand: row.brand ?? null,
-          quantity: row.quantity,
-          unit: row.unit || "pcs",
-          category: resolveProductCategory(row.category, row.description),
-        })),
-        normalized.productCategory
-      );
-      items = textNormalized.items;
-    } else {
-      const resolved = resolveParsedItems(
-        normalized.items.map((row) => ({
-          description: row.description,
-          brand: row.brand,
-          quantity: row.quantity,
-          unit: row.unit,
-          category: row.category,
-        })),
-        rfq.rawText
-      );
-      const resolvedNormalized = normalizeParsedItemCategories(
-        resolved.map((row) => ({
-          description: row.description || "Item",
-          brand: row.brand ?? null,
-          quantity: row.quantity ?? 1,
-          unit: row.unit || "pcs",
-          category: resolveProductCategory(row.category, row.description || ""),
-        })),
-        normalized.productCategory
-      );
-      if (resolvedNormalized.items.length >= items.length) {
-        items = resolvedNormalized.items;
-      }
-    }
+    const finalized = finalizeParsedItemsForRfq(
+      normalized.items.map((row) => ({
+        description: row.description,
+        brand: row.brand,
+        quantity: row.quantity,
+        unit: row.unit,
+        category: row.category,
+      })),
+      rfq.rawText
+    );
+    const finalizedNormalized = normalizeParsedItemCategories(
+      finalized.map((row) => ({
+        description: row.description || "Item",
+        brand: row.brand ?? null,
+        quantity: row.quantity ?? 1,
+        unit: row.unit || "pcs",
+        category: resolveProductCategory(row.category, row.description || ""),
+      })),
+      normalized.productCategory
+    );
+    items = finalizedNormalized.items;
   }
   const linesChanged =
     itemLineFingerprint(existingItems) !== itemLineFingerprint(items);

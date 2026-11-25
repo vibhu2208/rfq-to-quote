@@ -482,6 +482,55 @@ describe("mergeDraftQuoteLines", () => {
     expect(second.lines).toHaveLength(first.lines.length);
   });
 
+  it("KAN-151 live: stale rows when workspace still carries wrong catalog 148885 on patch lines", () => {
+    const existing = [
+      {
+        id: "q2",
+        rfqLineId: 2,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 10,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 1,
+      },
+      {
+        id: "q3",
+        rfqLineId: 3,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 10,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 2,
+      },
+    ];
+    const incoming = [
+      {
+        rfqLineId: 2,
+        productId: "148885",
+        aliasName: "CAT6 patch cord 1 m x 50",
+        qty: 50,
+      },
+      {
+        rfqLineId: 3,
+        productId: "148885",
+        aliasName: "24-port CAT6 patch panel (D-Link) x 2",
+        qty: 2,
+      },
+    ];
+    const { staleRfqBindings, changes } = mergeDraftQuoteLines(existing, incoming);
+    expect(staleRfqBindings).toBeGreaterThan(0);
+    const updates = draftMergeActionableChanges(changes).filter((c) => c.kind === "update");
+    expect(updates).toHaveLength(0);
+  });
+
   it("adds a new RFQ line once without duplicating", () => {
     const { lines } = mergeDraftQuoteLines(existing, [
       {
