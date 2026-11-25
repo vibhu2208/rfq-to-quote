@@ -16,7 +16,10 @@ import { DEFAULT_SLA_HOURS } from "@/lib/leads/constants";
 import { nextLeadNumber } from "@/lib/leads/numbers";
 import { addHours } from "@/lib/leads/stage";
 import { userFacingParseError } from "@/lib/fetch-error";
-import { retainLeadParsedCategory } from "@/lib/rfq-reparse";
+import {
+  preserveProductSelectionsOnReparse,
+  retainLeadParsedCategory,
+} from "@/lib/rfq-reparse";
 
 function itemLineFingerprint(items: unknown[]): string {
   return items
@@ -280,28 +283,43 @@ export async function parseAndUpdateRfq(rfqId: string) {
   );
   let items = normalized.items;
   if (!fromSpreadsheet) {
-    const resolved = resolveParsedItems(
-      normalized.items.map((row) => ({
-        description: row.description,
-        brand: row.brand,
-        quantity: row.quantity,
-        unit: row.unit,
-        category: row.category,
-      })),
-      rfq.rawText
-    );
-    const resolvedNormalized = normalizeParsedItemCategories(
-      resolved.map((row) => ({
-        description: row.description || "Item",
-        brand: row.brand ?? null,
-        quantity: row.quantity ?? 1,
-        unit: row.unit || "pcs",
-        category: resolveProductCategory(row.category, row.description || ""),
-      })),
-      normalized.productCategory
-    );
-    if (resolvedNormalized.items.length >= items.length) {
-      items = resolvedNormalized.items;
+    const fromText = extractRequirementsFromText(rfq.rawText);
+    if (fromText.length >= 2) {
+      const textNormalized = normalizeParsedItemCategories(
+        fromText.map((row) => ({
+          description: row.description,
+          brand: row.brand ?? null,
+          quantity: row.quantity,
+          unit: row.unit || "pcs",
+          category: resolveProductCategory(row.category, row.description),
+        })),
+        normalized.productCategory
+      );
+      items = textNormalized.items;
+    } else {
+      const resolved = resolveParsedItems(
+        normalized.items.map((row) => ({
+          description: row.description,
+          brand: row.brand,
+          quantity: row.quantity,
+          unit: row.unit,
+          category: row.category,
+        })),
+        rfq.rawText
+      );
+      const resolvedNormalized = normalizeParsedItemCategories(
+        resolved.map((row) => ({
+          description: row.description || "Item",
+          brand: row.brand ?? null,
+          quantity: row.quantity ?? 1,
+          unit: row.unit || "pcs",
+          category: resolveProductCategory(row.category, row.description || ""),
+        })),
+        normalized.productCategory
+      );
+      if (resolvedNormalized.items.length >= items.length) {
+        items = resolvedNormalized.items;
+      }
     }
   }
   const linesChanged =
@@ -310,6 +328,10 @@ export async function parseAndUpdateRfq(rfqId: string) {
     rfq.parsedCategory,
     normalized.productCategory
   );
+  const preservedSelections =
+    linesChanged && rfq.productSelections
+      ? preserveProductSelectionsOnReparse(rfq.productSelections, existingItems, items)
+      : null;
 
   return prisma.rfq.update({
     where: { id: rfqId },
@@ -329,8 +351,14 @@ export async function parseAndUpdateRfq(rfqId: string) {
       parseConfidence: result.confidence,
       parseError: parseNote,
       status,
-      // Drop catalog/vendor picks when the requirement lines themselves changed.
-      ...(linesChanged ? { productSelections: Prisma.DbNull } : {}),
+      ...(linesChanged
+        ? preservedSelections
+          ? {
+              productSelections:
+                preservedSelections as unknown as Prisma.InputJsonValue,
+            }
+          : { productSelections: Prisma.DbNull }
+        : {}),
       marketplacePrices: Prisma.DbNull,
       marketplaceQuery: null,
       marketplaceFetchedAt: null,

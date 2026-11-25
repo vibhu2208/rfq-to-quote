@@ -90,7 +90,13 @@ export function extractRfqItems(parsedSpecs: unknown, rawText?: string): RfqRequ
       .map((item, i) => normalizeItem(item, i + 1))
       .filter((item): item is RfqRequirementItem => item != null);
 
-    if (fromSpecs.length >= 2) return fromSpecs;
+    if (fromSpecs.length >= 2) {
+      if (rawText) {
+        const fromText = extractRequirementsFromText(rawText);
+        if (fromText.length > fromSpecs.length) return fromText;
+      }
+      return fromSpecs;
+    }
 
     if (rawText) {
       const fromText = extractRequirementsFromText(rawText);
@@ -366,19 +372,47 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
 const COMPOSITE_SPLIT =
   /[;,](?=\s*[^,;]+(?:,\s*qty\s*:?\s*\d+(?:[.,]\d+)?|[×x]\s*\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))/i;
 
+const QUOTE_INTRO_PREFIX = /^(?:please\s+)?(?:kindly\s+)?quote(?:\s+for)?[:\s]+/i;
+
+const COMMERCIAL_TERMS_HINT =
+  /\b(prices?|gst|delivery|warranty|within\s+\d+\s+days|inclusive|payment|terms)\b/i;
+
+/** Peel pricing/delivery/warranty sentences that ride on the last product segment. */
+function peelTrailingCommercialTerms(segment: string): string {
+  const trimmed = segment.trim();
+  const match = trimmed.match(
+    /^(.+?(?:[×x]\s*\d+(?:[.,]\d+)?|,\s*qty\s*:?\s*\d+(?:[.,]\d+)?|\bqty\s+\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))(\s*[.]?\s+)(.+)$/i
+  );
+  if (!match) return trimmed;
+  const tail = match[3].trim();
+  if (!tail || !COMMERCIAL_TERMS_HINT.test(tail)) return trimmed;
+  return match[1].trim();
+}
+
+function prepareRequirementSegment(segment: string, stripQuotePrefix: boolean): string {
+  let piece = segment.trim();
+  if (stripQuotePrefix) {
+    piece = piece.replace(QUOTE_INTRO_PREFIX, "");
+  }
+  return peelTrailingCommercialTerms(piece);
+}
+
 function expandCompositeRequirementLines(lines: string[]): string[] {
   const expanded: string[] = [];
+  let firstSegment = true;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (COMPOSITE_SPLIT.test(trimmed)) {
       for (const part of trimmed.split(COMPOSITE_SPLIT)) {
-        const piece = part.trim();
+        const piece = prepareRequirementSegment(part, firstSegment);
+        firstSegment = false;
         if (piece.length >= 4) expanded.push(piece);
       }
       continue;
     }
-    expanded.push(trimmed);
+    expanded.push(prepareRequirementSegment(trimmed, firstSegment));
+    firstSegment = false;
   }
   return expanded;
 }

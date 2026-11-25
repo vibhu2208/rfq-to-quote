@@ -48,7 +48,7 @@ describe("mergeDraftQuoteLines", () => {
     },
   ];
 
-  it("matches by rfqLineId only and preserves client names", () => {
+  it("preserves client names on trusted rfqLineId matches", () => {
     const { lines, changes } = mergeDraftQuoteLines(existing, [
       {
         rfqLineId: 1,
@@ -58,20 +58,17 @@ describe("mergeDraftQuoteLines", () => {
       },
       {
         rfqLineId: 2,
-        productId: "prod-patch-wrong",
-        aliasName: "Cat6 patch cable 2 m, qty 10",
-        qty: 10,
+        productId: "prod-hdmi",
+        aliasName: "QA test HDMI cable 3m x 5",
+        qty: 5,
       },
     ]);
     expect(lines.find((l) => l.id === "line-a")?.aliasName).toBe("16-port switch");
     expect(lines.find((l) => l.id === "line-b")?.aliasName).toBe(
       "QA test HDMI cable 3m x 5"
     );
-    expect(lines.find((l) => l.id === "line-b")?.productId).toBe("prod-patch-wrong");
     expect(lines.find((l) => l.id === "line-c")).toBeTruthy();
-    expect(draftMergeActionableChanges(changes).some((c) => c.kind === "update")).toBe(
-      true
-    );
+    expect(draftMergeActionableChanges(changes)).toHaveLength(0);
   });
 
   it("second sync with unchanged RFQ is a no-op in the preview", () => {
@@ -358,6 +355,131 @@ describe("mergeDraftQuoteLines", () => {
       incoming
     );
     expect(draftMergeActionableChanges(again.changes)).toHaveLength(0);
+  });
+
+  it("KAN-151: stale rfqLineId rows do not get phantom catalog updates (Q-2026-0155 shape)", () => {
+    const existing = [
+      {
+        id: "q1",
+        rfqLineId: 1,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 1.5,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 0,
+      },
+      {
+        id: "q2",
+        rfqLineId: 2,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 1,
+      },
+      {
+        id: "q3",
+        rfqLineId: 3,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 2,
+      },
+      {
+        id: "q4",
+        rfqLineId: null,
+        productId: "148885",
+        aliasName: "Cat6 patch cable 2 m, qty 10",
+        description: "",
+        qty: 1,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 3,
+      },
+      {
+        id: "q5",
+        rfqLineId: 4,
+        productId: "ups-1",
+        aliasName: "UPS x 5; 24-inch FHD IPS monitor…",
+        description: "",
+        qty: 15,
+        unit: "pcs",
+        unitPrice: 100,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 4,
+      },
+    ];
+    const incoming = [
+      {
+        rfqLineId: 1,
+        productId: null,
+        aliasName: "unmanaged switch x 3",
+        qty: 3,
+      },
+      {
+        rfqLineId: 2,
+        productId: "147690",
+        aliasName: "CAT6 patch cord 1 m x 50",
+        qty: 50,
+      },
+      {
+        rfqLineId: 3,
+        productId: "147529",
+        aliasName: "24-port panel x 2",
+        qty: 2,
+      },
+      {
+        rfqLineId: 4,
+        productId: "ups-1k",
+        aliasName: "1 kVA UPS x 5",
+        qty: 5,
+      },
+      {
+        rfqLineId: 5,
+        productId: null,
+        aliasName: "24-inch FHD monitor x 15",
+        qty: 15,
+      },
+    ];
+    const first = mergeDraftQuoteLines(existing, incoming);
+    expect(first.staleRfqBindings).toBeGreaterThan(0);
+    expect(
+      draftMergeActionableChanges(first.changes).some((c) => c.kind === "update")
+    ).toBe(false);
+
+    const pool = first.lines.map((line, index) => ({
+      id: line.id ?? `sync-${line.rfqLineId ?? index}`,
+      rfqLineId: line.rfqLineId ?? null,
+      productId: line.productId,
+      aliasName: line.aliasName,
+      description: line.description,
+      qty: line.qty,
+      unit: line.unit,
+      unitPrice: line.unitPrice,
+      discountPercent: line.discountPercent,
+      taxRate: line.taxRate,
+      sortOrder: line.sortOrder ?? index,
+      customItem: line.customItem,
+    }));
+    const second = mergeDraftQuoteLines(pool, incoming);
+    expect(draftMergeActionableChanges(second.changes)).toHaveLength(0);
+    expect(second.lines).toHaveLength(first.lines.length);
   });
 
   it("adds a new RFQ line once without duplicating", () => {
