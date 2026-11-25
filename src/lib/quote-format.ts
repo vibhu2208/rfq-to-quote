@@ -105,7 +105,7 @@ export function formatTaxAnalysis(input: {
     parts.push(`Discount${pct}: -${formatQuoteAmount(input.discountAmount)}`);
   }
   if (input.deliveryCharge && input.deliveryCharge > 0) {
-    parts.push(`Delivery: ${formatQuoteAmount(input.deliveryCharge)}`);
+    parts.push(`Freight: ${formatQuoteAmount(input.deliveryCharge)}`);
   }
   if (input.otherTaxAmount && input.otherTaxAmount > 0) {
     parts.push(`${input.otherTaxLabel || "Other tax"}: ${formatQuoteAmount(input.otherTaxAmount)}`);

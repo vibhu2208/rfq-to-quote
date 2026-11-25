@@ -456,8 +456,25 @@ export async function convertProformaToTaxInvoice(
   const ctx = await getDefaultOrgContext();
   const proforma = await prisma.proformaInvoice.findUniqueOrThrow({
     where: { id: proformaId },
-    include: { lines: true, party: true },
+    include: {
+      lines: true,
+      party: true,
+      invoices: {
+        where: { status: { notIn: ["VOID", "CANCELLED"] } },
+        orderBy: { createdAt: "asc" },
+        select: { id: true, number: true, status: true },
+      },
+    },
   });
+
+  const priorInvoice = proforma.invoices[0];
+  if (priorInvoice) {
+    throw new AccountingError(
+      `This proforma already has tax invoice ${priorInvoice.number}. A proforma can convert to only one GST invoice.`,
+      "PROFORMA_ALREADY_CONVERTED",
+      409
+    );
+  }
 
   if (proforma.status === "CANCELLED" || proforma.status === "VOID") {
     throw new AccountingError("Cannot convert a cancelled proforma", "PROFORMA_CANCELLED", 400);

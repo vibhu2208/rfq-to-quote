@@ -13,6 +13,7 @@ export function ProformaActions({
   partyId,
   partyName,
   partyGstin,
+  existingTaxInvoice,
 }: {
   id: string;
   status: string;
@@ -21,6 +22,7 @@ export function ProformaActions({
   partyId: string;
   partyName: string;
   partyGstin: string | null;
+  existingTaxInvoice?: { id: string; number: string } | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -32,9 +34,19 @@ export function ProformaActions({
 
   const hasGstin = Boolean((partyGstin || "").trim());
   const needsGstinGate = !hasGstin;
-  const canConvert = amountPaid > 0 && hasGstin && !needsGstinGate;
+  const alreadyConverted = Boolean(existingTaxInvoice?.id);
+  const canConvert =
+    amountPaid > 0 && hasGstin && !needsGstinGate && !alreadyConverted;
 
   async function run(action: "issue" | "convert" | "record_payment") {
+    if (action === "convert" && alreadyConverted) {
+      setError(
+        existingTaxInvoice
+          ? `Tax invoice ${existingTaxInvoice.number} already exists for this proforma.`
+          : "This proforma was already converted."
+      );
+      return;
+    }
     if (action === "convert" && !hasGstin) {
       setError("Add the client GSTIN before creating the tax invoice.");
       setGstinCode("CLIENT_GSTIN_REQUIRED");
@@ -110,14 +122,16 @@ export function ProformaActions({
         ) : null}
         <button
           type="button"
-          disabled={!!busy || !canConvert}
+          disabled={!!busy || !canConvert || alreadyConverted}
           onClick={() => run("convert")}
           title={
-            !hasGstin
-              ? "Add client GSTIN first"
-              : canConvert
-                ? "Create GST tax invoice"
-                : "Record payment first"
+            alreadyConverted
+              ? `Tax invoice ${existingTaxInvoice?.number ?? ""} already exists`
+              : !hasGstin
+                ? "Add client GSTIN first"
+                : canConvert
+                  ? "Create GST tax invoice"
+                  : "Record payment first"
           }
           className="rounded-lg bg-mid-green px-3 py-1.5 text-sm text-background hover:bg-dark-secondary disabled:opacity-50"
         >
@@ -151,6 +165,19 @@ export function ProformaActions({
             GSTIN.
           </p>
         </div>
+      ) : null}
+
+      {existingTaxInvoice ? (
+        <p className="text-xs text-mid-green">
+          Tax invoice{" "}
+          <a
+            href={`/invoices/${existingTaxInvoice.id}`}
+            className="font-medium text-dark-primary underline"
+          >
+            {existingTaxInvoice.number}
+          </a>{" "}
+          is linked to this proforma.
+        </p>
       ) : null}
 
       {error ? <p className="text-sm text-dark-primary">{error}</p> : null}

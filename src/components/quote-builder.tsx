@@ -135,7 +135,9 @@ import {
   extractWarrantyAsk,
   parseCommercialTerms,
   rfqMentionsWarranty,
+  type CommercialTerms,
 } from "@/lib/quote-commercial";
+import { gstModeMismatchWarning } from "@/lib/quote-gst-guard";
 import {
   grossLineSubtotal,
   validateFixedDiscountAmount,
@@ -536,6 +538,8 @@ export function QuoteBuilder({
   const [form, setForm] = useState<QuoteFormState>(() =>
     withDocumentDefaults(initial || emptyQuote(), company)
   );
+  const [commercialOverride, setCommercialOverride] =
+    useState<CommercialTerms | null>(null);
   const formRef = useRef(form);
   formRef.current = form;
   const versionRef = useRef<number | undefined>(initial?.version);
@@ -1901,9 +1905,15 @@ export function QuoteBuilder({
     () => (form.buyerState.trim() ? null : extractIndianState(requirementText)),
     [form.buyerState, requirementText]
   );
+  useEffect(() => {
+    setCommercialOverride(null);
+  }, [initial?.id]);
+
   const commercial = useMemo(
-    () => parseCommercialTerms(form.termsText, company.paymentTerms),
-    [form.termsText, company.paymentTerms]
+    () =>
+      commercialOverride ??
+      parseCommercialTerms(form.termsText, company.paymentTerms),
+    [commercialOverride, form.termsText, company.paymentTerms]
   );
   const readinessGaps = useMemo(
     () =>
@@ -1979,9 +1989,19 @@ export function QuoteBuilder({
     }
   }
 
-  function updateCommercial(patch: Partial<typeof commercial>) {
-    const next = { ...commercial, ...patch };
-    setForm((f) => ({ ...f, termsText: composeCommercialTerms(next) }));
+  function updateCommercial(patch: Partial<CommercialTerms>) {
+    setCommercialOverride((prev) => ({
+      ...(prev ?? parseCommercialTerms(form.termsText, company.paymentTerms)),
+      ...patch,
+    }));
+  }
+
+  function commitCommercialFields() {
+    setCommercialOverride((prev) => {
+      if (!prev) return prev;
+      setForm((f) => ({ ...f, termsText: composeCommercialTerms(prev) }));
+      return prev;
+    });
   }
   const destinationLabel =
     sendChannel === "EMAIL" ? "Email address" : "WhatsApp number";
@@ -3095,12 +3115,17 @@ export function QuoteBuilder({
                     <select
                       value={form.gstMode}
                       aria-label="GST split"
-                      onChange={(e) =>
-                        setForm((f) => ({
-                          ...f,
-                          gstMode: e.target.value as QuoteFormState["gstMode"],
-                        }))
-                      }
+                      onChange={(e) => {
+                        const next = e.target.value as QuoteFormState["gstMode"];
+                        const warn = gstModeMismatchWarning({
+                          withGst: form.withGst,
+                          buyerState: form.buyerState,
+                          sellerState,
+                          gstMode: next,
+                        });
+                        if (warn.mismatch && !window.confirm(warn.message)) return;
+                        setForm((f) => ({ ...f, gstMode: next }));
+                      }}
                       className="h-7 rounded-md border border-light-green/40 bg-background px-1.5 text-xs"
                     >
                       <option value="AUTO">GST auto</option>
@@ -3815,6 +3840,7 @@ export function QuoteBuilder({
                   <input
                     value={commercial.paymentTerms}
                     onChange={(e) => updateCommercial({ paymentTerms: e.target.value })}
+                    onBlur={commitCommercialFields}
                     className={field}
                   />
                 </label>
@@ -3826,6 +3852,7 @@ export function QuoteBuilder({
                     value={commercial.validity}
                     placeholder="Not specified"
                     onChange={(e) => updateCommercial({ validity: e.target.value })}
+                    onBlur={commitCommercialFields}
                     className={field}
                   />
                 </label>
@@ -3837,6 +3864,7 @@ export function QuoteBuilder({
                     value={commercial.delivery}
                     placeholder="Not specified"
                     onChange={(e) => updateCommercial({ delivery: e.target.value })}
+                    onBlur={commitCommercialFields}
                     className={field}
                   />
                 </label>
@@ -4130,6 +4158,14 @@ export function QuoteBuilder({
                     <div className="flex justify-between text-mid-green">
                       <span>Discount</span>
                       <span className="tabular-nums font-medium">-{formatMoney(calc.discountAmount)}</span>
+                    </div>
+                  ) : null}
+                  {calc.deliveryCharge > 0 ? (
+                    <div className="flex justify-between">
+                      <span>Freight</span>
+                      <span className="tabular-nums font-medium">
+                        {formatMoney(calc.deliveryCharge)}
+                      </span>
                     </div>
                   ) : null}
                   {form.withGst && calc.gstSplit === "CGST_SGST" ? (

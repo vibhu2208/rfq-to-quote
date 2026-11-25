@@ -1,4 +1,7 @@
-import { shouldAutoBindCatalogMatch } from "@/lib/product-match";
+import {
+  MIN_AUTO_BIND_SCORE,
+  shouldAutoBindCatalogMatch,
+} from "@/lib/product-match";
 import type { RfqRequirementItem } from "@/lib/rfq-items";
 
 /** Structural match used by the workspace. Page and catalog types both satisfy it. */
@@ -120,7 +123,11 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
 
     if (!touched.has(item.lineNumber)) {
       const top = sortMatchesByScore(item.matches)[0];
-      if (top && shouldAutoBindCatalogMatch(bindable(top), item.requirementText)) {
+      if (
+        top &&
+        top.score >= MIN_AUTO_BIND_SCORE &&
+        shouldAutoBindCatalogMatch(bindable(top), item.requirementText)
+      ) {
         lineSelection[item.lineNumber] = top.product.id;
       }
     }
@@ -165,7 +172,11 @@ export function restoreVisibleLineSelection<T extends WorkspaceMatch>(input: {
     if (lineSelection[item.lineNumber]) continue;
     if (!input.autoWhenEmpty && !dropped.includes(item.lineNumber)) continue;
     const top = sortMatchesByScore(item.matches)[0];
-    if (top && shouldAutoBindCatalogMatch(bindable(top), item.requirementText)) {
+    if (
+      top &&
+      top.score >= MIN_AUTO_BIND_SCORE &&
+      shouldAutoBindCatalogMatch(bindable(top), item.requirementText)
+    ) {
       lineSelection[item.lineNumber] = top.product.id;
     }
   }

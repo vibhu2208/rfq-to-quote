@@ -3596,86 +3596,91 @@ export default function RfqDetailPage() {
     }
   }
 
-  async function convertToQuote() {
+  function workspaceQuoteLines() {
+    const rows: Array<{
+      productId: string | null;
+      qty: number;
+      unitPrice?: number;
+      costPrice?: number;
+      costVendorName?: string;
+      aliasName?: string;
+      unit?: string;
+    }> = [];
+
+    const pushLine = (
+      lineNum: number,
+      requirement: RfqRequirementItem,
+      selectedPid: string | undefined
+    ) => {
+      const allLineMatches = [
+        ...(itemMatches.find((im) => im.lineNumber === lineNum)?.matches || []),
+        ...(extraMatchesByLine[lineNum] || []),
+      ];
+      const picked = selectedPid
+        ? allLineMatches.find((m) => m.product.id === selectedPid)
+        : undefined;
+      const vendorIdSelected = lineVendorSelection[lineNum];
+      const vendorMatch = vendorIdSelected
+        ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
+        : undefined;
+      const vendorPriceOptions = vendorsWithPriceForLine(vendorMatches, lineNum);
+      const vendorLineCost =
+        (vendorMatch ? vendorUnitCostForLine(vendorMatch, lineNum) : null) ??
+        [...vendorPriceOptions].sort((a, b) => a.unitPrice - b.unitPrice)[0];
+      const last = picked?.product.lastPrice;
+      const offer = picked?.product.offerPrice;
+      const catalogPrice =
+        last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
+      const sheetPrice =
+        requirement.unitPrice != null && requirement.unitPrice > 0
+          ? requirement.unitPrice
+          : undefined;
+      const unitPrice = sheetPrice ?? catalogPrice ?? vendorLineCost?.unitPrice;
+      rows.push({
+        productId: selectedPid || null,
+        qty: requirement.quantity > 0 ? requirement.quantity : 1,
+        aliasName: requirement.description,
+        unit: requirement.unit,
+        ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
+        ...(vendorLineCost
+          ? {
+              costPrice: vendorLineCost.unitPrice,
+              costVendorName: vendorLineCost.vendorName,
+            }
+          : {}),
+      });
+    };
+
+    if (itemMatches.length > 0) {
+      for (const item of itemMatches) {
+        pushLine(item.lineNumber, item.requirement, lineSelection[item.lineNumber]);
+      }
+      for (const added of addedLines) {
+        pushLine(added.lineNumber, added, lineSelection[added.lineNumber]);
+      }
+    } else {
+      for (const pid of selected) {
+        rows.push({ productId: pid, qty: 1 });
+      }
+    }
+    return rows;
+  }
+
+  async function convertToQuote(opts?: { forceNew?: boolean }) {
     setBusy("quote");
     setError("");
 
     try {
-      const lines: Array<{
-        productId: string;
-        qty: number;
-        unitPrice?: number;
-        costPrice?: number;
-        costVendorName?: string;
-        aliasName?: string;
-        unit?: string;
-      }> = [];
-      const used = new Set<string>();
-
-      if (itemMatches.length > 0) {
-        for (const item of itemMatches) {
-          const lineNum = item.lineNumber;
-          const selectedPid = lineSelection[lineNum];
-          const allLineMatches = [
-            ...item.matches,
-            ...(extraMatchesByLine[lineNum] || []),
-          ];
-          const picked = selectedPid
-            ? allLineMatches.find((m) => m.product.id === selectedPid)
-            : undefined;
-
-          if (selectedPid && picked) {
-            const vendorIdSelected = lineVendorSelection[lineNum];
-            const vendorMatch = vendorIdSelected
-              ? vendorMatches.find((m) => m.vendor.id === vendorIdSelected)
-              : undefined;
-            const vendorPriceOptions = vendorsWithPriceForLine(vendorMatches, lineNum);
-            const vendorLineCost =
-              (vendorMatch ? vendorUnitCostForLine(vendorMatch, lineNum) : null) ??
-              [...vendorPriceOptions].sort((a, b) => a.unitPrice - b.unitPrice)[0];
-            const last = picked?.product.lastPrice;
-            const offer = picked?.product.offerPrice;
-            const catalogPrice =
-              last != null && last > 0 ? last : offer != null && offer > 0 ? offer : undefined;
-            const sheetPrice =
-              item.requirement.unitPrice != null && item.requirement.unitPrice > 0
-                ? item.requirement.unitPrice
-                : undefined;
-            // Spreadsheet / document rate wins over catalog (same as CSV import).
-            const unitPrice = sheetPrice ?? catalogPrice ?? vendorLineCost?.unitPrice;
-            lines.push({
-              productId: selectedPid,
-              qty: item.requirement.quantity > 0 ? item.requirement.quantity : 1,
-              aliasName: item.requirement.description,
-              unit: item.requirement.unit,
-              ...(unitPrice != null && unitPrice > 0 ? { unitPrice } : {}),
-              ...(vendorLineCost
-                ? {
-                    costPrice: vendorLineCost.unitPrice,
-                    costVendorName: vendorLineCost.vendorName,
-                  }
-                : {}),
-            });
-            used.add(selectedPid);
-          }
-        }
-      } else {
-        for (const pid of selected) {
-          if (used.has(pid)) continue;
-          lines.push({
-            productId: pid,
-            qty: 1,
-          });
-        }
-      }
+      const lines = workspaceQuoteLines();
+      const syncDraft = Boolean(draftQuote) && !opts?.forceNew;
 
       const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           lines.length > 0
-            ? { lines }
-            : { productIds: [...selected] }
+            ? { lines, syncDraft }
+            : { productIds: [...selected], syncDraft }
         ),
       });
       const data = await parseApiJson<{ id?: string; error?: string }>(
@@ -4301,19 +4306,46 @@ export default function RfqDetailPage() {
           >
             {busy === "parse" ? "Parsing…" : "Re-parse"}
           </button>
-          <button
-            type="button"
-            onClick={convertToQuote}
-            disabled={!!busy}
-            title="Create another quotation from the selected matches"
-            className="inline-flex h-8 items-center rounded-full bg-mid-green px-3 text-xs font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
-          >
-            {busy === "quote"
-              ? "Creating…"
-              : quoteProductCount > 0
-                ? `New quote · ${quoteProductCount} lines`
-                : "New quote"}
-          </button>
+          {draftQuote ? (
+            <button
+              type="button"
+              onClick={() => void convertToQuote()}
+              disabled={!!busy}
+              title={`Refresh draft ${draftQuote.quoteNumber} from current matches`}
+              className="inline-flex h-8 items-center rounded-full bg-mid-green px-3 text-xs font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
+            >
+              {busy === "quote"
+                ? "Updating…"
+                : quoteProductCount > 0
+                  ? `Update draft · ${quoteProductCount} lines`
+                  : "Update draft"}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void convertToQuote()}
+              disabled={!!busy}
+              title="Create a quotation from the selected matches"
+              className="inline-flex h-8 items-center rounded-full bg-mid-green px-3 text-xs font-medium text-background transition hover:bg-dark-secondary disabled:opacity-60"
+            >
+              {busy === "quote"
+                ? "Creating…"
+                : quoteProductCount > 0
+                  ? `New quote · ${quoteProductCount} lines`
+                  : "New quote"}
+            </button>
+          )}
+          {draftQuote ? (
+            <button
+              type="button"
+              onClick={() => void convertToQuote({ forceNew: true })}
+              disabled={!!busy}
+              title="Create a separate quote instead of updating the draft"
+              className="inline-flex h-8 items-center rounded-full bg-dark-secondary/[0.05] px-2.5 text-xs font-medium text-mid-green transition hover:bg-light-green/20 disabled:opacity-60"
+            >
+              New quote
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => setSummaryPanelOpen((open) => !open)}
@@ -4341,9 +4373,17 @@ export default function RfqDetailPage() {
         </p>
       ) : null}
       {rfq.parseError ? (
-        <p className="rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
-          {userFacingParseError(rfq.parseError)}
-        </p>
+        <div className="flex flex-wrap items-center gap-2 rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
+          <p className="min-w-0 flex-1">{userFacingParseError(rfq.parseError)}</p>
+          <button
+            type="button"
+            onClick={() => void reparse()}
+            disabled={!!busy}
+            className="inline-flex h-7 shrink-0 items-center rounded-full bg-mid-green/15 px-2.5 text-xs font-medium text-dark-primary hover:bg-mid-green/25 disabled:opacity-60"
+          >
+            {busy === "parse" ? "Parsing…" : "Retry parse"}
+          </button>
+        </div>
       ) : null}
 
       {summaryPanelOpen ? (

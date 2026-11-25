@@ -76,6 +76,18 @@ function categoriesEqual(a?: string | null, b?: string | null): boolean {
   return categoriesCompatible(a, b);
 }
 
+/** Ledger / expense party names that must not appear as RFQ vendor suggestions. */
+export function isLedgerExpenseVendorName(name: string): boolean {
+  const upper = name.trim().toUpperCase();
+  if (!upper) return true;
+  return (
+    /^POST OFFICE\b/.test(upper) ||
+    /\bLATE DELIVERY\b/.test(upper) ||
+    /\bPAYMENT CHARGES\b/.test(upper) ||
+    /\bBANK CHARGES\b/.test(upper)
+  );
+}
+
 /**
  * Company-name tokens that appear in Misc vendor keywords and also in RFQ
  * specs (e.g. "phantom power", "6 zone", "50MP camera"). Ignore these when
@@ -826,7 +838,9 @@ export async function matchVendorsToRfq(
     }
   }
 
-  const matches: VendorMatch[] = [...byVendor.values()].map((entry) => {
+  const matches: VendorMatch[] = [...byVendor.values()]
+    .filter((entry) => !isLedgerExpenseVendorName(entry.vendor.name))
+    .map((entry) => {
     const linesWithPrice = entry.matchedLines.filter((l) => l.unitPrice != null);
     const allPriced =
       entry.matchedLines.length > 0 &&
@@ -843,9 +857,18 @@ export async function matchVendorsToRfq(
     const singleLast =
       entry.matchedLines.length === 1 ? entry.matchedLines[0].unitPrice : null;
 
+    const primaryLine = entry.matchedLines[0];
+    const specLine = primaryLine
+      ? lines.find((row) => row.item.lineNumber === primaryLine.lineNumber)
+      : undefined;
+    const displayCategory =
+      (specLine
+        ? resolveLineCategory(specLine.item, resolvedRfqCategory)
+        : null) || entry.bestCategory.category;
+
     return {
       vendor: entry.vendor,
-      category: entry.bestCategory.category,
+      category: displayCategory,
       subcategory: entry.bestCategory.subcategory,
       matchedKeywords: entry.bestCategory.matchedKeywords,
       score: entry.totalScore,

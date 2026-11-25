@@ -12,6 +12,12 @@ import {
   requirementForProduct,
 } from "@/lib/quote-line-alias";
 import { persistQuoteLineVendorCosts } from "@/lib/quote-line-cost-persist";
+import {
+  QuoteLineValidationError,
+  sanitizeQuoteLinesForCreate,
+  type QuoteLineSanitizeInput,
+} from "@/lib/quote-line-sanitize";
+import { round2 } from "@/lib/accounting/money";
 
 export type QuoteFromRfqLine = {
   productId: string | null;
@@ -33,7 +39,28 @@ export type CreateQuoteFromRfqInput = {
   buyerGstin?: string;
   buyerAddress?: string;
   buyerState?: string;
+  /** When set, refresh this draft instead of creating a second quote. */
+  updateQuoteId?: string;
 };
+
+export { QuoteLineValidationError };
+
+export async function syncDraftQuoteFromRfq(input: CreateQuoteFromRfqInput) {
+  const existing = input.updateQuoteId
+    ? await prisma.quote.findFirst({
+        where: {
+          id: input.updateQuoteId,
+          rfqId: input.rfqId,
+          status: "DRAFT",
+        },
+      })
+    : await prisma.quote.findFirst({
+        where: { rfqId: input.rfqId, status: "DRAFT" },
+        orderBy: { createdAt: "desc" },
+      });
+  if (!existing) return createQuoteFromRfq(input);
+  return createQuoteFromRfq({ ...input, updateQuoteId: existing.id });
+}
 
 export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   const rfq = await prisma.rfq.findUnique({ where: { id: input.rfqId } });
@@ -49,7 +76,16 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   const defaultQty =
     typeof specs?.quantity === "number" && specs.quantity > 0 ? specs.quantity : 1;
 
-  const quoteNumber = await nextQuoteNumber();
+  const updating = input.updateQuoteId
+    ? await prisma.quote.findFirst({
+        where: {
+          id: input.updateQuoteId,
+          rfqId: rfq.id,
+          status: "DRAFT",
+        },
+      })
+    : null;
+  const quoteNumber = updating?.quoteNumber ?? (await nextQuoteNumber());
 
   type LineCreate = {
     productId: string | null;
@@ -119,7 +155,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           : null,
       costVendorName: cost?.vendorName?.trim() || "",
       taxRate,
-      lineTotal: Math.round(qty * unitPrice * 100) / 100,
+      lineTotal: round2(qty * unitPrice),
       sortOrder,
     };
   };
@@ -190,7 +226,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           unit: presented.unit,
           unitPrice,
           taxRate,
-          lineTotal: Math.round(qty * unitPrice * 100) / 100,
+          lineTotal: round2(qty * unitPrice),
           sortOrder: i,
         } satisfies LineCreate;
       }
@@ -267,7 +303,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
         unit: presented.unit,
         unitPrice,
         taxRate,
-        lineTotal: Math.round(item.quantity * unitPrice * 100) / 100,
+        lineTotal: round2(item.quantity * unitPrice),
         sortOrder: i,
       };
     });
@@ -295,34 +331,50 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     ];
   }
 
-  const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0);
-  const gstAmount =
-    Math.round(lines.reduce((s, l) => s + (l.lineTotal * l.taxRate) / 100, 0) * 100) / 100;
-  const grandTotal = Math.round((subtotal + gstAmount) * 100) / 100;
+  lines = sanitizeQuoteLinesForCreate(lines as QuoteLineSanitizeInput[]);
+
+  const subtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
+  const gstAmount = round2(
+    lines.reduce((s, l) => s + (l.lineTotal * l.taxRate) / 100, 0)
+  );
+  const grandTotal = round2(subtotal + gstAmount);
 
   const quote = await prisma.$transaction(
     async (tx) => {
-      const created = await tx.quote.create({
-        data: {
-          quoteNumber,
-          status: "DRAFT",
-          rfqId: rfq.id,
-          buyerName: rfq.customerName,
-          buyerCompany: rfq.customerCompany,
-          buyerEmail: rfq.customerEmail,
-          buyerPhone: rfq.customerPhone,
-          buyerGstin: input.buyerGstin || "",
-          buyerAddress: input.buyerAddress || "",
-          buyerState: input.buyerState || "",
-          withGst: true,
-          subtotal,
-          gstAmount,
-          cgstAmount: Math.round((gstAmount / 2) * 100) / 100,
-          sgstAmount: Math.round((gstAmount / 2) * 100) / 100,
-          grandTotal,
-          notes: "",
-        },
-      });
+      const header = {
+        buyerName: rfq.customerName,
+        buyerCompany: rfq.customerCompany,
+        buyerEmail: rfq.customerEmail,
+        buyerPhone: rfq.customerPhone,
+        buyerGstin: input.buyerGstin || updating?.buyerGstin || "",
+        buyerAddress: input.buyerAddress || updating?.buyerAddress || "",
+        buyerState: input.buyerState || updating?.buyerState || "",
+        withGst: true,
+        subtotal,
+        gstAmount,
+        cgstAmount: round2(gstAmount / 2),
+        sgstAmount: round2(gstAmount - round2(gstAmount / 2)),
+        grandTotal,
+      };
+
+      const created = updating
+        ? await tx.quote.update({
+            where: { id: updating.id },
+            data: header,
+          })
+        : await tx.quote.create({
+            data: {
+              quoteNumber,
+              status: "DRAFT",
+              rfqId: rfq.id,
+              notes: "",
+              ...header,
+            },
+          });
+
+      if (updating) {
+        await tx.quoteLineItem.deleteMany({ where: { quoteId: updating.id } });
+      }
 
       if (lines.length > 0) {
         await tx.quoteLineItem.createMany({
