@@ -19,6 +19,10 @@ import {
   LEAD_PRIORITY_LABELS,
   LEAD_STAGE_LABELS,
 } from "@/lib/leads/constants";
+import {
+  followUpCompletedTimelineTitle,
+  followUpScheduledTimelineTitle,
+} from "@/lib/leads/follow-up-timeline";
 
 type LeadDetail = {
   id: string;
@@ -254,9 +258,10 @@ export default function LeadDetailPage() {
             {
               id: `optimistic-${followUpId}`,
               type: "FOLLOW_UP_COMPLETED",
-              title: target?.title
-                ? `Completed: ${target.title}`
-                : "Follow-up completed",
+              title: followUpCompletedTimelineTitle(
+                target?.type || "CALL",
+                target?.title
+              ),
               body: target?.notes || "",
               createdAt: new Date().toISOString(),
               actor: prev.assignedTo,
@@ -292,14 +297,56 @@ export default function LeadDetailPage() {
 
   async function scheduleFollowUp() {
     if (!followDue || schedulingFollowUp) return;
+    const due =
+      parseLocalDateTimeValue(followDue) ?? new Date(followDue);
+    if (Number.isNaN(due.getTime())) {
+      window.alert("Pick a valid date and time");
+      return;
+    }
+    const dueIso = due.toISOString();
+    const optimisticId = `optimistic-schedule-${Date.now()}`;
     setSchedulingFollowUp(true);
+    setLead((prev) =>
+      prev
+        ? {
+            ...prev,
+            nextFollowUpAt: dueIso,
+            followUps: [
+              {
+                id: optimisticId,
+                type: followType,
+                status: "PENDING",
+                dueAt: dueIso,
+                title: followTitle,
+                notes: "",
+              },
+              ...prev.followUps,
+            ],
+            activities: [
+              {
+                id: `optimistic-activity-${optimisticId}`,
+                type: "FOLLOW_UP_SCHEDULED",
+                title: followUpScheduledTimelineTitle(
+                  followType,
+                  due,
+                  followTitle
+                ),
+                body: "",
+                createdAt: new Date().toISOString(),
+                actor: prev.assignedTo,
+              },
+              ...prev.activities,
+            ],
+          }
+        : prev
+    );
     try {
       const res = await fetch(`/api/leads/${id}/follow-ups`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: followType,
-          dueAt: new Date(followDue).toISOString(),
+          dueAt: dueIso,
           title: followTitle,
         }),
       });

@@ -16,6 +16,7 @@ import { DEFAULT_SLA_HOURS } from "@/lib/leads/constants";
 import { nextLeadNumber } from "@/lib/leads/numbers";
 import { addHours } from "@/lib/leads/stage";
 import { userFacingParseError } from "@/lib/fetch-error";
+import { retainLeadParsedCategory } from "@/lib/rfq-reparse";
 
 function itemLineFingerprint(items: unknown[]): string {
   return items
@@ -305,11 +306,15 @@ export async function parseAndUpdateRfq(rfqId: string) {
   }
   const linesChanged =
     itemLineFingerprint(existingItems) !== itemLineFingerprint(items);
+  const parsedCategory = retainLeadParsedCategory(
+    rfq.parsedCategory,
+    normalized.productCategory
+  );
 
   return prisma.rfq.update({
     where: { id: rfqId },
     data: {
-      parsedCategory: normalized.productCategory,
+      parsedCategory,
       parsedSpecs: {
         ...result.specs,
         items,

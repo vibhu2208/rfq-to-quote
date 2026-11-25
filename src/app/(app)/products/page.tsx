@@ -15,6 +15,10 @@ import { Money } from "@/components/ui";
 import { MasterDetailDialog } from "@/components/master-detail-dialog";
 import { AppPageSkeleton } from "@/components/page-skeleton";
 import { hasMasterFields, productMasterFallback } from "@/lib/master-data";
+import {
+  parseProductsPageParam,
+  shouldResetProductsPageOnSearch,
+} from "@/lib/products-list-url";
 
 type Product = {
   id: string;
@@ -76,13 +80,15 @@ export default function ProductsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
-  const [q, setQ] = useState("");
-  const [debouncedQ, setDebouncedQ] = useState("");
+  const [q, setQ] = useState(() => searchParams.get("q") || "");
+  const [debouncedQ, setDebouncedQ] = useState(() =>
+    (searchParams.get("q") || "").trim()
+  );
   const [activeFilter, setActiveFilter] = useState<"all" | "true" | "false">("all");
-  const pageFromUrl = useMemo(() => {
-    const raw = Number(searchParams.get("page") || "1");
-    return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
-  }, [searchParams]);
+  const pageFromUrl = useMemo(
+    () => parseProductsPageParam(searchParams.get("page")),
+    [searchParams]
+  );
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filtering, setFiltering] = useState(false);
@@ -100,6 +106,7 @@ export default function ProductsPage() {
 
   const searchParamsForQRef = useRef(searchParams);
   searchParamsForQRef.current = searchParams;
+  const debouncedQRef = useRef(debouncedQ);
 
   useEffect(() => {
     // Invalidate as soon as the box changes — don't wait for debounce, or a
@@ -108,11 +115,18 @@ export default function ProductsPage() {
     abortRef.current?.abort();
     setFiltering(true);
     const timeout = setTimeout(() => {
-      setDebouncedQ(q.trim());
-      const params = new URLSearchParams(searchParamsForQRef.current.toString());
-      params.delete("page");
-      const qs = params.toString();
-      router.replace(qs ? `/products?${qs}` : "/products");
+      const next = q.trim();
+      const previous = debouncedQRef.current;
+      debouncedQRef.current = next;
+      setDebouncedQ(next);
+      if (shouldResetProductsPageOnSearch(previous, next)) {
+        const params = new URLSearchParams(searchParamsForQRef.current.toString());
+        if (next) params.set("q", next);
+        else params.delete("q");
+        params.delete("page");
+        const qs = params.toString();
+        router.replace(qs ? `/products?${qs}` : "/products");
+      }
     }, 250);
     return () => clearTimeout(timeout);
   }, [q, router]);
@@ -465,7 +479,7 @@ export default function ProductsPage() {
       </div>
 
       {total > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-24 text-sm">
           <p className="text-mid-green tabular-nums">
             {from}–{to} of {pending ? "…" : total} · Page {pageFromUrl} of {totalPages}
           </p>

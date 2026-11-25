@@ -2483,6 +2483,7 @@ export default function RfqDetailPage() {
     }>;
     lineCount: number;
   } | null>(null);
+  const [draftSyncUpToDate, setDraftSyncUpToDate] = useState(false);
   const [vendorsLoading, setVendorsLoading] = useState(false);
   const [vendorError, setVendorError] = useState("");
   const loadSeqRef = useRef(0);
@@ -2571,6 +2572,11 @@ export default function RfqDetailPage() {
       }));
   }
 
+  const catalogStockLookup = useCallback(
+    (productId: string) => inventoryMap[productId],
+    [inventoryMap]
+  );
+
   const applySavedSelections = useCallback((
     saved: ProductSelections | null | undefined,
     list: ProductMatch[],
@@ -2593,6 +2599,7 @@ export default function RfqDetailPage() {
         })),
         extraIdsByLine: {},
         autoWhenEmpty: true,
+        stockLookup: catalogStockLookup,
       });
       const auto = new Set<string>(Object.values(autoLines));
       setSelected(auto);
@@ -2668,6 +2675,7 @@ export default function RfqDetailPage() {
       })),
       extraIdsByLine,
       autoWhenEmpty: false,
+      stockLookup: catalogStockLookup,
     });
 
     setExtraMatchesByLine(extrasByLine);
@@ -2682,7 +2690,7 @@ export default function RfqDetailPage() {
             : Object.values(lineSel)
       )
     );
-  }, []);
+  }, [catalogStockLookup]);
 
   const loadMatches = useCallback(async (saved?: ProductSelections | null) => {
     setMatchesLoading(true);
@@ -3312,6 +3320,7 @@ export default function RfqDetailPage() {
           ])
         ),
         touchedLines: [...touchedLinesRef.current],
+        stockLookup: catalogStockLookup,
       });
       if (reconciled.pinFromPrevious.length > 0) {
         setExtraMatchesByLine((prev) => {
@@ -3720,13 +3729,20 @@ export default function RfqDetailPage() {
           );
           return;
         }
-        if (previewData.preview?.changes?.length) {
+        if (previewData.preview) {
+          if (previewData.preview.changes.length === 0) {
+            setDraftSyncPreview(null);
+            setDraftSyncUpToDate(true);
+            return;
+          }
+          setDraftSyncUpToDate(false);
           setDraftSyncPreview(previewData.preview);
           return;
         }
       }
 
       setDraftSyncPreview(null);
+      setDraftSyncUpToDate(false);
 
       const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
         method: "POST",
@@ -4192,7 +4208,8 @@ export default function RfqDetailPage() {
         requirementText: requirementMatchText(item.requirement),
         matches: lineMatches(item),
       })),
-      lineSelection
+      lineSelection,
+      catalogStockLookup
     );
     setAcceptReview(null);
     if (acceptedLines.length === 0) return;
@@ -4472,6 +4489,18 @@ export default function RfqDetailPage() {
       {error ? (
         <p className="rounded-xl border border-dark-primary/10 bg-dark-primary/5 px-3 py-2 text-sm text-dark-primary">
           {error}
+        </p>
+      ) : null}
+      {draftSyncUpToDate ? (
+        <p className="rounded-xl border border-light-green/35 bg-light-green/10 px-3 py-2 text-sm text-mid-green">
+          Draft is already up to date — nothing to change.
+          <button
+            type="button"
+            onClick={() => setDraftSyncUpToDate(false)}
+            className="ml-2 text-xs font-medium text-dark-primary underline"
+          >
+            Dismiss
+          </button>
         </p>
       ) : null}
       {draftSyncPreview ? (
