@@ -183,6 +183,12 @@ export function QuotePreviewModal({
     (l) => displayName(l) || l.unitPrice > 0 || l.qty > 0
   );
   const displayLines = filledLines.length > 0 ? filledLines : lineItems.slice(0, 1);
+  const qtyByUnit = new Map<string, number>();
+  for (const line of displayLines) {
+    const unit = (line.unit || "pcs").trim().toLowerCase() || "pcs";
+    qtyByUnit.set(unit, (qtyByUnit.get(unit) || 0) + line.qty);
+  }
+  const mixedUnits = qtyByUnit.size > 1;
   const totalQty = displayLines.reduce((s, l) => s + l.qty, 0);
   const totalTax = displayLines.reduce((s, l) => s + lineTax(l, withGst), 0);
   const gstBuckets = new Map<number, number>();
@@ -335,13 +341,13 @@ export function QuotePreviewModal({
           </EditableBlock>
 
           <div className="mt-4 overflow-x-auto">
-            <table className="w-full min-w-[640px] border-collapse border border-black text-left">
+            <table className="w-full table-fixed border-collapse border border-black text-left">
               <thead>
                 <tr className="bg-yellow-300">
                   <th className="border border-black px-1.5 py-1 text-center text-[11px] font-bold">
                     SN
                   </th>
-                  <th className="border border-black px-1.5 py-1 text-[11px] font-bold">
+                  <th className="w-[38%] border border-black px-1.5 py-1 text-[11px] font-bold">
                     Description of Goods
                   </th>
                   {includeHsn ? (
@@ -426,14 +432,16 @@ export function QuotePreviewModal({
                       <td className="border border-black px-1.5 py-1.5 text-center align-top tabular-nums">
                         {i + 1}
                       </td>
-                      <td className="min-w-0 border border-black px-1.5 py-1.5 align-top">
+                      <td className="min-w-0 border border-black px-1.5 py-1.5 align-top break-words [overflow-wrap:anywhere]">
                         {name ? (
-                          <span className="font-bold">{name}</span>
+                          <span className="font-bold break-words [overflow-wrap:anywhere]">
+                            {name}
+                          </span>
                         ) : (
                           <span className="italic text-slate-400">Item…</span>
                         )}
                         {detailBlock ? (
-                          <span className="mt-0.5 block whitespace-pre-line text-[10px] font-normal text-black">
+                          <span className="mt-0.5 block whitespace-pre-line break-words text-[10px] font-normal text-black [overflow-wrap:anywhere]">
                             {detailBlock}
                           </span>
                         ) : null}
@@ -479,8 +487,18 @@ export function QuotePreviewModal({
                   {includeHsn ? (
                     <td className="border border-black px-1.5 py-1.5" />
                   ) : null}
-                  <td className="border border-black px-1.5 py-1.5 text-center tabular-nums">
-                    {totalQty}
+                  <td className="border border-black px-1.5 py-1.5 text-center text-[10px] tabular-nums leading-tight">
+                    {mixedUnits ? (
+                      <span className="block space-y-0.5">
+                        {[...qtyByUnit.entries()].map(([unit, qty]) => (
+                          <span key={unit} className="block">
+                            {qty} {unit.toUpperCase()}
+                          </span>
+                        ))}
+                      </span>
+                    ) : (
+                      totalQty
+                    )}
                   </td>
                   {withGst ? (
                     <>

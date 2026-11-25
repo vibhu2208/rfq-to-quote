@@ -91,7 +91,7 @@ async function getDrawerLead(id: string) {
         },
       },
       followUps: {
-        where: { status: "PENDING" },
+        where: { status: { in: ["PENDING", "OVERDUE"] } },
         orderBy: { dueAt: "asc" },
         take: 8,
         select: {

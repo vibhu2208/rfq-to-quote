@@ -116,9 +116,10 @@ export function money(value: string | number | null | undefined) {
 export function slaLabel(row: LeadRow) {
   if (!row.slaDueAt) return "—";
   const due = new Date(row.slaDueAt).getTime();
+  if (!Number.isFinite(due)) return "—";
   const now = Date.now();
-  if (row.slaBreachedAt || due < now) return "Overdue";
-  return "Pending";
+  if (due < now) return "Overdue";
+  return "On track";
 }
 
 /**

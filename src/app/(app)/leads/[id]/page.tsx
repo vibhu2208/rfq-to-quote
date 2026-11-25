@@ -11,6 +11,7 @@ import {
   toLocalDateTimeValue,
 } from "@/components/ui/date-time-picker";
 import { LeadStageProcess } from "@/components/leads/lead-stage-process";
+import { useToast } from "@/components/app-toast";
 import {
   LEAD_CHANNEL_LABELS,
   LEAD_INTAKE_LABELS,
@@ -151,6 +152,8 @@ export default function LeadDetailPage() {
   const [rescheduleFor, setRescheduleFor] = useState<string | null>(null);
   const [rescheduleDue, setRescheduleDue] = useState("");
   const [followBusy, setFollowBusy] = useState<string | null>(null);
+  const [schedulingFollowUp, setSchedulingFollowUp] = useState(false);
+  const { toast } = useToast();
 
   const load = useCallback(async (opts?: { silent?: boolean }) => {
     if (!opts?.silent) setLoading(true);
@@ -238,6 +241,18 @@ export default function LeadDetailPage() {
     body: Record<string, unknown>
   ) {
     setFollowBusy(followUpId);
+    if (body.action === "complete") {
+      setLead((prev) =>
+        prev
+          ? {
+              ...prev,
+              followUps: prev.followUps.map((f) =>
+                f.id === followUpId ? { ...f, status: "DONE" } : f
+              ),
+            }
+          : prev
+      );
+    }
     try {
       const res = await fetch(`/api/leads/${id}/follow-ups`, {
         method: "PATCH",
@@ -253,6 +268,9 @@ export default function LeadDetailPage() {
       }
       setRescheduleFor(null);
       setRescheduleDue("");
+      if (body.action === "complete") toast("Follow-up marked complete");
+      else if (body.action === "reschedule") toast("Follow-up rescheduled");
+      else if (body.action === "cancel") toast("Follow-up cancelled", "info");
       await load({ silent: true });
     } finally {
       setFollowBusy(null);
@@ -260,19 +278,32 @@ export default function LeadDetailPage() {
   }
 
   async function scheduleFollowUp() {
-    if (!followDue) return;
-    await fetch(`/api/leads/${id}/follow-ups`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type: followType,
-        dueAt: new Date(followDue).toISOString(),
-        title: followTitle,
-      }),
-    });
-    setFollowTitle("");
-    setFollowDue("");
-    await load();
+    if (!followDue || schedulingFollowUp) return;
+    setSchedulingFollowUp(true);
+    try {
+      const res = await fetch(`/api/leads/${id}/follow-ups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: followType,
+          dueAt: new Date(followDue).toISOString(),
+          title: followTitle,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(
+          typeof data.error === "string" ? data.error : "Could not schedule follow-up"
+        );
+        return;
+      }
+      setFollowTitle("");
+      setFollowDue("");
+      toast("Follow-up scheduled");
+      await load({ silent: true });
+    } finally {
+      setSchedulingFollowUp(false);
+    }
   }
 
   async function createQuote() {
@@ -841,10 +872,11 @@ export default function LeadDetailPage() {
               />
               <button
                 type="button"
+                disabled={schedulingFollowUp || !followDue}
                 onClick={() => void scheduleFollowUp()}
-                className="rounded-full bg-dark-primary px-3 py-1.5 text-sm text-background"
+                className="rounded-full bg-dark-primary px-3 py-1.5 text-sm text-background disabled:opacity-50"
               >
-                Schedule
+                {schedulingFollowUp ? "Scheduling…" : "Schedule"}
               </button>
             </div>
             <div className="mt-4 space-y-2">
@@ -868,7 +900,7 @@ export default function LeadDetailPage() {
                         onClick={() => void updateFollowUp(f.id, { action: "complete" })}
                         className="font-medium text-mid-green hover:underline disabled:opacity-50"
                       >
-                        Complete
+                        {busy ? "Completing…" : "Complete"}
                       </button>
                       <button
                         type="button"

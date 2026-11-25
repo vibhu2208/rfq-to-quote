@@ -60,6 +60,7 @@ export function collectReadinessGaps(input: {
   buyerCompany?: string | null;
   buyerAddress?: string | null;
   buyerState?: string | null;
+  validityMissing?: boolean;
   lines: ReadinessLine[];
   warrantyAsked?: boolean;
   /** productId → quantity available to quote. Missing ids are unknown, not out of stock. */
@@ -139,6 +140,14 @@ export function collectReadinessGaps(input: {
     gaps.push({
       id: "terms",
       message: "Delivery was asked in the RFQ and is not specified",
+      fix: "terms",
+    });
+  }
+
+  if (input.validityMissing) {
+    gaps.push({
+      id: "validity",
+      message: "Quote validity is not specified",
       fix: "terms",
     });
   }

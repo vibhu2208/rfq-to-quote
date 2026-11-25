@@ -303,6 +303,7 @@ export async function GET(req: NextRequest) {
     contacts: {
       select: partyContactSelect,
       orderBy: partyContactOrderBy,
+      take: 3,
     },
   };
 

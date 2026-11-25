@@ -1925,6 +1925,7 @@ export function QuoteBuilder({
         stockByProductId,
         termsMissing:
           /\bdeliver/i.test(requirementText) && !commercial.delivery.trim(),
+        validityMissing: !commercial.validity.trim(),
         rfqItems: requirementContext?.items ?? [],
         lines: form.lineItems.map((line) => ({
           name: line.aliasName || line.description,
@@ -1945,6 +1946,7 @@ export function QuoteBuilder({
       requirementText,
       stockByProductId,
       commercial.delivery,
+      commercial.validity,
       requirementContext?.items,
     ]
   );
@@ -2442,7 +2444,7 @@ export function QuoteBuilder({
           <button
             type="button"
             onClick={() => {
-              setPreviewSection("buyer");
+              setPreviewSection("details");
               setPreviewOpen(true);
             }}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-mid-green px-2.5 text-sm font-medium text-background hover:bg-dark-secondary"
@@ -3441,7 +3443,7 @@ export function QuoteBuilder({
                                     AI suggestions for this requirement
                                   </p>
                                 ) : null}
-                                <div className="max-h-40 overflow-y-auto">
+                                <div className="max-h-60 overflow-y-auto overscroll-contain">
                                   {hits.map((h) => (
                                     <button
                                       key={h.id}

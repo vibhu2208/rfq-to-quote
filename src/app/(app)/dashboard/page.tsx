@@ -11,6 +11,7 @@ import {
   WON_QUOTE_STATUSES,
 } from "@/lib/quote-list";
 import { format, startOfMonth, subDays } from "date-fns";
+import { formatQuoteInstant } from "@/lib/quote-format";
 import {
   ArrowUpRight,
   CircleAlert,
@@ -610,7 +611,7 @@ export default async function DashboardPage() {
                       <StatusBadge status={q.status} />
                     </td>
                     <td className="px-4 py-3 text-mid-green">
-                      {format(q.updatedAt, "dd MMM")}
+                      {formatQuoteInstant(q.updatedAt, "dd MMM yyyy")}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Money value={decimalToNumber(q.grandTotal)} />

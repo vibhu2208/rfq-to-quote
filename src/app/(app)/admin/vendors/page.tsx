@@ -659,6 +659,10 @@ function AdminVendorsPageInner() {
           setVendorTotal(
             typeof data?.total === "number" ? data.total : lightRows.length
           );
+          if (q && lightRows.length === 0) {
+            setSelectedVendorId("");
+            setSelectedVendor(null);
+          }
           // Keep previously loaded detail (keywords/POCs) when the light list
           // refresh would otherwise wipe them back to empty stubs.
           setVendors((previous) => {
