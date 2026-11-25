@@ -6,6 +6,8 @@ import {
   looksLikeMergedSummary,
   parseQuantityFromDescription,
   resolveParsedItems,
+  finalizeParsedItemsForRfq,
+  stripQuoteIntroFromDescription,
 } from "@/lib/rfq-items";
 
 const SAMPLE_EMAIL = `Greetings from Vaibhav Kaushik.
@@ -131,6 +133,41 @@ describe("correctItemQuantityUnit", () => {
     expect(
       correctItemQuantityUnit("50 meters of Cat6 cable", 50, "meters")
     ).toEqual({ quantity: 50, unit: "meters" });
+  });
+});
+
+describe("stripQuoteIntroFromDescription", () => {
+  it("removes please-quote prefixes", () => {
+    expect(stripQuoteIntroFromDescription("Please quote: 16-port switch")).toBe(
+      "16-port switch"
+    );
+  });
+});
+
+describe("finalizeParsedItemsForRfq", () => {
+  it("prefers six text lines over five AI lines with quote prefix", () => {
+    const text =
+      "Please quote: 16-port unmanaged switch x 3; CAT6 patch cord 1 m x 50; 24-port CAT6 patch panel (D-Link) x 2; 1000 VA / 1 kVA UPS x 5; 24-inch FHD IPS monitor with HDMI and DisplayPort, qty 15; 27-inch QHD monitor x 4.";
+    const items = finalizeParsedItemsForRfq(
+      [
+        {
+          description: "Please quote: 16-port unmanaged switch",
+          quantity: 3,
+          unit: "pcs",
+        },
+        { description: "CAT6 patch cord 1 m", quantity: 50, unit: "pcs" },
+        { description: "24-port CAT6 patch panel (D-Link)", quantity: 2, unit: "pcs" },
+        { description: "1000 VA / 1 kVA UPS", quantity: 5, unit: "pcs" },
+        {
+          description: "24-inch FHD IPS monitor with HDMI and DisplayPort",
+          quantity: 15,
+          unit: "pcs",
+        },
+      ],
+      text
+    );
+    expect(items).toHaveLength(6);
+    expect(items[0].description).toBe("16-port unmanaged switch");
   });
 });
 

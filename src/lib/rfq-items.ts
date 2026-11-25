@@ -283,7 +283,7 @@ export function parseQuantityFromDescription(text: string): {
 }
 
 function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null {
-  const trimmed = line.trim();
+  const trimmed = line.trim().replace(/\.+$/g, "");
   if (!trimmed || trimmed.length < 4) return null;
 
   let match = trimmed.match(TRAILING_TIMES_QTY);
@@ -373,6 +373,11 @@ const COMPOSITE_SPLIT =
   /[;,](?=\s*[^,;]+(?:,\s*qty\s*:?\s*\d+(?:[.,]\d+)?|[×x]\s*\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))/i;
 
 const QUOTE_INTRO_PREFIX = /^(?:please\s+)?(?:kindly\s+)?quote(?:\s+for)?[:\s]+/i;
+
+/** Remove "Please quote:" / "Kindly quote for" prefixes from a single item line. */
+export function stripQuoteIntroFromDescription(description: string): string {
+  return description.replace(QUOTE_INTRO_PREFIX, "").trim();
+}
 
 const COMMERCIAL_TERMS_HINT =
   /\b(prices?|gst|delivery|warranty|within\s+\d+\s+days|inclusive|payment|terms)\b/i;
@@ -511,4 +516,43 @@ export function resolveParsedItems(
   }
 
   return normalizedAi;
+}
+
+/**
+ * After AI/heuristic parse, align items with deterministic text extraction:
+ * strip quote-intros on every line and prefer composite text when it finds more rows.
+ */
+export function finalizeParsedItemsForRfq(
+  parsedItems: LooseItem[],
+  rawText: string
+): LooseItem[] {
+  const stripped = parsedItems
+    .filter((item) => asString(item.description) || asString(item.brand))
+    .map((item) =>
+      withCorrectedUnit({
+        ...item,
+        description: stripQuoteIntroFromDescription(
+          asString(item.description) || asString(item.brand) || ""
+        ),
+      })
+    )
+    .filter((item) => asString(item.description));
+
+  const fromText = extractRequirementsFromText(rawText).map((item) =>
+    withCorrectedUnit({
+      description: item.description,
+      brand: item.brand ?? null,
+      quantity: item.quantity,
+      unit: item.unit,
+      category: item.category ?? null,
+    })
+  );
+
+  if (fromText.length > stripped.length) return fromText;
+  if (fromText.length >= 2 && fromText.length >= stripped.length) return fromText;
+
+  const resolved = resolveParsedItems(stripped, rawText);
+  if (fromText.length > resolved.length) return fromText;
+  if (resolved.length > stripped.length) return resolved;
+  return stripped.length > 0 ? stripped : resolved;
 }

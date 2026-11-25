@@ -121,32 +121,67 @@ function lineTextsCompatible(a: string, b: string): boolean {
   return overlap >= Math.min(2, ta.size);
 }
 
+type NumericTokenKey = "length_m" | "inch" | "qty" | "port";
+
+function extractNumericTokens(text: string): Map<NumericTokenKey, string> {
+  const map = new Map<NumericTokenKey, string>();
+  const lower = text.toLowerCase();
+  const length = lower.match(/\b(\d+(?:\.\d+)?)\s*(?:m|meters?|metres?)\b/);
+  if (length) map.set("length_m", length[1]);
+  const inch = lower.match(/\b(\d+(?:\.\d+)?)\s*-?\s*inch(?:es)?\b|\b(\d+(?:\.\d+)?)\s*"/);
+  const inchVal = inch?.[1] || inch?.[2];
+  if (inchVal) map.set("inch", inchVal);
+  const xQty = lower.match(/[×x]\s*(\d+(?:[.,]\d+)?)\b/);
+  if (xQty) map.set("qty", xQty[1].replace(",", ""));
+  const qtyLabel = lower.match(/\bqty\s*:?\s*(\d+(?:[.,]\d+)?)\b/);
+  if (qtyLabel) map.set("qty", qtyLabel[1].replace(",", ""));
+  const port = lower.match(/\b(\d+)\s*-?\s*port\b/);
+  if (port) map.set("port", port[1]);
+  return map;
+}
+
+/** False when both lines state a size/qty/port count that disagrees (e.g. 2 m vs 1 m). */
+export function numericTokensConflict(a: string, b: string): boolean {
+  const ta = extractNumericTokens(a);
+  const tb = extractNumericTokens(b);
+  for (const key of ["length_m", "inch", "qty", "port"] as const) {
+    const va = ta.get(key);
+    const vb = tb.get(key);
+    if (va && vb && va !== vb) return true;
+  }
+  return false;
+}
+
+function aliasMatchesClosely(rowText: string, incomingText: string): boolean {
+  const rowLabel = rowText.trim();
+  const incomingLabel = incomingText.trim();
+  if (!rowLabel || !incomingLabel) return false;
+  if (numericTokensConflict(rowLabel, incomingLabel)) return false;
+  return (
+    lineTextsCompatible(rowLabel, incomingLabel) ||
+    lineTextsCompatible(incomingLabel, rowLabel)
+  );
+}
+
 /** Trust a stored rfqLineId only when catalog or client wording still aligns. */
 export function rfqLineBindingTrusted(
   row: DraftMergeExistingLine,
   incoming: DraftMergeIncomingLine
 ): boolean {
   const clientName = incoming.aliasName?.trim() || "";
-  const textMatch = Boolean(
-    clientName &&
-      (lineTextsCompatible(row.aliasName, clientName) ||
-        lineTextsCompatible(row.description, clientName))
-  );
-  const productMatch = Boolean(
-    incoming.productId &&
-      row.productId != null &&
-      incoming.productId === row.productId
-  );
-  if (productMatch) return true;
-  if (
-    textMatch &&
-    incoming.productId &&
-    row.productId &&
-    incoming.productId !== row.productId
-  ) {
-    return false;
+  const rowText = row.aliasName?.trim() || row.description?.trim() || "";
+  if (!clientName) return false;
+
+  if (incoming.productId && row.productId) {
+    if (incoming.productId !== row.productId) return false;
+    return aliasMatchesClosely(rowText, clientName);
   }
-  return textMatch;
+
+  if (!row.productId) {
+    return aliasMatchesClosely(rowText, clientName);
+  }
+
+  return aliasMatchesClosely(rowText, clientName);
 }
 
 function rowEligibleForIncoming(
