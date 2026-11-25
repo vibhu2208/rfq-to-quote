@@ -146,7 +146,19 @@ const PLAIN_QTY_LINE =
 
 /** "Product name x 10" or "Product name (10 pcs)" */
 const INLINE_QTY_LINE =
-  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s*(?:x|\(|qty\s*)(\d+(?:[.,]\d+)?)\s*(units?|pcs|pieces?|nos)?\)?\.?\s*$/i;
+  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s*(?:[×x]|\(|qty\s*:?\s*)(\d+(?:[.,]\d+)?)\s*(units?|pcs|pieces?|nos)?\)?\.?\s*$/i;
+
+/** "CAT6 patch cord 1 m ×50" / "QA HDMI cable 3m x 5" */
+const TRAILING_TIMES_QTY =
+  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s+[×x]\s*(\d+(?:[.,]\d+)?)\s*$/i;
+
+/** "24-port patch panel 2 nos" / "- 50 pcs" */
+const TRAILING_COUNT_UNIT =
+  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s+(\d+(?:[.,]\d+)?)\s+(nos|pcs|pieces?|units?|sets?)\s*$/i;
+
+/** "qty: 5 patch panels" */
+const QTY_LABEL_LINE =
+  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*qty\s*:\s*(\d+(?:[.,]\d+)?)\s+(.+?)\s*$/i;
 
 function normalizeUnit(raw: string | undefined): string {
   if (!raw) return "pcs";
@@ -233,11 +245,60 @@ function parseQty(raw: string): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/** Parse qty suffixes from free-text lines (e.g. add-missing item field). */
+export function parseQuantityFromDescription(text: string): {
+  description: string;
+  quantity: number;
+  unit: string;
+} {
+  const trimmed = text.trim();
+  if (!trimmed) return { description: "", quantity: 1, unit: "pcs" };
+  const parsed = parseLine(trimmed);
+  if (parsed) {
+    return {
+      description: parsed.description,
+      quantity: parsed.quantity,
+      unit: parsed.unit || "pcs",
+    };
+  }
+  const times = trimmed.match(/(.+?)\s+[×x]\s*(\d+(?:[.,]\d+)?)\s*$/i);
+  if (times) {
+    return {
+      description: times[1].trim(),
+      quantity: parseQty(times[2]),
+      unit: "pcs",
+    };
+  }
+  return { description: trimmed, quantity: 1, unit: "pcs" };
+}
+
 function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null {
   const trimmed = line.trim();
   if (!trimmed || trimmed.length < 4) return null;
 
-  let match = trimmed.match(BULLET_QTY_LINE);
+  let match = trimmed.match(TRAILING_TIMES_QTY);
+  if (match) {
+    return {
+      description: match[1].trim(),
+      quantity: parseQty(match[2]),
+      unit: "pcs",
+      brand: null,
+      category: null,
+    };
+  }
+
+  match = trimmed.match(QTY_LABEL_LINE);
+  if (match) {
+    return {
+      description: match[2].trim(),
+      quantity: parseQty(match[1]),
+      unit: "pcs",
+      brand: null,
+      category: null,
+    };
+  }
+
+  match = trimmed.match(BULLET_QTY_LINE);
   if (match) {
     return {
       description: match[1].trim(),
@@ -271,6 +332,17 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
         category: null,
       };
     }
+  }
+
+  match = trimmed.match(TRAILING_COUNT_UNIT);
+  if (match) {
+    return {
+      description: match[1].trim(),
+      quantity: parseQty(match[2]),
+      unit: normalizeUnit(match[3]),
+      brand: null,
+      category: null,
+    };
   }
 
   return null;

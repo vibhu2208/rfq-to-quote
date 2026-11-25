@@ -27,7 +27,8 @@ import {
   useInventoryMap,
   type PickableProduct,
 } from "@/components/rfq-product-picker";
-import { extractRfqItems } from "@/lib/rfq-items";
+import { extractRfqItems, parseQuantityFromDescription } from "@/lib/rfq-items";
+import { productKeyForLine } from "@/lib/vendor-match";
 import { LEAD_STAGE_LABELS } from "@/lib/leads/constants";
 import { formatLeadCompactTimestamp } from "@/components/leads/leads-workbench-helpers";
 import { catalogBindingLooksMismatched } from "@/lib/product-match";
@@ -2470,6 +2471,15 @@ export default function RfqDetailPage() {
   const { inventoryMap } = useInventoryMap(!loading && !!rfq);
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
+  const [draftSyncPreview, setDraftSyncPreview] = useState<{
+    changes: Array<{
+      kind: string;
+      rfqLineId?: number;
+      aliasName?: string;
+      fields?: string[];
+    }>;
+    lineCount: number;
+  } | null>(null);
   const [vendorsLoading, setVendorsLoading] = useState(false);
   const [vendorError, setVendorError] = useState("");
   const loadSeqRef = useRef(0);
@@ -3601,6 +3611,7 @@ export default function RfqDetailPage() {
 
   function workspaceQuoteLines() {
     const rows: Array<{
+      rfqLineId?: number;
       productId: string | null;
       qty: number;
       unitPrice?: number;
@@ -3640,6 +3651,7 @@ export default function RfqDetailPage() {
           : undefined;
       const unitPrice = sheetPrice ?? catalogPrice ?? vendorLineCost?.unitPrice;
       rows.push({
+        rfqLineId: lineNum,
         productId: selectedPid || null,
         qty: requirement.quantity > 0 ? requirement.quantity : 1,
         aliasName: requirement.description,
@@ -3669,22 +3681,56 @@ export default function RfqDetailPage() {
     return rows;
   }
 
-  async function convertToQuote(opts?: { forceNew?: boolean }) {
+  async function convertToQuote(opts?: { forceNew?: boolean; confirmSync?: boolean }) {
     setBusy("quote");
     setError("");
 
     try {
       const lines = workspaceQuoteLines();
       const syncDraft = Boolean(draftQuote) && !opts?.forceNew;
+      const payload =
+        lines.length > 0
+          ? { lines, syncDraft }
+          : { productIds: [...selected], syncDraft };
+
+      if (syncDraft && !opts?.confirmSync && lines.length > 0) {
+        const previewRes = await fetch(`/api/rfqs/${id}/convert-quote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...payload, preview: true }),
+        });
+        const previewData = await parseApiJson<{
+          preview?: {
+            changes: Array<{
+              kind: string;
+              rfqLineId?: number;
+              aliasName?: string;
+              fields?: string[];
+            }>;
+            lineCount: number;
+          };
+          error?: string;
+        }>(previewRes, "Could not preview draft sync");
+        if (!previewRes.ok) {
+          setError(
+            typeof previewData.error === "string" && previewData.error.trim()
+              ? previewData.error
+              : "Could not preview draft sync"
+          );
+          return;
+        }
+        if (previewData.preview) {
+          setDraftSyncPreview(previewData.preview);
+          return;
+        }
+      }
+
+      setDraftSyncPreview(null);
 
       const res = await fetch(`/api/rfqs/${id}/convert-quote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          lines.length > 0
-            ? { lines, syncDraft }
-            : { productIds: [...selected], syncDraft }
-        ),
+        body: JSON.stringify(payload),
       });
       const data = await parseApiJson<{ id?: string; error?: string }>(
         res,
@@ -4090,6 +4136,7 @@ export default function RfqDetailPage() {
   function addMissingItem(description: string) {
     const text = description.trim().slice(0, 300);
     if (text.length < 2) return;
+    const parsed = parseQuantityFromDescription(text);
     const lineNumber =
       Math.max(
         0,
@@ -4099,9 +4146,9 @@ export default function RfqDetailPage() {
       ) + 1;
     const line: RfqRequirementItem = {
       lineNumber,
-      description: text,
-      quantity: 1,
-      unit: "pcs",
+      description: parsed.description || text,
+      quantity: parsed.quantity > 0 ? parsed.quantity : 1,
+      unit: parsed.unit || "pcs",
     };
     const nextAdded = [...addedLines, line];
     addedLinesRef.current = nextAdded;
@@ -4165,6 +4212,33 @@ export default function RfqDetailPage() {
     setAcceptUndo(null);
     setAcceptNotice("Restored the previous selections.");
   }
+
+  const activeVendorLine = useMemo(() => {
+    if (!rfq) return null;
+    if (expandedSearchLine != null) {
+      const hit =
+        itemMatches.find((row) => row.lineNumber === expandedSearchLine)?.requirement ??
+        requirements.find((row) => row.lineNumber === expandedSearchLine);
+      if (hit) return hit;
+    }
+    const selectedLine = Number(
+      Object.entries(lineSelection).sort((a, b) => Number(a[0]) - Number(b[0]))[0]?.[0]
+    );
+    if (Number.isFinite(selectedLine)) {
+      const hit =
+        itemMatches.find((row) => row.lineNumber === selectedLine)?.requirement ??
+        requirements.find((row) => row.lineNumber === selectedLine);
+      if (hit) return hit;
+    }
+    return itemMatches[0]?.requirement ?? requirements[0] ?? null;
+  }, [rfq, expandedSearchLine, itemMatches, lineSelection, requirements]);
+
+  const displayVendorProductKey = useMemo(() => {
+    if (activeVendorLine && rfq) {
+      return productKeyForLine(activeVendorLine, rfq.parsedCategory);
+    }
+    return vendorProductKey;
+  }, [activeVendorLine, rfq, vendorProductKey]);
 
   if (loading) {
     return (
@@ -4382,6 +4456,49 @@ export default function RfqDetailPage() {
         <p className="rounded-xl border border-dark-primary/10 bg-dark-primary/5 px-3 py-2 text-sm text-dark-primary">
           {error}
         </p>
+      ) : null}
+      {draftSyncPreview ? (
+        <div className="rounded-xl border border-mid-green/30 bg-white px-3 py-3 text-xs text-dark-primary shadow-sm">
+          <p className="font-medium">
+            Update draft? {draftSyncPreview.lineCount} quote line
+            {draftSyncPreview.lineCount === 1 ? "" : "s"} after sync.
+          </p>
+          <ul className="mt-2 max-h-36 space-y-1 overflow-y-auto">
+            {draftSyncPreview.changes.map((change, index) => (
+              <li key={`${change.kind}-${index}`} className="rounded-lg bg-light-green/10 px-2 py-1">
+                {change.kind === "add" ? (
+                  <>
+                    Add line {change.rfqLineId}: {change.aliasName}
+                  </>
+                ) : change.kind === "update" ? (
+                  <>
+                    Update line {change.rfqLineId}: {change.aliasName}
+                    {change.fields?.length ? ` (${change.fields.join(", ")})` : ""}
+                  </>
+                ) : (
+                  <>Keep {change.aliasName}</>
+                )}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void convertToQuote({ confirmSync: true })}
+              disabled={!!busy}
+              className="rounded-full bg-mid-green px-2.5 py-1 font-medium text-background hover:bg-dark-secondary disabled:opacity-60"
+            >
+              Confirm update
+            </button>
+            <button
+              type="button"
+              onClick={() => setDraftSyncPreview(null)}
+              className="rounded-full bg-white px-2.5 py-1 font-medium text-mid-green ring-1 ring-light-green/40"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
       ) : null}
       {rfq.parseError ? (
         <div className="flex flex-wrap items-center gap-2 rounded-xl bg-dark-primary/5 px-3 py-2 text-sm">
@@ -5009,8 +5126,10 @@ export default function RfqDetailPage() {
             <span className="rounded-full bg-dark-secondary/8 px-2 py-0.5 text-[11px] font-medium tabular-nums text-mid-green">
               {vendorMatches.length}
             </span>
-            {vendorProductKey ? (
-              <span className="truncate text-[11px] text-mid-green">{vendorProductKey}</span>
+            {displayVendorProductKey ? (
+              <span className="truncate text-[11px] text-mid-green">
+                {displayVendorProductKey}
+              </span>
             ) : null}
             <div className="ml-auto flex items-center gap-1">
               <button

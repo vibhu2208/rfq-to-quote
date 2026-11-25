@@ -18,6 +18,10 @@ import {
   type QuoteLineSanitizeInput,
 } from "@/lib/quote-line-sanitize";
 import { round2 } from "@/lib/accounting/money";
+import {
+  mergeDraftQuoteLines,
+  type DraftMergeChange,
+} from "@/lib/quote-draft-merge";
 
 export type QuoteFromRfqLine = {
   productId: string | null;
@@ -27,6 +31,8 @@ export type QuoteFromRfqLine = {
   costVendorName?: string;
   aliasName?: string;
   unit?: string;
+  /** RFQ workspace line — stable key for draft sync merge. */
+  rfqLineId?: number;
   /** True when top catalog hit was skipped as weak/mismatched. */
   matchWeak?: boolean;
 };
@@ -44,6 +50,83 @@ export type CreateQuoteFromRfqInput = {
 };
 
 export { QuoteLineValidationError };
+
+export async function previewSyncDraftQuoteFromRfq(
+  input: CreateQuoteFromRfqInput
+): Promise<{ changes: DraftMergeChange[]; lineCount: number } | null> {
+  const explicit = input.lines || [];
+  if (explicit.length === 0 || !explicit.every((l) => typeof l.rfqLineId === "number")) {
+    return null;
+  }
+
+  const rfq = await prisma.rfq.findUnique({ where: { id: input.rfqId } });
+  if (!rfq) throw new Error("RFQ not found");
+
+  const updating =
+    input.updateQuoteId != null
+      ? await prisma.quote.findFirst({
+          where: {
+            id: input.updateQuoteId,
+            rfqId: rfq.id,
+            status: "DRAFT",
+          },
+        })
+      : await prisma.quote.findFirst({
+          where: { rfqId: rfq.id, status: "DRAFT" },
+          orderBy: { createdAt: "desc" },
+        });
+  if (!updating) return null;
+
+  const existingRows = await prisma.quoteLineItem.findMany({
+    where: { quoteId: updating.id },
+    orderBy: { sortOrder: "asc" },
+  });
+
+  const productIds = explicit
+    .map((l) => l.productId)
+    .filter((id): id is string => Boolean(id));
+  const products =
+    productIds.length > 0
+      ? await prisma.product.findMany({ where: { id: { in: productIds } } })
+      : [];
+  const byId = new Map(products.map((p) => [p.id, p]));
+
+  const { changes, lines } = mergeDraftQuoteLines(
+    existingRows.map((row) => ({
+      id: row.id,
+      productId: row.productId,
+      aliasName: row.aliasName,
+      description: row.description,
+      qty: decimalToNumber(row.qty),
+      unit: row.unit,
+      unitPrice: decimalToNumber(row.unitPrice),
+      costPrice: row.costPrice != null ? decimalToNumber(row.costPrice) : null,
+      costVendorName: row.costVendorName,
+      discountPercent: decimalToNumber(row.discountPercent ?? 0),
+      taxRate: decimalToNumber(row.taxRate),
+      sortOrder: row.sortOrder,
+      customItem: row.customItem,
+    })),
+    explicit.map((line) => ({
+      rfqLineId: line.rfqLineId!,
+      productId: line.productId,
+      aliasName: line.aliasName,
+      unit: line.unit,
+      qty: line.qty,
+      unitPrice: line.unitPrice,
+      costPrice: line.costPrice,
+      costVendorName: line.costVendorName,
+    })),
+    {
+      catalogUnitPrice: (productId) => {
+        const product = byId.get(productId);
+        return product ? catalogSellPrice(product) : undefined;
+      },
+    }
+  );
+
+  return { changes, lineCount: lines.length };
+}
 
 export async function syncDraftQuoteFromRfq(input: CreateQuoteFromRfqInput) {
   const existing = input.updateQuoteId
@@ -99,8 +182,16 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     taxRate: number;
     lineTotal: number;
     sortOrder: number;
+    id?: string;
+    discountPercent?: number;
+    customItem?: boolean;
   };
 
+  const canMergeDraft =
+    Boolean(updating) &&
+    explicitLines.length > 0 &&
+    explicitLines.every((l) => typeof l.rfqLineId === "number");
+  let mergedDraft = false;
   let lines: LineCreate[] = [];
 
   const buildLine = (
@@ -174,7 +265,146 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     lineRequests = await autoMatchQuoteLines(input.rfqId);
   }
 
-  if (lineRequests.length > 0) {
+  if (canMergeDraft) {
+    mergedDraft = true;
+    const existingRows = await prisma.quoteLineItem.findMany({
+      where: { quoteId: updating!.id },
+      orderBy: { sortOrder: "asc" },
+    });
+    const mergeProductIds = explicitLines
+      .map((l) => l.productId)
+      .filter((id): id is string => Boolean(id));
+    const mergeProducts = mergeProductIds.length
+      ? await prisma.product.findMany({
+          where: { id: { in: mergeProductIds }, active: true },
+        })
+      : [];
+    const mergeById = new Map(mergeProducts.map((p) => [p.id, p]));
+    const claimed = new Set<number>();
+    const { lines: merged } = mergeDraftQuoteLines(
+      existingRows.map((row) => ({
+        id: row.id,
+        productId: row.productId,
+        aliasName: row.aliasName,
+        description: row.description,
+        qty: decimalToNumber(row.qty),
+        unit: row.unit,
+        unitPrice: decimalToNumber(row.unitPrice),
+        costPrice: row.costPrice != null ? decimalToNumber(row.costPrice) : null,
+        costVendorName: row.costVendorName,
+        discountPercent: decimalToNumber(row.discountPercent ?? 0),
+        taxRate: decimalToNumber(row.taxRate),
+        sortOrder: row.sortOrder,
+        customItem: row.customItem,
+      })),
+      explicitLines.map((line) => ({
+        rfqLineId: line.rfqLineId!,
+        productId: line.productId,
+        aliasName: line.aliasName,
+        unit: line.unit,
+        qty: line.qty,
+        unitPrice: line.unitPrice,
+        costPrice: line.costPrice,
+        costVendorName: line.costVendorName,
+      })),
+      {
+        catalogUnitPrice: (productId) => {
+          const product = mergeById.get(productId);
+          return product ? catalogSellPrice(product) : undefined;
+        },
+      }
+    );
+
+    lines = merged.map((row) => {
+      const requirement = requirementItems[row.sortOrder - 1];
+      if (!row.productId) {
+        const presented = quoteLinePresentation({
+          clientName: row.aliasName || requirement?.description || "From RFQ",
+          clientCode: requirement?.code,
+          clientBrand: requirement?.brand,
+          clientModel: requirement?.model,
+          clientUnit: row.unit || requirement?.unit,
+          extraNotes: requirement?.extraNotes,
+          catalogName: row.aliasName || requirement?.description || "From RFQ",
+        });
+        return {
+          id: row.id,
+          productId: null,
+          description: presented.description,
+          aliasName: presented.aliasName,
+          qty: row.qty,
+          unit: presented.unit,
+          unitPrice: row.unitPrice,
+          costPrice: row.costPrice,
+          costVendorName: row.costVendorName || "",
+          taxRate: row.taxRate,
+          discountPercent: row.discountPercent,
+          customItem: row.customItem ?? true,
+          lineTotal: row.lineTotal,
+          sortOrder: row.sortOrder,
+        };
+      }
+
+      const p = mergeById.get(row.productId);
+      if (!p) {
+        return {
+          id: row.id,
+          productId: row.productId,
+          description: row.description,
+          aliasName: row.aliasName,
+          qty: row.qty,
+          unit: row.unit,
+          unitPrice: row.unitPrice,
+          costPrice: row.costPrice,
+          costVendorName: row.costVendorName || "",
+          taxRate: row.taxRate,
+          discountPercent: row.discountPercent,
+          customItem: row.customItem,
+          lineTotal: row.lineTotal,
+          sortOrder: row.sortOrder,
+        };
+      }
+
+      const fromRequirement = requirementForProduct({
+        productId: p.id,
+        lineIndex: row.sortOrder - 1,
+        requirements: requirementItems,
+        topMatchProductIds: explicitLines
+          .map((req) => req.productId)
+          .filter((id): id is string => Boolean(id)),
+        claimed,
+      });
+      const built = buildLine(
+        p,
+        row.qty,
+        row.sortOrder,
+        row.unitPrice > 0 ? row.unitPrice : undefined,
+        {
+          name: row.aliasName || fromRequirement?.description,
+          code: fromRequirement?.code,
+          brand: fromRequirement?.brand,
+          model: fromRequirement?.model,
+          unit: row.unit || fromRequirement?.unit,
+          extraNotes: fromRequirement?.extraNotes,
+        },
+        {
+          price: row.costPrice ?? undefined,
+          vendorName: row.costVendorName,
+        }
+      );
+      return {
+        ...built,
+        id: row.id,
+        unitPrice: row.unitPrice > 0 ? row.unitPrice : built.unitPrice,
+        discountPercent: row.discountPercent,
+        customItem: row.customItem,
+        lineTotal:
+          row.lineTotal > 0
+            ? row.lineTotal
+            : round2(row.qty * (row.unitPrice > 0 ? row.unitPrice : built.unitPrice)),
+      };
+    });
+  } else if (lineRequests.length > 0) {
     const ids = lineRequests
       .map((l) => l.productId)
       .filter((id): id is string => Boolean(id));
@@ -372,11 +602,61 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
             },
           });
 
-      if (updating) {
+      if (mergedDraft) {
+        const keepIds = lines.map((line) => line.id).filter(Boolean) as string[];
+        if (keepIds.length > 0) {
+          await tx.quoteLineItem.deleteMany({
+            where: { quoteId: updating!.id, id: { notIn: keepIds } },
+          });
+        } else {
+          await tx.quoteLineItem.deleteMany({ where: { quoteId: updating!.id } });
+        }
+        for (const line of lines) {
+          const row = {
+            productId: line.productId,
+            description: line.description,
+            aliasName: line.aliasName,
+            qty: line.qty,
+            unit: line.unit,
+            unitPrice: line.unitPrice,
+            taxRate: line.taxRate,
+            lineTotal: line.lineTotal,
+            sortOrder: line.sortOrder,
+            discountPercent: line.discountPercent ?? 0,
+            customItem: Boolean(line.customItem),
+          };
+          if (line.id) {
+            await tx.quoteLineItem.update({
+              where: { id: line.id },
+              data: row,
+            });
+          } else {
+            await tx.quoteLineItem.create({
+              data: { quoteId: created.id, ...row },
+            });
+          }
+        }
+        await persistQuoteLineVendorCosts(tx, created.id, lines);
+      } else if (updating) {
         await tx.quoteLineItem.deleteMany({ where: { quoteId: updating.id } });
-      }
-
-      if (lines.length > 0) {
+        if (lines.length > 0) {
+          await tx.quoteLineItem.createMany({
+            data: lines.map((line) => ({
+              quoteId: created.id,
+              productId: line.productId,
+              description: line.description,
+              aliasName: line.aliasName,
+              qty: line.qty,
+              unit: line.unit,
+              unitPrice: line.unitPrice,
+              taxRate: line.taxRate,
+              lineTotal: line.lineTotal,
+              sortOrder: line.sortOrder,
+            })),
+          });
+          await persistQuoteLineVendorCosts(tx, created.id, lines);
+        }
+      } else if (lines.length > 0) {
         await tx.quoteLineItem.createMany({
           data: lines.map((line) => ({
             quoteId: created.id,

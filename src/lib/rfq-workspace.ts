@@ -1,4 +1,5 @@
 import {
+  catalogBindingLooksMismatched,
   MIN_AUTO_BIND_SCORE,
   shouldAutoBindCatalogMatch,
 } from "@/lib/product-match";
@@ -13,6 +14,15 @@ type WorkspaceMatch = {
     description?: string;
   };
 };
+
+function workspaceAutoBindable(
+  match: WorkspaceMatch,
+  requirementText: string
+): boolean {
+  if (!shouldAutoBindCatalogMatch(bindable(match), requirementText)) return false;
+  const productText = [match.product.name, match.product.description || ""].join(" ");
+  return !catalogBindingLooksMismatched(requirementText, productText);
+}
 
 function bindable(match: WorkspaceMatch) {
   return {
@@ -50,7 +60,7 @@ export function isHighConfidenceCatalogMatch(
   requirementText: string
 ): boolean {
   if (!match || match.score < HIGH_CONFIDENCE_MATCH_SCORE) return false;
-  return shouldAutoBindCatalogMatch(bindable(match), requirementText);
+  return workspaceAutoBindable(match, requirementText);
 }
 
 export function sortMatchesByScore<T extends WorkspaceMatch>(matches: T[]): T[] {
@@ -126,7 +136,7 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
       if (
         top &&
         top.score >= MIN_AUTO_BIND_SCORE &&
-        shouldAutoBindCatalogMatch(bindable(top), item.requirementText)
+        workspaceAutoBindable(top, item.requirementText)
       ) {
         lineSelection[item.lineNumber] = top.product.id;
       }
@@ -175,7 +185,7 @@ export function restoreVisibleLineSelection<T extends WorkspaceMatch>(input: {
     if (
       top &&
       top.score >= MIN_AUTO_BIND_SCORE &&
-      shouldAutoBindCatalogMatch(bindable(top), item.requirementText)
+      workspaceAutoBindable(top, item.requirementText)
     ) {
       lineSelection[item.lineNumber] = top.product.id;
     }

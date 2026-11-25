@@ -15,7 +15,6 @@ import {
   formatQuoteRateLabel,
   quoteBuyerContactParts,
   quoteLineDetails,
-  formatTaxAnalysis,
   quoteBankDetailsLines,
   quoteContactFooterLines,
   quoteIntro,
@@ -26,6 +25,7 @@ import {
   quoteWordsColSpan,
 } from "@/lib/quote-format";
 import { effectiveUnitPrice } from "@/lib/quote-discount";
+import { formatQuoteTaxAnalysis } from "@/lib/quote-tax-analysis";
 import { formatWarrantyLabel } from "@/lib/quote-warranty";
 import { Minus, X } from "lucide-react";
 
@@ -191,33 +191,23 @@ export function QuotePreviewModal({
   const mixedUnits = qtyByUnit.size > 1;
   const totalQty = displayLines.reduce((s, l) => s + l.qty, 0);
   const totalTax = displayLines.reduce((s, l) => s + lineTax(l, withGst), 0);
-  const gstBuckets = new Map<number, number>();
-  if (withGst) {
-    for (const line of displayLines) {
-      const tax = lineTax(line, true);
-      if (line.taxRate <= 0 || tax <= 0) continue;
-      gstBuckets.set(
-        line.taxRate,
-        Math.round(((gstBuckets.get(line.taxRate) || 0) + tax) * 100) / 100
-      );
-    }
-  }
   const signatory = quoteSignatoryName(company.signatory);
   const signPhone = (company.mobile || company.phone || "").replace(/^\+91\s*/, "").trim();
   const bankLines = quoteBankDetailsLines(company);
   const contactLines = quoteContactFooterLines(company);
   const words = amountInWords(calc.grandTotal, "").replace(/\s+/g, " ").trim();
-  const taxAnalysis = formatTaxAnalysis({
-    taxable: calc.taxable,
+  const taxAnalysis = formatQuoteTaxAnalysis({
+    calc,
     withGst,
-    gstBuckets: Array.from(gstBuckets.entries()),
-    gstAmount: calc.gstAmount,
-    discountAmount: calc.discountAmount,
+    lines: displayLines.map((line) => ({
+      qty: line.qty,
+      unitPrice: line.unitPrice,
+      taxRate: line.taxRate,
+      discountPercent: line.discountPercent,
+    })),
     discountPercent,
-    deliveryCharge: calc.deliveryCharge,
     otherTaxAmount: calc.otherTaxAmount,
     otherTaxLabel,
-    gstSplit: calc.gstSplit,
   });
   const buyerContact = quoteBuyerContactParts({
     state: buyer.state,

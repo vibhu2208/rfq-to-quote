@@ -15,6 +15,10 @@ import {
   MAX_QUOTE_MONEY,
   MAX_QUOTE_UNIT_PRICE,
 } from "@/lib/accounting/money";
+import {
+  QuoteLineValidationError,
+  sanitizeQuoteLinesForCreate,
+} from "@/lib/quote-line-sanitize";
 
 const moneyAmount = z.coerce.number().nonnegative().max(MAX_QUOTE_MONEY);
 const unitPriceAmount = z.coerce
@@ -194,10 +198,43 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
   const data = parsed.data;
   const company = getCompanyConfig();
-  const lineItems = data.lineItems ?? [];
+  let lineItems = data.lineItems ?? [];
   const overrides = stripAdjustmentAmountOverrides(
     (data.manualOverrides ?? {}) as ManualOverrides
   );
+
+  if (lineItems.length > 0) {
+    try {
+      const sanitized = sanitizeQuoteLinesForCreate(
+        lineItems.map((l, i) => ({
+          productId: l.productId ?? null,
+          description: l.description || "",
+          aliasName: l.aliasName || "",
+          qty: l.qty,
+          unit: l.unit || "nos",
+          unitPrice: l.unitPrice,
+          costPrice: l.costPrice,
+          costVendorName: l.costVendorName,
+          taxRate: l.taxRate,
+          discountPercent: l.discountPercent ?? 0,
+          lineTotal: 0,
+          sortOrder: l.sortOrder ?? i,
+        }))
+      );
+      lineItems = lineItems.map((l, i) => ({
+        ...l,
+        unitPrice: sanitized[i].unitPrice,
+        qty: sanitized[i].qty,
+        taxRate: sanitized[i].taxRate,
+        discountPercent: sanitized[i].discountPercent ?? l.discountPercent,
+      }));
+    } catch (e) {
+      if (e instanceof QuoteLineValidationError) {
+        return NextResponse.json({ error: e.message }, { status: 400 });
+      }
+      throw e;
+    }
+  }
   const nextNumber = data.quoteNumber?.trim() || "";
   const issuedAt =
     data.quoteDate !== undefined ? parseQuoteDate(data.quoteDate) : undefined;

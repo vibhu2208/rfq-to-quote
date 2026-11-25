@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { Document, Page, Text, View, StyleSheet, Image, pdf } from "@react-pdf/renderer";
 import { amountInWords, round2 } from "@/lib/accounting/money";
+import { formatQuoteTaxAnalysis } from "@/lib/quote-tax-analysis";
 import {
   QUOTE_CLOSING,
   QUOTE_TEMPLATE_BLUE,
@@ -384,26 +385,34 @@ function QuoteDocument({ data }: { data: QuotePdfData }) {
   const bankLines = quoteBankDetailsLines(data.company);
   const contactLines = quoteContactFooterLines(data.company);
 
-  const gstBuckets = new Map<number, number>();
-  for (const line of data.lineItems) {
-    if (!withGst || line.taxRate <= 0) continue;
-    gstBuckets.set(line.taxRate, round2((gstBuckets.get(line.taxRate) || 0) + line.taxAmount));
-  }
-
   const signPhone = contactPhone ? contactPhone.replace(/^\+91\s*/, "").trim() : "";
   const words = amountInWords(data.grandTotal, "").replace(/\s+/g, " ").trim();
   const gstSplit = quoteGstSplitFromAmounts(data);
-  const taxAnalysis = formatTaxAnalysis({
-    taxable: taxableAmount,
+  const taxAnalysis = formatQuoteTaxAnalysis({
+    calc: {
+      lineTotals: [],
+      subtotal: data.subtotal,
+      discountAmount: data.discountAmount,
+      taxable: taxableAmount,
+      gstAmount: data.gstAmount,
+      cgstAmount: data.cgstAmount,
+      sgstAmount: data.sgstAmount,
+      igstAmount: data.igstAmount,
+      gstSplit,
+      otherTaxAmount: data.otherTaxAmount,
+      deliveryCharge: data.deliveryCharge,
+      grandTotal: data.grandTotal,
+    },
     withGst,
-    gstBuckets: Array.from(gstBuckets.entries()),
-    gstAmount: data.gstAmount,
-    discountAmount: data.discountAmount,
+    lines: data.lineItems.map((line) => ({
+      qty: line.qty,
+      unitPrice: line.unitPrice,
+      taxRate: line.taxRate,
+      discountPercent: line.discountPercent,
+    })),
     discountPercent: data.discountPercent,
-    deliveryCharge: data.deliveryCharge,
     otherTaxAmount: data.otherTaxAmount,
     otherTaxLabel: data.otherTaxLabel,
-    gstSplit,
   });
   const buyerContact = quoteBuyerContactParts({
     state: data.buyerState,
