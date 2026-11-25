@@ -54,7 +54,11 @@ export { QuoteLineValidationError };
 
 export async function previewSyncDraftQuoteFromRfq(
   input: CreateQuoteFromRfqInput
-): Promise<{ changes: DraftMergeChange[]; lineCount: number } | null> {
+): Promise<{
+  changes: DraftMergeChange[];
+  lineCount: number;
+  unmatchedExisting: number;
+} | null> {
   const explicit = input.lines || [];
   if (explicit.length === 0 || !explicit.every((l) => typeof l.rfqLineId === "number")) {
     return null;
@@ -92,7 +96,7 @@ export async function previewSyncDraftQuoteFromRfq(
       : [];
   const byId = new Map(products.map((p) => [p.id, p]));
 
-  const { changes, lines } = mergeDraftQuoteLines(
+  const { changes, lines, unmatchedExisting } = mergeDraftQuoteLines(
     existingRows.map((row) => ({
       id: row.id,
       rfqLineId: row.rfqLineId,
@@ -130,6 +134,7 @@ export async function previewSyncDraftQuoteFromRfq(
   return {
     changes: draftMergeActionableChanges(changes),
     lineCount: lines.length,
+    unmatchedExisting,
   };
 }
 
@@ -290,6 +295,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     const { lines: merged } = mergeDraftQuoteLines(
       existingRows.map((row) => ({
         id: row.id,
+        rfqLineId: row.rfqLineId,
         productId: row.productId,
         aliasName: row.aliasName,
         description: row.description,
@@ -492,6 +498,10 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           taxRate: 18,
           lineTotal: 0,
           sortOrder: i,
+          rfqLineId:
+            req.rfqLineId ??
+            requirementItems[i]?.lineNumber ??
+            null,
         } satisfies LineCreate;
       }
       const fromRequirement = requirementForProduct({
@@ -503,7 +513,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
         ),
         claimed,
       });
-      return buildLine(
+      const built = buildLine(
         p,
         qty,
         i,
@@ -521,6 +531,14 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           vendorName: req.costVendorName,
         }
       );
+      return {
+        ...built,
+        rfqLineId:
+          req.rfqLineId ??
+          fromRequirement?.lineNumber ??
+          requirementItems[i]?.lineNumber ??
+          null,
+      };
     });
   }
 
@@ -549,6 +567,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
         taxRate,
         lineTotal: round2(item.quantity * unitPrice),
         sortOrder: i,
+        rfqLineId: item.lineNumber,
       };
     });
   }
@@ -733,7 +752,6 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
   const used = new Set<string>();
 
   for (const item of itemMatches) {
-    const top = item.matches[0];
     const qty = item.requirement.quantity > 0 ? item.requirement.quantity : 1;
     const aliasName = item.requirement.description;
     const unit = item.requirement.unit;
@@ -744,17 +762,25 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
     const reqText = [item.requirement.brand, item.requirement.description]
       .filter(Boolean)
       .join(" ");
+    const bindable = item.matches.find(
+      (match) =>
+        !used.has(match.product.id) && shouldAutoBindCatalogMatch(match, reqText)
+    );
 
-    if (
-      top &&
-      !used.has(top.product.id) &&
-      shouldAutoBindCatalogMatch(top, reqText)
-    ) {
-      used.add(top.product.id);
-      lines.push({ productId: top.product.id, qty, aliasName, unit, unitPrice });
+    if (bindable) {
+      used.add(bindable.product.id);
+      lines.push({
+        productId: bindable.product.id,
+        qty,
+        aliasName,
+        unit,
+        unitPrice,
+        rfqLineId: item.requirement.lineNumber,
+      });
       continue;
     }
 
+    const top = item.matches[0];
     // Keep the RFQ line unbound so the trader can pick from suggestions.
     lines.push({
       productId: null,
@@ -762,6 +788,7 @@ export async function autoMatchQuoteLines(rfqId: string): Promise<QuoteFromRfqLi
       aliasName,
       unit,
       unitPrice,
+      rfqLineId: item.requirement.lineNumber,
       matchWeak: Boolean(top),
     });
   }

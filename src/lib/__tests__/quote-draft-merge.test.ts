@@ -117,6 +117,74 @@ describe("mergeDraftQuoteLines", () => {
     expect(draftMergeActionableChanges(second.changes)).toHaveLength(0);
   });
 
+  it("matches legacy rows without rfqLineId by product and client wording", () => {
+    const legacyOnly = [
+      {
+        id: "legacy-1",
+        rfqLineId: null,
+        productId: "prod-1",
+        aliasName: "16-port switch",
+        description: "",
+        qty: 3,
+        unit: "nos",
+        unitPrice: 4500,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 0,
+      },
+      {
+        id: "legacy-2",
+        rfqLineId: null,
+        productId: "prod-hdmi",
+        aliasName: "QA test HDMI cable 3m x 5",
+        description: "",
+        qty: 5,
+        unit: "pcs",
+        unitPrice: 400,
+        discountPercent: 0,
+        taxRate: 18,
+        sortOrder: 1,
+      },
+    ];
+    const incoming = [
+      {
+        rfqLineId: 1,
+        productId: "prod-1",
+        aliasName: "16-port switch ×3",
+        qty: 3,
+      },
+      {
+        rfqLineId: 2,
+        productId: "prod-hdmi",
+        aliasName: "QA test HDMI cable 3m x 5",
+        qty: 5,
+      },
+    ];
+    const first = mergeDraftQuoteLines(legacyOnly, incoming);
+    expect(first.changes.some((change) => change.kind === "add")).toBe(false);
+    const second = mergeDraftQuoteLines(
+      first.lines
+        .filter((line) => line.id)
+        .map((line) => ({
+          id: line.id!,
+          rfqLineId: line.rfqLineId ?? null,
+          productId: line.productId,
+          aliasName: line.aliasName,
+          description: line.description,
+          qty: line.qty,
+          unit: line.unit,
+          unitPrice: line.unitPrice,
+          discountPercent: line.discountPercent,
+          taxRate: line.taxRate,
+          sortOrder: line.sortOrder,
+          customItem: line.customItem,
+        })),
+      incoming
+    );
+    expect(draftMergeActionableChanges(second.changes)).toHaveLength(0);
+    expect(second.lines).toHaveLength(2);
+  });
+
   it("adds a new RFQ line once without duplicating", () => {
     const { lines } = mergeDraftQuoteLines(existing, [
       {

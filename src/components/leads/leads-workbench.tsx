@@ -2309,7 +2309,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                   ))}
                 </tr>
               ))
-            ) : rows.length === 0 ? (
+            ) : rows.length === 0 && !loading && !isFetching ? (
               <tr>
                 <td
                   colSpan={visibleColumns.length + 1}
@@ -2391,7 +2391,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
           total={total}
           pageSize={LEADS_PAGE_SIZE}
           loading={isFetching}
-          unknownTotal={countsPending}
+          unknownTotal={countsPending || loading || (isFetching && total === 0)}
           onPageChange={setPage}
         />
       </div>

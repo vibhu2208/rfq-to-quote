@@ -7,7 +7,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { parseRfqWithAi, statusFromConfidence } from "@/lib/ai/parse-rfq";
 import { parseRfqHeuristic } from "@/lib/heuristic-parse-rfq";
-import { extractRequirementsFromText } from "@/lib/rfq-items";
+import { extractRequirementsFromText, resolveParsedItems } from "@/lib/rfq-items";
 import { resolveProductCategory } from "@/lib/categories";
 import { normalizeParsedItemCategories } from "@/lib/categories";
 import { applyAssignmentRules } from "@/lib/leads/assignment";
@@ -278,26 +278,29 @@ export async function parseAndUpdateRfq(rfqId: string) {
     result.productCategory
   );
   let items = normalized.items;
-  const textExtracted = extractRequirementsFromText(rfq.rawText);
-  if (!fromSpreadsheet && textExtracted.length > items.length) {
-    const boosted = normalizeParsedItemCategories(
-      textExtracted.map((row) => ({
+  if (!fromSpreadsheet) {
+    const resolved = resolveParsedItems(
+      normalized.items.map((row) => ({
         description: row.description,
         brand: row.brand,
         quantity: row.quantity,
         unit: row.unit,
-        category: resolveProductCategory(row.category, row.description),
+        category: row.category,
+      })),
+      rfq.rawText
+    );
+    const resolvedNormalized = normalizeParsedItemCategories(
+      resolved.map((row) => ({
+        description: row.description || "Item",
+        brand: row.brand ?? null,
+        quantity: row.quantity ?? 1,
+        unit: row.unit || "pcs",
+        category: resolveProductCategory(row.category, row.description || ""),
       })),
       normalized.productCategory
     );
-    if (boosted.items.length > items.length) {
-      items = boosted.items.map((row) => ({
-        description: row.description,
-        brand: row.brand ?? null,
-        category: row.category ?? null,
-        quantity: row.quantity,
-        unit: row.unit,
-      }));
+    if (resolvedNormalized.items.length >= items.length) {
+      items = resolvedNormalized.items;
     }
   }
   const linesChanged =

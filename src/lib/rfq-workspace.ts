@@ -116,6 +116,12 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
     ]);
 
     if (selected && visible.has(selected)) {
+      if (!extraIds.has(selected)) {
+        const match = item.matches.find((row) => row.product.id === selected);
+        if (match && !workspaceAutoBindable(match, item.requirementText)) {
+          continue;
+        }
+      }
       lineSelection[item.lineNumber] = selected;
       continue;
     }

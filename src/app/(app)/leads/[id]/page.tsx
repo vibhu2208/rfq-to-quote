@@ -242,16 +242,29 @@ export default function LeadDetailPage() {
   ) {
     setFollowBusy(followUpId);
     if (body.action === "complete") {
-      setLead((prev) =>
-        prev
-          ? {
-              ...prev,
-              followUps: prev.followUps.map((f) =>
-                f.id === followUpId ? { ...f, status: "DONE" } : f
-              ),
-            }
-          : prev
-      );
+      setLead((prev) => {
+        if (!prev) return prev;
+        const target = prev.followUps.find((f) => f.id === followUpId);
+        return {
+          ...prev,
+          followUps: prev.followUps.map((f) =>
+            f.id === followUpId ? { ...f, status: "DONE" } : f
+          ),
+          activities: [
+            {
+              id: `optimistic-${followUpId}`,
+              type: "FOLLOW_UP_COMPLETED",
+              title: target?.title
+                ? `Completed: ${target.title}`
+                : "Follow-up completed",
+              body: target?.notes || "",
+              createdAt: new Date().toISOString(),
+              actor: prev.assignedTo,
+            },
+            ...prev.activities,
+          ],
+        };
+      });
     }
     try {
       const res = await fetch(`/api/leads/${id}/follow-ups`, {
