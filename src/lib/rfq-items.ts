@@ -348,6 +348,26 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
   return null;
 }
 
+const COMPOSITE_SPLIT =
+  /[;,](?=\s*[^,;]*(?:[×x]\s*\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))/i;
+
+function expandCompositeRequirementLines(lines: string[]): string[] {
+  const expanded: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (COMPOSITE_SPLIT.test(trimmed)) {
+      for (const part of trimmed.split(COMPOSITE_SPLIT)) {
+        const piece = part.trim();
+        if (piece.length >= 4) expanded.push(piece);
+      }
+      continue;
+    }
+    expanded.push(trimmed);
+  }
+  return expanded;
+}
+
 /**
  * Deterministic extraction for structured lists in email/text RFQs.
  * Handles bullets (•), dashes, and numbered lines with qty + unit.
@@ -355,7 +375,7 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
 export function extractRequirementsFromText(rawText: string): RfqRequirementItem[] {
   if (!rawText.trim()) return [];
 
-  const lines = rawText.split(/\r?\n/);
+  const lines = expandCompositeRequirementLines(rawText.split(/\r?\n/));
   const items: RfqRequirementItem[] = [];
 
   for (const line of lines) {

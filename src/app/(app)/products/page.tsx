@@ -98,6 +98,9 @@ export default function ProductsPage() {
   const abortRef = useRef<AbortController | null>(null);
   const hasRowsRef = useRef(false);
 
+  const searchParamsForQRef = useRef(searchParams);
+  searchParamsForQRef.current = searchParams;
+
   useEffect(() => {
     // Invalidate as soon as the box changes — don't wait for debounce, or a
     // late initial/unfiltered response can repaint over newer search results.
@@ -106,13 +109,13 @@ export default function ProductsPage() {
     setFiltering(true);
     const timeout = setTimeout(() => {
       setDebouncedQ(q.trim());
-      const params = new URLSearchParams(searchParams.toString());
+      const params = new URLSearchParams(searchParamsForQRef.current.toString());
       params.delete("page");
       const qs = params.toString();
       router.replace(qs ? `/products?${qs}` : "/products");
     }, 250);
     return () => clearTimeout(timeout);
-  }, [q, router, searchParams]);
+  }, [q, router]);
 
   const load = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -212,10 +215,28 @@ export default function ProductsPage() {
     setSaving(true);
     const url = editing ? `/api/products/${editing.id}` : "/api/products";
     const method = editing ? "PATCH" : "POST";
+    const payload = editing
+      ? {
+          name: form.name,
+          description: form.description,
+          unit: form.unit,
+          productType: form.productType,
+          category: form.category,
+          brand: form.brand,
+          hsnCode: form.hsnCode,
+          mrp: form.mrp,
+          basePrice: form.basePrice,
+          offerPrice: form.offerPrice,
+          lastPrice: form.lastPrice,
+          taxRate: form.taxRate,
+          taxCategory: form.taxCategory,
+          active: form.active,
+        }
+      : form;
     const res = await fetch(url, {
       method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
+      body: JSON.stringify(payload),
     });
     setSaving(false);
     if (!res.ok) {
@@ -509,6 +530,16 @@ export default function ProductsPage() {
           >
             <h2 className="text-lg font-semibold">{editing ? "Edit product" : "Add product"}</h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {editing ? (
+                <label className="block text-sm sm:col-span-2">
+                  <span className="mb-1 block text-mid-green">Product ID</span>
+                  <input
+                    readOnly
+                    value={editing.sourceProductId || editing.id}
+                    className="w-full rounded-lg border border-light-green/30 bg-dark-secondary/5 px-3 py-2 text-mid-green"
+                  />
+                </label>
+              ) : null}
               <label className="block text-sm sm:col-span-1">
                 <span className="mb-1 block text-mid-green">Type</span>
                 <select
@@ -527,11 +558,13 @@ export default function ProductsPage() {
               </label>
               {(
                 [
-                  ["code", "Code", "text"],
+                  ...(editing
+                    ? ([] as const)
+                    : ([["code", "Code", "text"]] as const)),
                   ["name", "Name", "text"],
                   ["category", "Category", "text"],
                   ["brand", "Brand", "text"],
-                  ["hsnCode", "HSN", "text"],
+                  ["hsnCode", "Code (HSN / comm)", "text"],
                   ["unit", "Unit", "text"],
                   ["taxCategory", "GST", "text"],
                   ["taxRate", "GST rate %", "number"],

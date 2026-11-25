@@ -54,6 +54,15 @@ describe("extractRequirementsFromText", () => {
     expect(items[7]).toMatchObject({ description: "UPS Systems", quantity: 20 });
   });
 
+  it("parses comma- and semicolon-separated requirement lists", () => {
+    const text =
+      '16-port switch ×3, CAT6 patch cord 1 m ×50; 24-port patch panel ×2, UPS ×5, 24" monitor ×15, 27" monitor ×4';
+    const items = extractRequirementsFromText(text);
+    expect(items).toHaveLength(6);
+    expect(items[0].description).toMatch(/switch/i);
+    expect(items[5].quantity).toBe(4);
+  });
+
   it("handles hyphen bullets and numbered lists", () => {
     const text = `- Cat6 Cable – 50 pcs
 2. Dell Laptop – 3 units`;

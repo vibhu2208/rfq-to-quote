@@ -635,8 +635,9 @@ function AdminVendorsPageInner() {
     if (!vendorQuery.trim()) {
       setSelectedVendorId("");
       setSelectedVendor(null);
+      syncVendorMappingUrl({ tab: "vendor" });
     }
-  }, [tab, vendorQuery]);
+  }, [tab, vendorQuery, syncVendorMappingUrl]);
 
   useEffect(() => {
     if (tab !== "vendor") return;
@@ -2215,6 +2216,13 @@ function AdminVendorsPageInner() {
               ))}
             </div>
             <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
+              {vendorSearching ? (
+                <p className="px-2 py-1 text-[11px] text-mid-green">
+                  {filteredVendors.length === 0
+                    ? "Loading vendors…"
+                    : "Refreshing vendor list…"}
+                </p>
+              ) : null}
               {vendorSearching && filteredVendors.length === 0 ? (
                 <MappingEmptyState>Loading vendors…</MappingEmptyState>
               ) : filteredVendors.length === 0 ? (

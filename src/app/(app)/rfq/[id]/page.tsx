@@ -2474,6 +2474,7 @@ export default function RfqDetailPage() {
   const [vendorMatches, setVendorMatches] = useState<VendorMatch[]>([]);
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [draftSyncPreview, setDraftSyncPreview] = useState<{
+    unmatchedExisting?: number;
     changes: Array<{
       kind: string;
       rfqLineId?: number;
@@ -3707,6 +3708,7 @@ export default function RfqDetailPage() {
               fields?: string[];
             }>;
             lineCount: number;
+            unmatchedExisting?: number;
           };
           error?: string;
         }>(previewRes, "Could not preview draft sync");
@@ -4478,6 +4480,13 @@ export default function RfqDetailPage() {
             Update draft? {draftSyncPreview.lineCount} quote line
             {draftSyncPreview.lineCount === 1 ? "" : "s"} after sync.
           </p>
+          {(draftSyncPreview.unmatchedExisting ?? 0) > 0 ? (
+            <p className="mt-1 text-mid-green">
+              {draftSyncPreview.unmatchedExisting} existing line
+              {draftSyncPreview.unmatchedExisting === 1 ? "" : "s"} could not be
+              matched to an RFQ line and will be kept as-is.
+            </p>
+          ) : null}
           <ul className="mt-2 max-h-36 space-y-1 overflow-y-auto">
             {draftSyncPreview.changes.map((change, index) => (
               <li key={`${change.kind}-${index}`} className="rounded-lg bg-light-green/10 px-2 py-1">

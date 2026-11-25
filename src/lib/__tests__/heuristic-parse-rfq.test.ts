@@ -19,6 +19,14 @@ describe("parseRfqHeuristic", () => {
     );
   });
 
+  it("parses comma-separated six-item enquiries", () => {
+    const parsed = parseRfqHeuristic(
+      `Please quote for: 16-port switch ×3, CAT6 patch cord 1 m ×50, 24-port patch panel ×2, UPS ×5, 24" monitor – 15 nos, 27" monitor – 4 nos`,
+      "Networking RFQ"
+    );
+    expect(parsed.items.length).toBe(6);
+  });
+
   it("parses × counts and qty suffixes in plain lines", () => {
     const parsed = parseRfqHeuristic(
       `Requirements:\n24-port switch ×3\nCAT6 patch cord 1 m ×50\n- UPS 5 nos\nqty: 2 patch panels`,

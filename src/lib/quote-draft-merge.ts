@@ -75,19 +75,80 @@ function pickCatalogPrice(
   return 0;
 }
 
+function normLineText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[×x]\s*\d+(?:[.,]\d+)?/gi, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function lineTextsCompatible(a: string, b: string): boolean {
+  const na = normLineText(a);
+  const nb = normLineText(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const ta = new Set(na.split(" ").filter((t) => t.length > 2));
+  const tb = new Set(nb.split(" ").filter((t) => t.length > 2));
+  let overlap = 0;
+  for (const token of ta) {
+    if (tb.has(token)) overlap += 1;
+  }
+  return overlap >= Math.min(2, ta.size);
+}
+
+/** Stable rfqLineId match first; legacy rows without rfqLineId fall back to product / wording. */
 function matchExisting(
   incoming: DraftMergeIncomingLine,
   pool: DraftMergeExistingLine[],
   used: Set<string>
 ): DraftMergeExistingLine | undefined {
-  return pool.find(
-    (row) => !used.has(row.id) && row.rfqLineId != null && row.rfqLineId === incoming.rfqLineId
+  const byRfq = pool.find(
+    (row) =>
+      !used.has(row.id) &&
+      row.rfqLineId != null &&
+      row.rfqLineId === incoming.rfqLineId
   );
+  if (byRfq) return byRfq;
+
+  const clientName = incoming.aliasName?.trim() || "";
+  if (incoming.productId) {
+    const byProduct = pool.find(
+      (row) =>
+        !used.has(row.id) &&
+        row.productId != null &&
+        row.productId === incoming.productId &&
+        (row.rfqLineId == null || row.rfqLineId === incoming.rfqLineId)
+    );
+    if (byProduct) return byProduct;
+  }
+
+  if (clientName) {
+    const byWording = pool.find(
+      (row) =>
+        !used.has(row.id) &&
+        (row.rfqLineId == null || row.rfqLineId === incoming.rfqLineId) &&
+        (lineTextsCompatible(row.aliasName, clientName) ||
+          lineTextsCompatible(row.description, clientName))
+    );
+    if (byWording) return byWording;
+  }
+
+  return undefined;
 }
 
 export function draftMergeActionableChanges(changes: DraftMergeChange[]): DraftMergeChange[] {
   return changes.filter((change) => change.kind !== "keep");
 }
+
+export type DraftMergeResult = {
+  lines: DraftMergeOutgoingLine[];
+  changes: DraftMergeChange[];
+  /** Legacy quote lines in the draft that could not be tied to an RFQ line. */
+  unmatchedExisting: number;
+};
 
 /**
  * Merge RFQ workspace lines into an existing draft without duplicating rows or
@@ -99,7 +160,7 @@ export function mergeDraftQuoteLines(
   opts?: {
     catalogUnitPrice?: (productId: string) => number | undefined;
   }
-): { lines: DraftMergeOutgoingLine[]; changes: DraftMergeChange[] } {
+): DraftMergeResult {
   const sortedIncoming = [...incoming].sort((a, b) => a.rfqLineId - b.rfqLineId);
   const seenRfq = new Set<number>();
   const usedExisting = new Set<string>();
@@ -120,6 +181,9 @@ export function mergeDraftQuoteLines(
       const nextProductId = row.productId ?? prior.productId;
       if ((prior.productId ?? null) !== (nextProductId ?? null)) {
         fields.push("catalog");
+      }
+      if (prior.rfqLineId == null) {
+        fields.push("rfqLineId");
       }
       const qty = prior.qty > 0 ? prior.qty : row.qty > 0 ? row.qty : 1;
       const unitPrice =
@@ -199,5 +263,14 @@ export function mergeDraftQuoteLines(
       a.sortOrder - b.sortOrder ||
       a.aliasName.localeCompare(b.aliasName)
   );
-  return { lines: merged, changes };
+
+  const unmatchedExisting = pool.filter(
+    (row) =>
+      !usedExisting.has(row.id) &&
+      row.rfqLineId == null &&
+      !row.customItem &&
+      Boolean(row.productId || row.aliasName?.trim())
+  ).length;
+
+  return { lines: merged, changes, unmatchedExisting };
 }
