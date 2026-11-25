@@ -2215,16 +2215,20 @@ function AdminVendorsPageInner() {
                 </button>
               ))}
             </div>
-            <div className="max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5">
+            <div
+              className={`relative max-h-[70vh] space-y-0.5 overflow-y-auto pr-0.5 ${
+                vendorSearching && filteredVendors.length > 0
+                  ? "opacity-50 pointer-events-none"
+                  : ""
+              }`}
+            >
               {vendorSearching ? (
-                <p className="px-2 py-1 text-[11px] text-mid-green">
-                  {filteredVendors.length === 0
-                    ? "Loading vendors…"
-                    : "Refreshing vendor list…"}
+                <p className="sticky top-0 z-10 bg-[#f5f9f7]/95 px-2 py-1 text-[11px] font-medium text-mid-green backdrop-blur-sm">
+                  {filteredVendors.length === 0 ? "Searching…" : "Searching…"}
                 </p>
               ) : null}
               {vendorSearching && filteredVendors.length === 0 ? (
-                <MappingEmptyState>Loading vendors…</MappingEmptyState>
+                <MappingEmptyState>Searching…</MappingEmptyState>
               ) : filteredVendors.length === 0 ? (
                 <MappingEmptyState>
                   {vendorQuery.trim()

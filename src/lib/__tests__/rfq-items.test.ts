@@ -54,6 +54,18 @@ describe("extractRequirementsFromText", () => {
     expect(items[7]).toMatchObject({ description: "UPS Systems", quantity: 20 });
   });
 
+  it("KAN-140: parses the live six-line semicolon enquiry verbatim", () => {
+    const text =
+      "16-port switch x3; CAT6 patch cord 1 m x50; 24-port patch panel x2; 1000 VA / 1 kVA UPS x5; 24-inch FHD IPS monitor, qty 15; 27-inch QHD monitor x4";
+    const items = extractRequirementsFromText(text);
+    expect(items).toHaveLength(6);
+    expect(items.map((row) => row.quantity)).toEqual([3, 50, 2, 5, 15, 4]);
+    expect(items[0].description).toMatch(/16-port switch/i);
+    expect(items[3].description).toMatch(/UPS/i);
+    expect(items[4].description).toMatch(/24-inch FHD IPS monitor/i);
+    expect(items[5].description).toMatch(/27-inch QHD monitor/i);
+  });
+
   it("parses comma- and semicolon-separated requirement lists", () => {
     const text =
       '16-port switch ×3, CAT6 patch cord 1 m ×50; 24-port patch panel ×2, UPS ×5, 24" monitor ×15, 27" monitor ×4';

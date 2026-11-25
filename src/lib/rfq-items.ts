@@ -152,6 +152,10 @@ const INLINE_QTY_LINE =
 const TRAILING_TIMES_QTY =
   /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s+[×x]\s*(\d+(?:[.,]\d+)?)\s*$/i;
 
+/** "24-inch FHD IPS monitor, qty 15" */
+const TRAILING_COMMA_QTY =
+  /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?),\s*qty\s*:?\s*(\d+(?:[.,]\d+)?)\s*$/i;
+
 /** "24-port patch panel 2 nos" / "- 50 pcs" */
 const TRAILING_COUNT_UNIT =
   /^\s*(?:[•●◦▪▫\-*]|\d+[.)])?\s*(.+?)\s+(\d+(?:[.,]\d+)?)\s+(nos|pcs|pieces?|units?|sets?)\s*$/i;
@@ -287,6 +291,17 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
     };
   }
 
+  match = trimmed.match(TRAILING_COMMA_QTY);
+  if (match) {
+    return {
+      description: match[1].trim(),
+      quantity: parseQty(match[2]),
+      unit: "pcs",
+      brand: null,
+      category: null,
+    };
+  }
+
   match = trimmed.match(QTY_LABEL_LINE);
   if (match) {
     return {
@@ -349,7 +364,7 @@ function parseLine(line: string): Omit<RfqRequirementItem, "lineNumber"> | null 
 }
 
 const COMPOSITE_SPLIT =
-  /[;,](?=\s*[^,;]*(?:[×x]\s*\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))/i;
+  /[;,](?=\s*[^,;]+(?:,\s*qty\s*:?\s*\d+(?:[.,]\d+)?|[×x]\s*\d+(?:[.,]\d+)?|\d+\s*(?:nos|pcs|pieces?|units?)\b))/i;
 
 function expandCompositeRequirementLines(lines: string[]): string[] {
   const expanded: string[] = [];

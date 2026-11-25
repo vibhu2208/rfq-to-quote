@@ -23,6 +23,7 @@ import {
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { parseLocalDateTimeValue } from "@/components/ui/date-time-picker";
+import { followUpScheduledTimelineTitle } from "@/lib/leads/follow-up-timeline";
 import { useToast } from "@/components/app-toast";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
@@ -545,6 +546,41 @@ export function LeadDetailDrawer({
       return;
     }
     const dueIso = due.toISOString();
+    const optimisticId = `local-${Date.now()}`;
+    setLead((prev) =>
+      prev
+        ? {
+            ...prev,
+            nextFollowUpAt: dueIso,
+            followUps: [
+              {
+                id: optimisticId,
+                type: followType,
+                status: "PENDING",
+                dueAt: dueIso,
+                title: followTitle,
+                notes: "",
+              },
+              ...prev.followUps,
+            ],
+            activities: [
+              {
+                id: `optimistic-activity-${optimisticId}`,
+                type: "FOLLOW_UP_SCHEDULED",
+                title: followUpScheduledTimelineTitle(
+                  followType,
+                  due,
+                  followTitle
+                ),
+                body: "",
+                createdAt: new Date().toISOString(),
+                actor: prev.assignedTo,
+              },
+              ...prev.activities,
+            ],
+          }
+        : prev
+    );
     const res = await fetch(`/api/leads/${leadId}/follow-ups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

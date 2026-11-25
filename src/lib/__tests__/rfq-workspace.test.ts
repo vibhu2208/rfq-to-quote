@@ -87,6 +87,25 @@ describe("restoreVisibleLineSelection", () => {
 });
 
 describe("restoreVisibleLineSelection", () => {
+  it("does not auto-select a catalog match at zero stock", () => {
+    const inStock = match("151042", 70, "16 PORT SWITCH IN STOCK", "16 port gigabit switch");
+    const zeroStock = match("151041", 72, "16 PORT SWITCH", "16 port gigabit switch");
+    const selection = restoreVisibleLineSelection({
+      saved: {},
+      items: [
+        {
+          lineNumber: 1,
+          requirementText: "16-port switch",
+          matches: [zeroStock, inStock],
+        },
+      ],
+      extraIdsByLine: {},
+      autoWhenEmpty: true,
+      stockLookup: (id) => (id === "151041" ? 0 : 5),
+    });
+    expect(selection[1]).toBe("151042");
+  });
+
   it("does not auto-select a spec-mismatched top match", () => {
     const mismatch = match("151454", 90, "151454 HDMI CABLE 5METER", "HDMI cable 5 meter");
     const selection = restoreVisibleLineSelection({

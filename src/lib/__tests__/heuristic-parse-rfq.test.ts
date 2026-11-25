@@ -27,6 +27,14 @@ describe("parseRfqHeuristic", () => {
     expect(parsed.items.length).toBe(6);
   });
 
+  it("KAN-140: heuristic parse keeps six semicolon lines with exact quantities", () => {
+    const text =
+      "16-port switch x3; CAT6 patch cord 1 m x50; 24-port patch panel x2; 1000 VA / 1 kVA UPS x5; 24-inch FHD IPS monitor, qty 15; 27-inch QHD monitor x4";
+    const parsed = parseRfqHeuristic(text, "Networking RFQ");
+    expect(parsed.items.length).toBe(6);
+    expect(parsed.items.map((row) => row.quantity)).toEqual([3, 50, 2, 5, 15, 4]);
+  });
+
   it("parses × counts and qty suffixes in plain lines", () => {
     const parsed = parseRfqHeuristic(
       `Requirements:\n24-port switch ×3\nCAT6 patch cord 1 m ×50\n- UPS 5 nos\nqty: 2 patch panels`,

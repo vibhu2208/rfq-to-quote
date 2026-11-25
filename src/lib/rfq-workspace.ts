@@ -15,13 +15,21 @@ type WorkspaceMatch = {
   };
 };
 
+export type CatalogStockLookup = (productId: string) => number | undefined;
+
 function workspaceAutoBindable(
   match: WorkspaceMatch,
-  requirementText: string
+  requirementText: string,
+  stockLookup?: CatalogStockLookup
 ): boolean {
   if (!shouldAutoBindCatalogMatch(bindable(match), requirementText)) return false;
   const productText = [match.product.name, match.product.description || ""].join(" ");
-  return !catalogBindingLooksMismatched(requirementText, productText);
+  if (catalogBindingLooksMismatched(requirementText, productText)) return false;
+  if (stockLookup) {
+    const onHand = stockLookup(match.product.id);
+    if (onHand != null && onHand <= 0) return false;
+  }
+  return true;
 }
 
 function bindable(match: WorkspaceMatch) {
@@ -57,10 +65,11 @@ export function requirementMatchText(item: {
 
 export function isHighConfidenceCatalogMatch(
   match: WorkspaceMatch | null | undefined,
-  requirementText: string
+  requirementText: string,
+  stockLookup?: CatalogStockLookup
 ): boolean {
   if (!match || match.score < HIGH_CONFIDENCE_MATCH_SCORE) return false;
-  return workspaceAutoBindable(match, requirementText);
+  return workspaceAutoBindable(match, requirementText, stockLookup);
 }
 
 export function sortMatchesByScore<T extends WorkspaceMatch>(matches: T[]): T[] {
@@ -98,6 +107,7 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
   nextItems: Array<LineMatches<T>>;
   extraIdsByLine: Record<number, string[]>;
   touchedLines: number[];
+  stockLookup?: CatalogStockLookup;
 }): {
   lineSelection: Record<number, string>;
   pinFromPrevious: Array<{ lineNumber: number; match: T }>;
@@ -118,7 +128,10 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
     if (selected && visible.has(selected)) {
       if (!extraIds.has(selected)) {
         const match = item.matches.find((row) => row.product.id === selected);
-        if (match && !workspaceAutoBindable(match, item.requirementText)) {
+        if (
+          match &&
+          !workspaceAutoBindable(match, item.requirementText, input.stockLookup)
+        ) {
           continue;
         }
       }
@@ -138,12 +151,12 @@ export function reconcileSettledLineSelection<T extends WorkspaceMatch>(input: {
     }
 
     if (!touched.has(item.lineNumber)) {
-      const top = sortMatchesByScore(item.matches)[0];
-      if (
-        top &&
-        top.score >= MIN_AUTO_BIND_SCORE &&
-        workspaceAutoBindable(top, item.requirementText)
-      ) {
+      const top = sortMatchesByScore(item.matches).find(
+        (match) =>
+          match.score >= MIN_AUTO_BIND_SCORE &&
+          workspaceAutoBindable(match, item.requirementText, input.stockLookup)
+      );
+      if (top) {
         lineSelection[item.lineNumber] = top.product.id;
       }
     }
@@ -162,6 +175,7 @@ export function restoreVisibleLineSelection<T extends WorkspaceMatch>(input: {
   extraIdsByLine: Record<number, string[]>;
   /** When nothing was saved, auto-pick a compatible top match. */
   autoWhenEmpty: boolean;
+  stockLookup?: CatalogStockLookup;
 }): Record<number, string> {
   const lineSelection: Record<number, string> = {};
   const saved = input.saved || {};
@@ -187,12 +201,12 @@ export function restoreVisibleLineSelection<T extends WorkspaceMatch>(input: {
   for (const item of input.items) {
     if (lineSelection[item.lineNumber]) continue;
     if (!input.autoWhenEmpty && !dropped.includes(item.lineNumber)) continue;
-    const top = sortMatchesByScore(item.matches)[0];
-    if (
-      top &&
-      top.score >= MIN_AUTO_BIND_SCORE &&
-      workspaceAutoBindable(top, item.requirementText)
-    ) {
+    const top = sortMatchesByScore(item.matches).find(
+      (match) =>
+        match.score >= MIN_AUTO_BIND_SCORE &&
+        workspaceAutoBindable(match, item.requirementText, input.stockLookup)
+    );
+    if (top) {
       lineSelection[item.lineNumber] = top.product.id;
     }
   }
@@ -237,7 +251,8 @@ export function previewStrongMatchesForAccept<T extends WorkspaceMatch>(
 
 export function acceptHighConfidenceSelections<T extends WorkspaceMatch>(
   items: Array<LineMatches<T>>,
-  current: Record<number, string>
+  current: Record<number, string>,
+  stockLookup?: CatalogStockLookup
 ): { next: Record<number, string>; acceptedLines: number[] } {
   const next = { ...current };
   const acceptedLines: number[] = [];
@@ -248,7 +263,7 @@ export function acceptHighConfidenceSelections<T extends WorkspaceMatch>(
     if (currentId && visible) continue;
 
     const best = sortMatchesByScore(item.matches).find((match) =>
-      isHighConfidenceCatalogMatch(match, item.requirementText)
+      isHighConfidenceCatalogMatch(match, item.requirementText, stockLookup)
     );
     if (!best) continue;
     next[item.lineNumber] = best.product.id;
