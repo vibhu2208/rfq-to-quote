@@ -142,6 +142,18 @@ describe("quoteBuyerContactLine", () => {
 });
 
 describe("quoteGstSplitFromAmounts", () => {
+  it("labels freight in tax analysis", () => {
+    const text = formatTaxAnalysis({
+      taxable: 10000,
+      withGst: true,
+      gstBuckets: [[18, 1800]],
+      gstAmount: 1800,
+      deliveryCharge: 100,
+      gstSplit: "IGST",
+    });
+    expect(text).toContain("Freight: 100.00");
+  });
+
   it("reads IGST from the stored tax amounts", () => {
     expect(
       quoteGstSplitFromAmounts({

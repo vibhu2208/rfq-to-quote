@@ -6,6 +6,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { parseRfqWithAi, statusFromConfidence } from "@/lib/ai/parse-rfq";
+import { parseRfqHeuristic } from "@/lib/heuristic-parse-rfq";
 import { normalizeParsedItemCategories } from "@/lib/categories";
 import { applyAssignmentRules } from "@/lib/leads/assignment";
 import { logLeadActivity } from "@/lib/leads/activity";
@@ -171,9 +172,37 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
       const message = userFacingParseError(
         e instanceof Error ? e.message : "Parse failed"
       );
+      const heuristic = parseRfqHeuristic(input.rawText, input.subject);
+      const normalized = normalizeParsedItemCategories(
+        heuristic.items.map((item, index) => ({
+          description:
+            typeof item.description === "string"
+              ? item.description
+              : `Item ${index + 1}`,
+          brand: item.brand,
+          quantity: item.quantity ?? 1,
+          unit: item.unit ?? "pcs",
+          category: item.category,
+        })),
+        heuristic.productCategory
+      );
       return prisma.rfq.update({
         where: { id: rfq.id },
-        data: { parseError: message, status: "NEEDS_REVIEW" },
+        data: {
+          parsedCategory: normalized.productCategory,
+          parsedSpecs: {
+            ...heuristic.specs,
+            items: normalized.items,
+            _meta: {
+              language: heuristic.language,
+              summary: heuristic.summary,
+              itemCount: normalized.items.length,
+            },
+          } as Prisma.InputJsonValue,
+          parseConfidence: heuristic.confidence,
+          parseError: message,
+          status: "NEEDS_REVIEW",
+        },
         include: { messages: { orderBy: { createdAt: "asc" } } },
       });
     }
@@ -187,7 +216,17 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
 
 export async function parseAndUpdateRfq(rfqId: string) {
   const rfq = await prisma.rfq.findUniqueOrThrow({ where: { id: rfqId } });
-  const result = await parseRfqWithAi(rfq.rawText, rfq.subject);
+  let result;
+  let parseNote: string | null = null;
+  // parseNote stays null when AI parse succeeds (clears a prior banner).
+  try {
+    result = await parseRfqWithAi(rfq.rawText, rfq.subject);
+  } catch (aiErr) {
+    result = parseRfqHeuristic(rfq.rawText, rfq.subject);
+    parseNote = userFacingParseError(
+      aiErr instanceof Error ? aiErr.message : "Parse failed"
+    );
+  }
   const status = nextStatusAfterParse(
     rfq.status,
     statusFromConfidence(result.confidence)
@@ -250,7 +289,7 @@ export async function parseAndUpdateRfq(rfqId: string) {
         },
       } as Prisma.InputJsonValue,
       parseConfidence: result.confidence,
-      parseError: null,
+      parseError: parseNote,
       status,
       // Drop catalog/vendor picks when the requirement lines themselves changed.
       ...(linesChanged ? { productSelections: Prisma.DbNull } : {}),

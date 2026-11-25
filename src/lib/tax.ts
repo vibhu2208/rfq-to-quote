@@ -197,6 +197,7 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
   let cgstAmount = 0;
   let sgstAmount = 0;
   let igstAmount = 0;
+  let grandTotalFromCalc: number | null = null;
 
   if (overrides.gstAmount && prev.gstAmount != null) {
     gstAmount = prev.gstAmount;
@@ -204,6 +205,10 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
     sgstAmount = prev.sgstAmount ?? round2(gstAmount - cgstAmount);
     igstAmount = prev.igstAmount ?? (gstSplit === "IGST" ? gstAmount : 0);
   } else if (input.withGst) {
+    const freightTaxRate =
+      pricedLines.length > 0
+        ? Math.max(...pricedLines.map((line) => Number(line.taxRate) || 0))
+        : 18;
     const calc = calculateDocumentTotals({
       lines: pricedLines,
       sellerStateCode: sellerCode,
@@ -211,22 +216,26 @@ export function calculateQuoteTotals(input: QuoteCalcInput): QuoteCalcResult {
       withGst: true,
       headerDiscountAmount: discountAmount,
       freightAmount: deliveryCharge,
-      freightTaxable: false,
+      freightTaxable: deliveryCharge > 0,
+      freightTaxRate,
       gstMode: input.gstMode ?? "AUTO",
     });
 
-    taxable = round2(Math.max(0, subtotal - discountAmount));
+    taxable = calc.taxable;
     gstAmount = calc.gstAmount;
     cgstAmount = calc.cgstAmount;
     sgstAmount = calc.sgstAmount;
     igstAmount = calc.igstAmount;
     // Keep label + amounts on the same determination.
     gstSplit = calc.gstSplit;
+    grandTotalFromCalc = round2(calc.grandTotal + otherTaxAmount);
   }
 
   let grandTotal: number;
   if (overrides.grandTotal && prev.grandTotal != null) {
     grandTotal = prev.grandTotal;
+  } else if (grandTotalFromCalc != null) {
+    grandTotal = grandTotalFromCalc;
   } else {
     grandTotal = round2(taxable + gstAmount + otherTaxAmount + deliveryCharge);
   }

@@ -45,6 +45,11 @@ export default async function ProformaDetailPage({ params }: Props) {
         partyId={proforma.partyId}
         partyName={proforma.party.legalName}
         partyGstin={proforma.party.gstin}
+        existingTaxInvoice={
+          proforma.invoices[0]
+            ? { id: proforma.invoices[0].id, number: proforma.invoices[0].number }
+            : null
+        }
       />
 
       <div className="overflow-hidden rounded-xl bg-white/40">
