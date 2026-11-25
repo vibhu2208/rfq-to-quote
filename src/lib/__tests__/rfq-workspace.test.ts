@@ -89,7 +89,7 @@ describe("restoreVisibleLineSelection", () => {
 describe("restoreVisibleLineSelection", () => {
   it("does not auto-select a catalog match at zero stock", () => {
     const inStock = match("151042", 70, "16 PORT SWITCH IN STOCK", "16 port gigabit switch");
-    const zeroStock = match("151041", 72, "16 PORT SWITCH", "16 port gigabit switch");
+    const zeroStock = match("151041", 72, "APC 1000VA 0 OUT", "APC UPS 1 kVA");
     const selection = restoreVisibleLineSelection({
       saved: {},
       items: [
@@ -104,6 +104,25 @@ describe("restoreVisibleLineSelection", () => {
       stockLookup: (id) => (id === "151041" ? 0 : 5),
     });
     expect(selection[1]).toBe("151042");
+  });
+
+  it("does not auto-select a zero-stock monitor when a stocked alternative exists", () => {
+    const zero = match("dell-0", 80, "DELL monitor 0 OUT", "27 inch QHD");
+    const stocked = match("dell-ok", 75, "DELL 27 QHD IN", "27 inch QHD");
+    const selection = restoreVisibleLineSelection({
+      saved: {},
+      items: [
+        {
+          lineNumber: 1,
+          requirementText: "27-inch QHD monitor",
+          matches: [zero, stocked],
+        },
+      ],
+      extraIdsByLine: {},
+      autoWhenEmpty: true,
+      stockLookup: (id) => (id === "dell-0" ? 0 : 6),
+    });
+    expect(selection[1]).toBe("dell-ok");
   });
 
   it("does not auto-select a spec-mismatched top match", () => {

@@ -84,6 +84,28 @@ function normLineText(value: string): string {
     .trim();
 }
 
+function unitsEquivalent(a: string | undefined, b: string | undefined): boolean {
+  const norm = (u: string | undefined) => {
+    const raw = (u || "").trim().toLowerCase().replace(/\./g, "");
+    if (!raw || raw === "nos" || raw === "pc" || raw === "pcs" || raw === "each" || raw === "unit" || raw === "units") {
+      return "pcs";
+    }
+    return raw;
+  };
+  return norm(a) === norm(b);
+}
+
+/** True when persisted quote line fields would change after merge. */
+export function draftMergeLineMeaningfullyChanged(
+  prior: DraftMergeExistingLine,
+  next: Pick<DraftMergeOutgoingLine, "productId" | "qty" | "unit">
+): boolean {
+  if ((prior.productId ?? null) !== (next.productId ?? null)) return true;
+  if (Math.abs(prior.qty - next.qty) > 0.000_1) return true;
+  if (!unitsEquivalent(prior.unit, next.unit)) return true;
+  return false;
+}
+
 function lineTextsCompatible(a: string, b: string): boolean {
   const na = normLineText(a);
   const nb = normLineText(b);
@@ -177,15 +199,13 @@ export function mergeDraftQuoteLines(
 
     if (prior) {
       usedExisting.add(prior.id);
-      const fields: string[] = [];
       const nextProductId = row.productId ?? prior.productId;
-      if ((prior.productId ?? null) !== (nextProductId ?? null)) {
-        fields.push("catalog");
-      }
-      if (prior.rfqLineId == null) {
-        fields.push("rfqLineId");
-      }
       const qty = prior.qty > 0 ? prior.qty : row.qty > 0 ? row.qty : 1;
+      const incomingUnit = row.unit?.trim() || "";
+      const unit =
+        prior.unit?.trim() && (!incomingUnit || unitsEquivalent(prior.unit, incomingUnit))
+          ? prior.unit
+          : incomingUnit || prior.unit || "pcs";
       const unitPrice =
         prior.unitPrice > 0
           ? prior.unitPrice
@@ -197,7 +217,7 @@ export function mergeDraftQuoteLines(
         aliasName: prior.aliasName?.trim() ? prior.aliasName : clientName,
         description: prior.description,
         qty,
-        unit: row.unit?.trim() || prior.unit || "pcs",
+        unit,
         unitPrice,
         costPrice:
           row.costPrice != null && row.costPrice > 0
@@ -212,6 +232,16 @@ export function mergeDraftQuoteLines(
       };
       next.lineTotal = lineTotal(next);
       merged.push(next);
+      const fields: string[] = [];
+      if ((prior.productId ?? null) !== (nextProductId ?? null)) {
+        fields.push("catalog");
+      }
+      if (Math.abs(prior.qty - qty) > 0.000_1) {
+        fields.push("qty");
+      }
+      if (!unitsEquivalent(prior.unit, unit)) {
+        fields.push("unit");
+      }
       changes.push(
         fields.length > 0
           ? { kind: "update", rfqLineId: row.rfqLineId, aliasName: next.aliasName, fields }

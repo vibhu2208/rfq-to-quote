@@ -23,7 +23,10 @@ import {
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { parseLocalDateTimeValue } from "@/components/ui/date-time-picker";
-import { followUpScheduledTimelineTitle } from "@/lib/leads/follow-up-timeline";
+import {
+  followUpCompletedTimelineTitle,
+  followUpScheduledTimelineTitle,
+} from "@/lib/leads/follow-up-timeline";
 import { useToast } from "@/components/app-toast";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
@@ -270,6 +273,7 @@ export function LeadDetailDrawer({
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
   const [schedulingFollowUp, setSchedulingFollowUp] = useState(false);
+  const [followBusy, setFollowBusy] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [followTitle, setFollowTitle] = useState("");
   const [followDue, setFollowDue] = useState("");
@@ -547,6 +551,7 @@ export function LeadDetailDrawer({
     }
     const dueIso = due.toISOString();
     const optimisticId = `local-${Date.now()}`;
+    const scheduledTitle = followTitle;
     setLead((prev) =>
       prev
         ? {
@@ -558,7 +563,7 @@ export function LeadDetailDrawer({
                 type: followType,
                 status: "PENDING",
                 dueAt: dueIso,
-                title: followTitle,
+                title: scheduledTitle,
                 notes: "",
               },
               ...prev.followUps,
@@ -570,17 +575,17 @@ export function LeadDetailDrawer({
                 title: followUpScheduledTimelineTitle(
                   followType,
                   due,
-                  followTitle
+                  scheduledTitle
                 ),
                 body: "",
                 createdAt: new Date().toISOString(),
-                actor: prev.assignedTo,
               },
               ...prev.activities,
             ],
           }
         : prev
     );
+    toast("Follow-up scheduled");
     const res = await fetch(`/api/leads/${leadId}/follow-ups`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -595,6 +600,7 @@ export function LeadDetailDrawer({
       window.alert(
         typeof data.error === "string" ? data.error : "Could not schedule follow-up"
       );
+      void refetch();
       setSchedulingFollowUp(false);
       return;
     }
@@ -606,30 +612,76 @@ export function LeadDetailDrawer({
       title?: string;
       notes?: string;
     } | null;
+    const savedTitle = created?.title || scheduledTitle;
     setFollowTitle("");
     setFollowDue("");
-    toast("Follow-up scheduled");
+    setLead((prev) => {
+      if (!prev) return prev;
+      const withoutPlaceholder = prev.followUps.filter((f) => f.id !== optimisticId);
+      const saved = {
+        id: created?.id || optimisticId,
+        type: created?.type || followType,
+        status: created?.status || "PENDING",
+        dueAt: created?.dueAt || dueIso,
+        title: savedTitle,
+        notes: created?.notes || "",
+      };
+      const rest = withoutPlaceholder.filter((f) => f.id !== saved.id);
+      return {
+        ...prev,
+        nextFollowUpAt: dueIso,
+        followUps: [saved, ...rest],
+      };
+    });
+    onChanged?.({ nextFollowUpAt: dueIso });
+    setSchedulingFollowUp(false);
+  }
+
+  async function completeFollowUp(followUpId: string) {
+    if (!leadId || followBusy) return;
+    const target = lead?.followUps.find((f) => f.id === followUpId);
+    if (!target || (target.status !== "PENDING" && target.status !== "OVERDUE")) {
+      return;
+    }
+    setFollowBusy(followUpId);
     setLead((prev) =>
       prev
         ? {
             ...prev,
-            nextFollowUpAt: dueIso,
-            followUps: [
+            followUps: prev.followUps.map((f) =>
+              f.id === followUpId ? { ...f, status: "DONE" } : f
+            ),
+            activities: [
               {
-                id: created?.id || `local-${Date.now()}`,
-                type: created?.type || followType,
-                status: created?.status || "PENDING",
-                dueAt: created?.dueAt || dueIso,
-                title: created?.title || followTitle,
-                notes: created?.notes || "",
+                id: `optimistic-complete-${followUpId}`,
+                type: "FOLLOW_UP_COMPLETED",
+                title: followUpCompletedTimelineTitle(target.type, target.title),
+                body: target.notes || "",
+                createdAt: new Date().toISOString(),
               },
-              ...prev.followUps,
+              ...prev.activities,
             ],
           }
         : prev
     );
-    onChanged?.({ nextFollowUpAt: dueIso });
-    setSchedulingFollowUp(false);
+    toast("Follow-up marked complete");
+    try {
+      const res = await fetch(`/api/leads/${leadId}/follow-ups`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ followUpId, action: "complete" }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        window.alert(
+          typeof data.error === "string" ? data.error : "Could not complete follow-up"
+        );
+        void refetch();
+        return;
+      }
+    } finally {
+      setFollowBusy(null);
+    }
   }
 
   if (!open) return null;
@@ -892,19 +944,38 @@ export function LeadDetailDrawer({
 
           {followOpen ? (
             <div className="mt-3 space-y-2 border-t border-dark-primary/8 pt-3">
-              {lead.followUps.slice(0, 3).map((f) => (
-                <div
-                  key={f.id}
-                  className="flex items-baseline justify-between gap-3 text-sm"
-                >
-                  <p className="min-w-0 truncate text-dark-primary">
-                    {f.title || f.type}
-                  </p>
-                  <span className="shrink-0 text-mid-green">
-                    {format(new Date(f.dueAt), "dd MMM HH:mm")}
-                  </span>
-                </div>
-              ))}
+              {lead.followUps.slice(0, 5).map((f) => {
+                const open = f.status === "PENDING" || f.status === "OVERDUE";
+                const busy = followBusy === f.id;
+                return (
+                  <div
+                    key={f.id}
+                    className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm"
+                  >
+                    <p className="min-w-0 truncate text-dark-primary">
+                      {f.title || f.type}
+                      {!open ? (
+                        <span className="ml-1 text-xs text-mid-green">· done</span>
+                      ) : null}
+                    </p>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="text-mid-green">
+                        {format(new Date(f.dueAt), "dd MMM HH:mm")}
+                      </span>
+                      {open ? (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => void completeFollowUp(f.id)}
+                          className="text-xs font-medium text-mid-green hover:underline disabled:opacity-50"
+                        >
+                          {busy ? "Completing…" : "Complete"}
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
               <select
                 value={followType}
                 onChange={(e) => setFollowType(e.target.value)}
@@ -1209,7 +1280,7 @@ export function LeadDetailDrawer({
                 title="Activity"
                 meta={
                   lead.activities.length
-                    ? `${Math.min(lead.activities.length, 8)} recent`
+                    ? `${lead.activities.length} recent`
                     : "None yet"
                 }
                 open={activityOpen}

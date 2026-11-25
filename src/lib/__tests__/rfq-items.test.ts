@@ -56,7 +56,7 @@ describe("extractRequirementsFromText", () => {
 
   it("KAN-140: parses the live six-line semicolon enquiry verbatim", () => {
     const text =
-      "16-port switch x3; CAT6 patch cord 1 m x50; 24-port patch panel x2; 1000 VA / 1 kVA UPS x5; 24-inch FHD IPS monitor, qty 15; 27-inch QHD monitor x4";
+      "16-port switch x3; CAT6 patch cord 1 m x50; 24-port patch panel x2; 1000 VA / 1 kVA UPS x 5; 24-inch FHD IPS monitor, qty 15; 27-inch QHD monitor x 4";
     const items = extractRequirementsFromText(text);
     expect(items).toHaveLength(6);
     expect(items.map((row) => row.quantity)).toEqual([3, 50, 2, 5, 15, 4]);
