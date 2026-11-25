@@ -58,6 +58,7 @@ export async function previewSyncDraftQuoteFromRfq(
   changes: DraftMergeChange[];
   lineCount: number;
   unmatchedExisting: number;
+  staleRfqBindings: number;
 } | null> {
   const explicit = input.lines || [];
   if (explicit.length === 0 || !explicit.every((l) => typeof l.rfqLineId === "number")) {
@@ -96,7 +97,7 @@ export async function previewSyncDraftQuoteFromRfq(
       : [];
   const byId = new Map(products.map((p) => [p.id, p]));
 
-  const { changes, lines, unmatchedExisting } = mergeDraftQuoteLines(
+  const { changes, lines, unmatchedExisting, staleRfqBindings } = mergeDraftQuoteLines(
     existingRows.map((row) => ({
       id: row.id,
       rfqLineId: row.rfqLineId,
@@ -135,6 +136,7 @@ export async function previewSyncDraftQuoteFromRfq(
     changes: draftMergeActionableChanges(changes),
     lineCount: lines.length,
     unmatchedExisting,
+    staleRfqBindings,
   };
 }
 

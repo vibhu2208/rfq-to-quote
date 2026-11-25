@@ -121,44 +121,91 @@ function lineTextsCompatible(a: string, b: string): boolean {
   return overlap >= Math.min(2, ta.size);
 }
 
+/** Trust a stored rfqLineId only when catalog or client wording still aligns. */
+export function rfqLineBindingTrusted(
+  row: DraftMergeExistingLine,
+  incoming: DraftMergeIncomingLine
+): boolean {
+  const clientName = incoming.aliasName?.trim() || "";
+  const textMatch = Boolean(
+    clientName &&
+      (lineTextsCompatible(row.aliasName, clientName) ||
+        lineTextsCompatible(row.description, clientName))
+  );
+  const productMatch = Boolean(
+    incoming.productId &&
+      row.productId != null &&
+      incoming.productId === row.productId
+  );
+  if (productMatch) return true;
+  if (
+    textMatch &&
+    incoming.productId &&
+    row.productId &&
+    incoming.productId !== row.productId
+  ) {
+    return false;
+  }
+  return textMatch;
+}
+
+function rowEligibleForIncoming(
+  row: DraftMergeExistingLine,
+  incoming: DraftMergeIncomingLine
+): boolean {
+  if (
+    row.rfqLineId != null &&
+    row.rfqLineId === incoming.rfqLineId &&
+    !rfqLineBindingTrusted(row, incoming)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /** Stable rfqLineId match first; legacy rows without rfqLineId fall back to product / wording. */
 function matchExisting(
   incoming: DraftMergeIncomingLine,
   pool: DraftMergeExistingLine[],
   used: Set<string>
-): DraftMergeExistingLine | undefined {
+): { row?: DraftMergeExistingLine; staleBinding?: boolean } {
   const byRfq = pool.find(
     (row) =>
       !used.has(row.id) &&
       row.rfqLineId != null &&
       row.rfqLineId === incoming.rfqLineId
   );
-  if (byRfq) return byRfq;
+  if (byRfq) {
+    if (rfqLineBindingTrusted(byRfq, incoming)) return { row: byRfq };
+    return { staleBinding: true };
+  }
 
   const clientName = incoming.aliasName?.trim() || "";
   if (incoming.productId) {
     const byProduct = pool.find(
       (row) =>
         !used.has(row.id) &&
+        rowEligibleForIncoming(row, incoming) &&
         row.productId != null &&
         row.productId === incoming.productId &&
         (row.rfqLineId == null || row.rfqLineId === incoming.rfqLineId)
     );
-    if (byProduct) return byProduct;
+    if (byProduct) return { row: byProduct };
   }
 
   if (clientName) {
     const byWording = pool.find(
       (row) =>
         !used.has(row.id) &&
+        rowEligibleForIncoming(row, incoming) &&
         (row.rfqLineId == null || row.rfqLineId === incoming.rfqLineId) &&
         (lineTextsCompatible(row.aliasName, clientName) ||
           lineTextsCompatible(row.description, clientName))
     );
-    if (byWording) return byWording;
+    if (byWording) return { row: byWording };
   }
 
-  return undefined;
+  return {};
 }
 
 export function draftMergeActionableChanges(changes: DraftMergeChange[]): DraftMergeChange[] {
@@ -170,6 +217,8 @@ export type DraftMergeResult = {
   changes: DraftMergeChange[];
   /** Legacy quote lines in the draft that could not be tied to an RFQ line. */
   unmatchedExisting: number;
+  /** Quote rows whose rfqLineId no longer matches the RFQ line wording/catalog. */
+  staleRfqBindings: number;
 };
 
 /**
@@ -189,13 +238,27 @@ export function mergeDraftQuoteLines(
   const merged: DraftMergeOutgoingLine[] = [];
   const changes: DraftMergeChange[] = [];
   const pool = [...existing];
+  let staleRfqBindings = 0;
+  const clearStaleRfqLineId = new Set<string>();
 
   for (const row of sortedIncoming) {
     if (seenRfq.has(row.rfqLineId)) continue;
     seenRfq.add(row.rfqLineId);
 
     const clientName = row.aliasName?.trim() || `Line ${row.rfqLineId}`;
-    const prior = matchExisting(row, pool, usedExisting);
+    const staleByRfq = pool.find(
+      (candidate) =>
+        !usedExisting.has(candidate.id) &&
+        candidate.rfqLineId != null &&
+        candidate.rfqLineId === row.rfqLineId &&
+        !rfqLineBindingTrusted(candidate, row)
+    );
+    if (staleByRfq) {
+      staleRfqBindings += 1;
+      clearStaleRfqLineId.add(staleByRfq.id);
+    }
+    const match = matchExisting(row, pool, usedExisting);
+    const prior = match.row;
 
     if (prior) {
       usedExisting.add(prior.id);
@@ -281,6 +344,7 @@ export function mergeDraftQuoteLines(
     if (usedExisting.has(row.id)) continue;
     const preserved: DraftMergeOutgoingLine = {
       ...row,
+      rfqLineId: clearStaleRfqLineId.has(row.id) ? null : row.rfqLineId ?? null,
       lineTotal: lineTotal(row),
     };
     merged.push(preserved);
@@ -302,5 +366,5 @@ export function mergeDraftQuoteLines(
       Boolean(row.productId || row.aliasName?.trim())
   ).length;
 
-  return { lines: merged, changes, unmatchedExisting };
+  return { lines: merged, changes, unmatchedExisting, staleRfqBindings };
 }

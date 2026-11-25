@@ -75,6 +75,37 @@ describe("extractRequirementsFromText", () => {
     expect(items[5].quantity).toBe(4);
   });
 
+  it("KAN-140: parses live Mathura enquiry with commercial tail and quote prefix", () => {
+    const text =
+      "Please quote: 16-port unmanaged switch x 3; CAT6 patch cord 1 m x 50; 24-port CAT6 patch panel (D-Link) x 2; 1000 VA / 1 kVA UPS x 5; 24-inch FHD IPS monitor with HDMI and DisplayPort, qty 15; 27-inch QHD monitor x 4. Prices inclusive of GST, delivery within 7 days to Mathura, 3 year warranty.";
+    const items = extractRequirementsFromText(text);
+    expect(items).toHaveLength(6);
+    expect(items[0]).toMatchObject({
+      description: "16-port unmanaged switch",
+      quantity: 3,
+    });
+    expect(items[1]).toMatchObject({
+      description: "CAT6 patch cord 1 m",
+      quantity: 50,
+    });
+    expect(items[2]).toMatchObject({
+      description: "24-port CAT6 patch panel (D-Link)",
+      quantity: 2,
+    });
+    expect(items[3]).toMatchObject({
+      description: "1000 VA / 1 kVA UPS",
+      quantity: 5,
+    });
+    expect(items[4]).toMatchObject({
+      description: "24-inch FHD IPS monitor with HDMI and DisplayPort",
+      quantity: 15,
+    });
+    expect(items[5]).toMatchObject({
+      description: "27-inch QHD monitor",
+      quantity: 4,
+    });
+  });
+
   it("handles hyphen bullets and numbered lists", () => {
     const text = `- Cat6 Cable – 50 pcs
 2. Dell Laptop – 3 units`;
@@ -177,6 +208,36 @@ describe("extractRfqItems", () => {
     expect(items).toHaveLength(8);
     expect(items[0].quantity).toBe(10);
     expect(items[7].quantity).toBe(20);
+  });
+
+  it("KAN-140: prefers text lines when stored parse dropped the last item", () => {
+    const text =
+      "Please quote: 16-port unmanaged switch x 3; CAT6 patch cord 1 m x 50; 24-port CAT6 patch panel (D-Link) x 2; 1000 VA / 1 kVA UPS x 5; 24-inch FHD IPS monitor with HDMI and DisplayPort, qty 15; 27-inch QHD monitor x 4. Prices inclusive of GST, delivery within 7 days to Mathura, 3 year warranty.";
+    const stored = {
+      items: [
+        {
+          description: "Please quote: 16-port unmanaged switch",
+          quantity: 3,
+          unit: "pcs",
+        },
+        { description: "CAT6 patch cord 1 m", quantity: 50, unit: "pcs" },
+        {
+          description: "24-port CAT6 patch panel (D-Link)",
+          quantity: 2,
+          unit: "pcs",
+        },
+        { description: "1000 VA / 1 kVA UPS", quantity: 5, unit: "pcs" },
+        {
+          description: "24-inch FHD IPS monitor with HDMI and DisplayPort",
+          quantity: 15,
+          unit: "pcs",
+        },
+      ],
+    };
+    const items = extractRfqItems(stored, text);
+    expect(items).toHaveLength(6);
+    expect(items[5].description).toBe("27-inch QHD monitor");
+    expect(items[5].quantity).toBe(4);
   });
 
   it("keeps spreadsheet unit prices on structured items", () => {

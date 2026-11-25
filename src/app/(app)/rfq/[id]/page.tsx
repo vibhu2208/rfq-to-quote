@@ -2477,6 +2477,7 @@ export default function RfqDetailPage() {
   const [vendorProductKey, setVendorProductKey] = useState("");
   const [draftSyncPreview, setDraftSyncPreview] = useState<{
     unmatchedExisting?: number;
+    staleRfqBindings?: number;
     changes: Array<{
       kind: string;
       rfqLineId?: number;
@@ -3720,6 +3721,7 @@ export default function RfqDetailPage() {
             }>;
             lineCount: number;
             unmatchedExisting?: number;
+            staleRfqBindings?: number;
           };
           error?: string;
         }>(previewRes, "Could not preview draft sync");
@@ -4511,6 +4513,13 @@ export default function RfqDetailPage() {
             Update draft? {draftSyncPreview.lineCount} quote line
             {draftSyncPreview.lineCount === 1 ? "" : "s"} after sync.
           </p>
+          {(draftSyncPreview.staleRfqBindings ?? 0) > 0 ? (
+            <p className="mt-1 text-amber-800">
+              {draftSyncPreview.staleRfqBindings} line
+              {draftSyncPreview.staleRfqBindings === 1 ? "" : "s"} look out of sync
+              with the RFQ — stale quote row bindings will be left unchanged.
+            </p>
+          ) : null}
           {(draftSyncPreview.unmatchedExisting ?? 0) > 0 ? (
             <p className="mt-1 text-mid-green">
               {draftSyncPreview.unmatchedExisting} existing line
