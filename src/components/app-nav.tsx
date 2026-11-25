@@ -201,7 +201,8 @@ function NavDropdown({
 
   function scheduleClose() {
     clearCloseTimer();
-    closeTimer.current = window.setTimeout(() => setOpen(false), 160);
+    // Menus render in a body portal, so the pointer often leaves this wrapper before
+    // it reaches the menu — don't auto-close on hover leave (KAN-142).
   }
 
   useLayoutEffect(() => {

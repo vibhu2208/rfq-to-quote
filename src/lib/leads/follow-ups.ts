@@ -6,6 +6,21 @@ import { buildReminderCopy } from "@/lib/leads/reminder-copy";
 import { prisma } from "@/lib/prisma";
 import { sendWhatsAppText } from "@/lib/whatsapp";
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
+import { formatTelemarketingInstant } from "@/lib/telemarketing/datetime";
+
+function followUpDueLabel(dueAt: Date) {
+  return formatTelemarketingInstant(dueAt, { withTime: true });
+}
+
+function followUpScheduledTitle(type: string, dueAt: Date, title?: string) {
+  const label = title?.trim() || type;
+  return `${label} scheduled · due ${followUpDueLabel(dueAt)}`;
+}
+
+function followUpCompletedTitle(type: string, dueAt: Date, title?: string) {
+  const label = title?.trim() || type;
+  return `${label} completed · due ${followUpDueLabel(dueAt)}`;
+}
 
 export type FollowUpNotifyChannelResult = {
   sent: boolean;
@@ -66,7 +81,11 @@ export async function createFollowUp(input: {
   await logLeadActivity({
     rfqId: input.rfqId,
     type: "FOLLOW_UP_SCHEDULED",
-    title: input.title || `Follow-up (${input.type || "CALL"})`,
+    title: followUpScheduledTitle(
+      input.type || "CALL",
+      input.dueAt,
+      input.title
+    ),
     body: input.notes || "",
     actorId: input.createdById,
     meta: {
@@ -242,7 +261,11 @@ export async function completeFollowUp(input: {
   await logLeadActivity({
     rfqId: existing.rfqId,
     type: "FOLLOW_UP_COMPLETED",
-    title: existing.title || "Follow-up completed",
+    title: followUpCompletedTitle(
+      existing.type,
+      existing.dueAt,
+      existing.title
+    ),
     body: input.notes || existing.notes || "",
     actorId: input.actorId,
     meta: { followUpId: followUp.id },
@@ -325,9 +348,11 @@ export async function rescheduleFollowUp(input: {
   await logLeadActivity({
     rfqId: existing.rfqId,
     type: "FOLLOW_UP_SCHEDULED",
-    title: existing.title
-      ? `Rescheduled: ${existing.title}`
-      : "Follow-up rescheduled",
+    title: followUpScheduledTitle(
+      existing.type,
+      input.dueAt,
+      existing.title ? `Rescheduled: ${existing.title}` : "Rescheduled"
+    ),
     body: existing.notes || "",
     actorId: input.actorId,
     meta: {

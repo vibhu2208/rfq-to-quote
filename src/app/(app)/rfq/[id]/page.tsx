@@ -28,6 +28,8 @@ import {
   type PickableProduct,
 } from "@/components/rfq-product-picker";
 import { extractRfqItems } from "@/lib/rfq-items";
+import { LEAD_STAGE_LABELS } from "@/lib/leads/constants";
+import { formatLeadCompactTimestamp } from "@/components/leads/leads-workbench-helpers";
 import { catalogBindingLooksMismatched } from "@/lib/product-match";
 import {
   vendorCostTotal,
@@ -120,6 +122,7 @@ type RfqDetail = {
   customerPhone: string;
   customerCompany: string;
   status: string;
+  leadStage?: string;
   parsedCategory: string | null;
   parsedSpecs: Record<string, unknown> | null;
   parseConfidence: number | null;
@@ -4244,6 +4247,12 @@ export default function RfqDetailPage() {
   const commercialAsks = extractCommercialAsks(rfq.rawText || "");
   const draftQuote =
     (rfq.quotes ?? []).find((quote) => quote.status === "DRAFT") ?? null;
+  const leadStage = rfq.leadStage || "NEW_LEAD";
+  const leadStageLabel =
+    LEAD_STAGE_LABELS[leadStage as keyof typeof LEAD_STAGE_LABELS] || leadStage;
+  const uncoveredRequirements = parsedRequirements.filter(
+    (req) => !itemMatches.some((row) => row.lineNumber === req.lineNumber)
+  );
 
   return (
     <div className="w-full space-y-4">
@@ -4251,9 +4260,11 @@ export default function RfqDetailPage() {
         <h1 className="min-w-0 truncate text-base font-semibold tracking-tight text-dark-primary">
           {rfq.customerCompany || rfq.customerName || "RFQ"}
         </h1>
-        <StatusBadge status={rfq.status} />
+        <span className="rounded-full bg-mid-green/15 px-2 py-0.5 text-[11px] font-medium text-dark-primary">
+          {leadStageLabel}
+        </span>
         <span className="hidden text-xs text-mid-green sm:inline">
-          {format(new Date(rfq.createdAt), "dd MMM HH:mm")}
+          {formatLeadCompactTimestamp(rfq.createdAt)}
           {" · "}
           {rfq.channel.replaceAll("_", " ")}
           {rfq.parsedCategory ? ` · ${rfq.parsedCategory}` : ""}
@@ -4553,6 +4564,13 @@ export default function RfqDetailPage() {
             </button>
           </div>
 
+          {uncoveredRequirements.length > 0 ? (
+            <div className="border-b border-amber-200/80 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+              {uncoveredRequirements.length} RFQ line
+              {uncoveredRequirements.length === 1 ? "" : "s"} not covered in the
+              products panel — review or map them before quoting.
+            </div>
+          ) : null}
           <div className="border-b border-light-green/15 px-3 py-2">
             {acceptReview && acceptReview.length > 0 ? (
               <div className="mb-2 rounded-xl border border-mid-green/25 bg-white px-2.5 py-2 text-xs text-dark-primary">

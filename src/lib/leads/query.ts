@@ -21,6 +21,8 @@ export type LeadsListFilters = {
   openRfq?: boolean;
   /** Extra preset query params (mine, hotOnly, etc.) */
   presetQuery?: string | Record<string, string>;
+  sort?: string;
+  dir?: "asc" | "desc";
 };
 
 /** Browser-URL state for LeadsWorkbench (survives navigate → browser back). */
@@ -40,6 +42,8 @@ export type LeadsWorkbenchUrlState = {
   leadId: string | null;
   /** Dashboard "Open RFQs" drill-down: NEW, NEEDS_REVIEW, PARSED. */
   openRfq?: boolean;
+  sort: string;
+  dir: "asc" | "desc";
 };
 
 const WORKBENCH_INTAKE_VALUES = new Set<LeadIntakeFilter>([
@@ -94,6 +98,8 @@ export function parseLeadsWorkbenchSearchParams(
     page,
     leadId,
     openRfq: params.get("openRfq") === "1",
+    sort: params.get("sort") || "created",
+    dir: params.get("dir") === "asc" ? "asc" : "desc",
   };
 }
 
@@ -124,6 +130,11 @@ export function buildLeadsWorkbenchSearchParams(
   if (state.page > 0) params.set("page", String(state.page));
   if (state.leadId) params.set("leadId", state.leadId);
   if (state.openRfq) params.set("openRfq", "1");
+  if (state.sort && state.sort !== "created") params.set("sort", state.sort);
+  else params.delete("sort");
+  if (state.dir && state.dir !== "desc") params.set("dir", state.dir);
+  else if (state.sort && state.sort !== "created") params.set("dir", state.dir);
+  else params.delete("dir");
 
   return params;
 }
@@ -238,6 +249,10 @@ export function buildLeadsSearchParams(filters: LeadsListFilters) {
   else params.delete("slaStatus");
   if (filters.openRfq) params.set("openRfq", "1");
   else params.delete("openRfq");
+  if (filters.sort && filters.sort !== "created") params.set("sort", filters.sort);
+  else params.delete("sort");
+  if (filters.dir) params.set("dir", filters.dir);
+  else params.delete("dir");
 
   return params;
 }

@@ -295,22 +295,29 @@ export async function markBreachedSlas() {
     take: 200,
   });
 
-  for (const lead of breached) {
-    await prisma.rfq.update({
-      where: { id: lead.id },
-      data: {
-        slaBreachedAt: now,
-        priority: lead.priority === "LOW" || lead.priority === "MEDIUM" ? "HIGH" : lead.priority,
-      },
-    });
-    await prisma.leadActivity.create({
-      data: {
-        rfqId: lead.id,
-        type: "SLA_BREACHED",
-        title: "SLA breached",
-        body: "Lead response SLA exceeded; priority escalated if applicable.",
-      },
-    });
+  if (breached.length > 0) {
+    await prisma.$transaction([
+      ...breached.map((lead) =>
+        prisma.rfq.update({
+          where: { id: lead.id },
+          data: {
+            slaBreachedAt: now,
+            priority:
+              lead.priority === "LOW" || lead.priority === "MEDIUM"
+                ? "HIGH"
+                : lead.priority,
+          },
+        })
+      ),
+      prisma.leadActivity.createMany({
+        data: breached.map((lead) => ({
+          rfqId: lead.id,
+          type: "SLA_BREACHED" as const,
+          title: "SLA breached",
+          body: "Lead response SLA exceeded; priority escalated if applicable.",
+        })),
+      }),
+    ]);
   }
 
   return breached.length;

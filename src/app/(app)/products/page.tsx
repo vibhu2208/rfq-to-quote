@@ -8,6 +8,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Pencil, Plus, Search, Upload, X } from "lucide-react";
 import { Money } from "@/components/ui";
 import { MasterDetailDialog } from "@/components/master-detail-dialog";
@@ -54,10 +55,15 @@ const emptyForm = {
   code: "",
   name: "",
   description: "",
-  unit: "pcs",
+  unit: "nos",
   productType: "GOODS" as "GOODS" | "SERVICE",
+  category: "",
+  brand: "",
+  hsnCode: "",
+  mrp: 0,
   basePrice: 0,
   offerPrice: 0,
+  lastPrice: 0,
   taxRate: 18,
   taxCategory: "GST18",
   active: true,
@@ -66,6 +72,8 @@ const emptyForm = {
 };
 
 export default function ProductsPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -98,6 +106,12 @@ export default function ProductsPage() {
     }, 250);
     return () => clearTimeout(timeout);
   }, [q]);
+
+  useEffect(() => {
+    const raw = Number(searchParams.get("page") || "1");
+    const next = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+    setPage((current) => (current === next ? current : next));
+  }, [searchParams]);
 
   const load = useCallback(async () => {
     const requestId = ++requestIdRef.current;
@@ -176,8 +190,13 @@ export default function ProductsPage() {
       description: p.description,
       unit: p.unit,
       productType: p.productType === "SERVICE" ? "SERVICE" : "GOODS",
+      category: p.category || "",
+      brand: p.brand || "",
+      hsnCode: p.hsnCode || "",
+      mrp: p.mrp ?? 0,
       basePrice: p.basePrice,
       offerPrice: p.offerPrice,
+      lastPrice: p.lastPrice ?? 0,
       taxRate: p.taxRate,
       taxCategory: p.taxCategory,
       active: p.active,
@@ -231,6 +250,16 @@ export default function ProductsPage() {
   const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const to = Math.min(page * PAGE_SIZE, total);
   const pending = loading || filtering;
+
+  function goPage(next: number) {
+    const clamped = Math.max(1, Math.min(next, totalPages));
+    setPage(clamped);
+    const params = new URLSearchParams(searchParams.toString());
+    if (clamped <= 1) params.delete("page");
+    else params.set("page", String(clamped));
+    const qs = params.toString();
+    router.replace(qs ? `/products?${qs}` : "/products");
+  }
 
   // Initial client fetch: keep a route-level skeleton so soft-nav never lands on
   // a stale prior page + empty "Loading…" table.
@@ -413,14 +442,14 @@ export default function ProductsPage() {
 
       {total > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-          <p className="text-mid-green">
-            Page {page} of {totalPages}
+          <p className="text-mid-green tabular-nums">
+            {from}–{to} of {pending ? "…" : total} · Page {page} of {totalPages}
           </p>
           <div className="flex gap-2">
             <button
               type="button"
               disabled={page <= 1 || pending}
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
+              onClick={() => goPage(page - 1)}
               className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-1.5 disabled:opacity-50"
             >
               Previous
@@ -428,7 +457,7 @@ export default function ProductsPage() {
             <button
               type="button"
               disabled={page >= totalPages || pending}
-              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+              onClick={() => goPage(page + 1)}
               className="rounded-lg border border-light-green/50 bg-white/50 px-3 py-1.5 disabled:opacity-50"
             >
               Next
@@ -497,11 +526,16 @@ export default function ProductsPage() {
                 [
                   ["code", "Code", "text"],
                   ["name", "Name", "text"],
+                  ["category", "Category", "text"],
+                  ["brand", "Brand", "text"],
+                  ["hsnCode", "HSN", "text"],
                   ["unit", "Unit", "text"],
-                  ["taxCategory", "Tax category", "text"],
-                  ["basePrice", "Base price", "number"],
+                  ["taxCategory", "GST", "text"],
+                  ["taxRate", "GST rate %", "number"],
+                  ["mrp", "MRP", "number"],
+                  ["basePrice", "Cost", "number"],
                   ["offerPrice", "Offer price", "number"],
-                  ["taxRate", "Tax rate %", "number"],
+                  ["lastPrice", "Last price", "number"],
                 ] as const
               ).map(([key, label, type]) => (
                 <label key={key} className="block text-sm sm:col-span-1">

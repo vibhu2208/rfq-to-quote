@@ -11,6 +11,11 @@ import {
   parseLeadFiltersFromSearchParams,
 } from "@/lib/leads/filters";
 import { createRfqWithMessage } from "@/lib/rfq";
+import {
+  leadListOrderBy,
+  parseLeadListSort,
+  parseLeadListSortDir,
+} from "@/lib/leads/sort";
 
 /** Slim list projection — table cells only, no parse/marketplace blobs. */
 const leadListSelect = {
@@ -52,17 +57,6 @@ const leadListSelect = {
     orderBy: { createdAt: "desc" as const },
     take: 5,
   },
-  activities: {
-    select: {
-      id: true,
-      type: true,
-      title: true,
-      body: true,
-      createdAt: true,
-    },
-    orderBy: { createdAt: "desc" as const },
-    take: 5,
-  },
   _count: {
     select: { quotes: true, messages: true, followUps: true, attachments: true },
   },
@@ -73,17 +67,11 @@ function truncate(text: string, max: number) {
   return `${text.slice(0, max).trimEnd()}…`;
 }
 
-function slimListItem<T extends {
-  rawText: string;
-  activities: { body: string }[];
-}>(row: T) {
+function slimListItem<T extends { rawText: string }>(row: T) {
   return {
     ...row,
     rawText: truncate(row.rawText, 160),
-    activities: row.activities.map((a) => ({
-      ...a,
-      body: truncate(a.body || "", 160),
-    })),
+    activities: [] as const,
   };
 }
 
@@ -103,6 +91,8 @@ export async function GET(req: NextRequest) {
 
   const take = Math.min(Number(searchParams.get("take") || 100) || 100, 500);
   const skip = Math.max(Number(searchParams.get("skip") || 0) || 0, 0);
+  const sort = parseLeadListSort(searchParams.get("sort"));
+  const sortDir = parseLeadListSortDir(searchParams.get("dir"));
   const where = buildLeadWhere(filters);
 
   const intakeBase = buildLeadWhere({
@@ -117,7 +107,7 @@ export async function GET(req: NextRequest) {
   const [items, total, stageGroups, intakeGroups] = await Promise.all([
     prisma.rfq.findMany({
       where,
-      orderBy: { createdAt: "desc" },
+      orderBy: leadListOrderBy(sort, sortDir),
       take,
       skip,
       select: leadListSelect,
@@ -128,9 +118,6 @@ export async function GET(req: NextRequest) {
       where: buildLeadWhere({
         ...filters,
         stage: undefined,
-        wonOnly: false,
-        lostOnly: false,
-        hotOnly: false,
       }),
       _count: { _all: true },
     }),

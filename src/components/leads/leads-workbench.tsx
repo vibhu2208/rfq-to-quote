@@ -94,6 +94,16 @@ import {
   type LeadsListResponse,
   type LeadsWorkbenchUrlState,
 } from "@/lib/leads/query";
+import { leadListSortNext, type LeadListSort } from "@/lib/leads/sort";
+
+const SORTABLE_COLUMNS: Partial<Record<LeadColumnId, LeadListSort>> = {
+  createdAt: "created",
+  updatedAt: "updated",
+  expected: "expected",
+  nextFollowUp: "followUp",
+  priority: "priority",
+  sla: "sla",
+};
 
 type HeaderFilterCol =
   | "leadId"
@@ -218,6 +228,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const [dateRangeError, setDateRangeError] = useState("");
   const [selectedViewId, setSelectedViewId] = useState("");
   const [slaStatus, setSlaStatus] = useState(initialUrl.slaStatus);
+  const [sortCol, setSortCol] = useState<LeadListSort>(
+    (initialUrl.sort as LeadListSort) || "created"
+  );
+  const [sortDir, setSortDir] = useState<"asc" | "desc">(initialUrl.dir);
   const [headerFilter, setHeaderFilter] = useState<{
     col: HeaderFilterCol;
     top: number;
@@ -368,6 +382,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     dateFrom,
     dateTo,
     slaStatus,
+    sortCol,
+    sortDir,
     intakeKind,
     presetQuery,
   ]);
@@ -388,6 +404,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     setDraftDateFrom(parsed.dateFrom);
     setDraftDateTo(parsed.dateTo);
     setSlaStatus(parsed.slaStatus);
+    setSortCol((parsed.sort as LeadListSort) || "created");
+    setSortDir(parsed.dir);
     setPage(parsed.page);
     setOpenRfq(Boolean(parsed.openRfq));
     setDrawerLeadId(parsed.leadId);
@@ -434,6 +452,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
         page,
         leadId: drawerLeadId,
         openRfq,
+        sort: sortCol,
+        dir: sortDir,
       },
       presetQuery
     ).toString();
@@ -481,6 +501,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     dateFrom,
     dateTo,
     slaStatus,
+    sortCol,
+    sortDir,
     page,
     drawerLeadId,
     openRfq,
@@ -509,6 +531,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       dateTo: appliedRangeError ? "" : dateTo,
       slaStatus,
       openRfq,
+      sort: sortCol,
+      dir: sortDir,
       presetQuery,
     }),
     [
@@ -526,6 +550,8 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       appliedRangeError,
       slaStatus,
       openRfq,
+      sortCol,
+      sortDir,
       presetQuery,
     ]
   );
@@ -542,6 +568,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
   const total = listData?.total ?? 0;
   const stageCounts = listData?.stageCounts ?? {};
   const loading = isLoading && rows.length === 0;
+  const listPending = isFetching || (isLoading && rows.length > 0);
   const countsPending = isLoading && !listData;
 
   const { data: users = [] } = useQuery({
@@ -1949,7 +1976,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       <LeadProcessBar
         activeStage={stage}
         stageCounts={stageCounts}
-        countsPending={countsPending}
+        countsPending={countsPending || listPending}
         onSelect={(next) => {
           setStage(next);
           // All = every lead including Email + WhatsApp — clear source filter
@@ -2119,8 +2146,10 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       ) : null}
 
       <div
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border border-dark-primary/8 bg-white"
-        aria-busy={loading && rows.length === 0}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl border border-dark-primary/8 bg-white ${
+          listPending ? "pointer-events-none opacity-55" : ""
+        }`}
+        aria-busy={loading || listPending}
       >
         <table className="w-full table-fixed text-left text-sm">
           <thead className="sticky top-0 z-20 border-b border-dark-primary/10 bg-white text-xs font-semibold text-dark-primary/80 shadow-[0_1px_0_rgba(11,43,38,0.06)] sm:text-[13px]">
@@ -2190,6 +2219,28 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
                           ) : null}
                         </button>
                       </div>
+                    ) : SORTABLE_COLUMNS[col] ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const key = SORTABLE_COLUMNS[col]!;
+                          const next = leadListSortNext(sortCol, key, sortDir);
+                          setSortCol(next.sort);
+                          setSortDir(next.dir);
+                          setPage(0);
+                        }}
+                        className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap font-semibold leading-tight text-dark-primary/80 hover:text-dark-primary"
+                        aria-sort={
+                          sortCol === SORTABLE_COLUMNS[col]
+                            ? sortDir === "asc"
+                              ? "ascending"
+                              : "descending"
+                            : "none"
+                        }
+                      >
+                        {COLUMN_LABELS[col]}
+                        <ArrowUpDown className="h-3 w-3 shrink-0 opacity-70" />
+                      </button>
                     ) : (
                       <span className="block truncate whitespace-nowrap font-semibold leading-tight text-dark-primary/80">
                         {COLUMN_LABELS[col]}
