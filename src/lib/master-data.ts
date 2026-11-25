@@ -112,6 +112,7 @@ export function humanizeMasterKey(key: string): string {
     LastPrice: "Last price",
     ClientID: "Client ID",
     ProductID: "Product ID",
+    CommCode: "Code",
     PAN: "PAN",
     IFSC: "IFSC",
     MICRCode: "MICR code",

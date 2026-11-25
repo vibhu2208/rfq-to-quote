@@ -11,6 +11,8 @@ import {
   QUOTE_LIST_PAGE_SIZE,
 } from "@/lib/quote-list";
 
+export const dynamic = "force-dynamic";
+
 type Props = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 };

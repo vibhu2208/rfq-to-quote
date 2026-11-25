@@ -94,6 +94,9 @@ export async function GET(req: NextRequest) {
   const sort = parseLeadListSort(searchParams.get("sort"));
   const sortDir = parseLeadListSortDir(searchParams.get("dir"));
   const where = buildLeadWhere(filters);
+  const countsOnly = searchParams.get("countsOnly") === "1";
+  const includeCounts =
+    !countsOnly && searchParams.get("includeCounts") !== "0";
 
   const intakeBase = buildLeadWhere({
     ...filters,
@@ -104,28 +107,36 @@ export async function GET(req: NextRequest) {
     hotOnly: false,
   });
 
+  const stageWhere = buildLeadWhere({
+    ...filters,
+    stage: undefined,
+  });
+
   const [items, total, stageGroups, intakeGroups] = await Promise.all([
-    prisma.rfq.findMany({
-      where,
-      orderBy: leadListOrderBy(sort, sortDir),
-      take,
-      skip,
-      select: leadListSelect,
-    }),
-    prisma.rfq.count({ where }),
-    prisma.rfq.groupBy({
-      by: ["leadStage"],
-      where: buildLeadWhere({
-        ...filters,
-        stage: undefined,
-      }),
-      _count: { _all: true },
-    }),
-    prisma.rfq.groupBy({
-      by: ["intakeKind"],
-      where: intakeBase,
-      _count: { _all: true },
-    }),
+    countsOnly
+      ? Promise.resolve([])
+      : prisma.rfq.findMany({
+          where,
+          orderBy: leadListOrderBy(sort, sortDir),
+          take,
+          skip,
+          select: leadListSelect,
+        }),
+    countsOnly ? Promise.resolve(0) : prisma.rfq.count({ where }),
+    includeCounts || countsOnly
+      ? prisma.rfq.groupBy({
+          by: ["leadStage"],
+          where: stageWhere,
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    includeCounts || countsOnly
+      ? prisma.rfq.groupBy({
+          by: ["intakeKind"],
+          where: intakeBase,
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
   ]);
 
   const stageCounts = Object.fromEntries(
@@ -142,6 +153,10 @@ export async function GET(req: NextRequest) {
   };
   for (const row of intakeGroups) {
     intakeKindCounts[row.intakeKind] = row._count._all;
+  }
+
+  if (countsOnly) {
+    return NextResponse.json({ stageCounts, intakeKindCounts });
   }
 
   const leadIds = items.map((row) => row.id);
@@ -192,8 +207,8 @@ export async function GET(req: NextRequest) {
       };
     }),
     total,
-    stageCounts,
-    intakeKindCounts,
+    stageCounts: includeCounts ? stageCounts : {},
+    intakeKindCounts: includeCounts ? intakeKindCounts : {},
     filters,
   });
 }

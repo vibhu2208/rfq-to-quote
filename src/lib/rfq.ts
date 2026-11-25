@@ -7,6 +7,8 @@ import {
 import { prisma } from "@/lib/prisma";
 import { parseRfqWithAi, statusFromConfidence } from "@/lib/ai/parse-rfq";
 import { parseRfqHeuristic } from "@/lib/heuristic-parse-rfq";
+import { extractRequirementsFromText } from "@/lib/rfq-items";
+import { resolveProductCategory } from "@/lib/categories";
 import { normalizeParsedItemCategories } from "@/lib/categories";
 import { applyAssignmentRules } from "@/lib/leads/assignment";
 import { logLeadActivity } from "@/lib/leads/activity";
@@ -275,7 +277,29 @@ export async function parseAndUpdateRfq(rfqId: string) {
     }),
     result.productCategory
   );
-  const items = normalized.items;
+  let items = normalized.items;
+  const textExtracted = extractRequirementsFromText(rfq.rawText);
+  if (!fromSpreadsheet && textExtracted.length > items.length) {
+    const boosted = normalizeParsedItemCategories(
+      textExtracted.map((row) => ({
+        description: row.description,
+        brand: row.brand,
+        quantity: row.quantity,
+        unit: row.unit,
+        category: resolveProductCategory(row.category, row.description),
+      })),
+      normalized.productCategory
+    );
+    if (boosted.items.length > items.length) {
+      items = boosted.items.map((row) => ({
+        description: row.description,
+        brand: row.brand ?? null,
+        category: row.category ?? null,
+        quantity: row.quantity,
+        unit: row.unit,
+      }));
+    }
+  }
   const linesChanged =
     itemLineFingerprint(existingItems) !== itemLineFingerprint(items);
 

@@ -170,6 +170,23 @@ export function formatQuoteInstant(
   return `${day}/${m}/${y}`;
 }
 
+/** Quote list / dashboard "Updated" — calendar date and clock time in IST. */
+export function formatQuoteListUpdated(
+  date: Date | string | number | null | undefined
+): string {
+  if (date == null || date === "") return "—";
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return "—";
+  const day = formatQuoteInstant(d, "dd MMM yyyy");
+  const time = new Intl.DateTimeFormat("en-GB", {
+    timeZone: QUOTE_TIME_ZONE,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  return `${day}, ${time}`;
+}
+
 /** Today's quotation calendar date in IST as yyyy-MM-dd. */
 export function todayQuoteDateIso(now: Date = new Date()): string {
   return formatQuoteInstant(now, "yyyy-MM-dd");

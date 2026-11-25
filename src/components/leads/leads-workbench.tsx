@@ -86,6 +86,7 @@ import {
   LEADS_PAGE_SIZE,
   buildLeadsWorkbenchSearchParams,
   decideLeadsUrlSync,
+  fetchLeadListCounts,
   fetchLeadSavedViews,
   fetchLeadUsers,
   leadsKeys,
@@ -534,6 +535,7 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
       sort: sortCol,
       dir: sortDir,
       presetQuery,
+      includeCounts: false,
     }),
     [
       page,
@@ -564,12 +566,37 @@ function LeadsWorkbenchInner({ title, presetQuery }: Props) {
     refetch,
   } = useLeadsList(listFilters);
 
+  const countsFilterKey = useMemo(
+    () => ({
+      intakeKind: listFilters.intakeKind,
+      q: listFilters.q,
+      stage: listFilters.stage,
+      priority: listFilters.priority,
+      channel: listFilters.channel,
+      assignedToUserId: listFilters.assignedToUserId,
+      category: listFilters.category,
+      datePreset: listFilters.datePreset,
+      dateFrom: listFilters.dateFrom,
+      dateTo: listFilters.dateTo,
+      slaStatus: listFilters.slaStatus,
+      openRfq: listFilters.openRfq,
+      presetQuery: listFilters.presetQuery,
+    }),
+    [listFilters]
+  );
+
+  const { data: countsData, isFetching: countsFetching } = useQuery({
+    queryKey: [...leadsKeys.list(listFilters), "stage-counts"],
+    queryFn: () => fetchLeadListCounts(countsFilterKey),
+    staleTime: 30_000,
+  });
+
   const rows = listData?.items ?? [];
   const total = listData?.total ?? 0;
-  const stageCounts = listData?.stageCounts ?? {};
+  const stageCounts = countsData?.stageCounts ?? {};
   const loading = isLoading && rows.length === 0;
   const listPending = isFetching || (isLoading && rows.length > 0);
-  const countsPending = isLoading && !listData;
+  const countsPending = countsFetching || (isLoading && !countsData);
 
   const { data: users = [] } = useQuery({
     queryKey: leadsKeys.users(),

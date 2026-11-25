@@ -19,6 +19,7 @@ import {
 } from "@/lib/quote-line-sanitize";
 import { round2 } from "@/lib/accounting/money";
 import {
+  draftMergeActionableChanges,
   mergeDraftQuoteLines,
   type DraftMergeChange,
 } from "@/lib/quote-draft-merge";
@@ -94,6 +95,7 @@ export async function previewSyncDraftQuoteFromRfq(
   const { changes, lines } = mergeDraftQuoteLines(
     existingRows.map((row) => ({
       id: row.id,
+      rfqLineId: row.rfqLineId,
       productId: row.productId,
       aliasName: row.aliasName,
       description: row.description,
@@ -125,7 +127,10 @@ export async function previewSyncDraftQuoteFromRfq(
     }
   );
 
-  return { changes, lineCount: lines.length };
+  return {
+    changes: draftMergeActionableChanges(changes),
+    lineCount: lines.length,
+  };
 }
 
 export async function syncDraftQuoteFromRfq(input: CreateQuoteFromRfqInput) {
@@ -182,6 +187,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     taxRate: number;
     lineTotal: number;
     sortOrder: number;
+    rfqLineId?: number | null;
     id?: string;
     discountPercent?: number;
     customItem?: boolean;
@@ -316,7 +322,11 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
     );
 
     lines = merged.map((row) => {
-      const requirement = requirementItems[row.sortOrder - 1];
+      const requirement =
+        row.rfqLineId != null
+          ? requirementItems.find((r) => r.lineNumber === row.rfqLineId) ??
+            requirementItems[row.sortOrder - 1]
+          : requirementItems[row.sortOrder - 1];
       if (!row.productId) {
         const presented = quoteLinePresentation({
           clientName: row.aliasName || requirement?.description || "From RFQ",
@@ -342,6 +352,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           customItem: row.customItem ?? true,
           lineTotal: row.lineTotal,
           sortOrder: row.sortOrder,
+          rfqLineId: row.rfqLineId ?? null,
         };
       }
 
@@ -362,6 +373,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           customItem: row.customItem,
           lineTotal: row.lineTotal,
           sortOrder: row.sortOrder,
+          rfqLineId: row.rfqLineId ?? null,
         };
       }
 
@@ -395,6 +407,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
       return {
         ...built,
         id: row.id,
+        rfqLineId: row.rfqLineId ?? null,
         unitPrice: row.unitPrice > 0 ? row.unitPrice : built.unitPrice,
         discountPercent: row.discountPercent,
         customItem: row.customItem,
@@ -458,6 +471,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
           taxRate,
           lineTotal: round2(qty * unitPrice),
           sortOrder: i,
+          rfqLineId: req.rfqLineId ?? null,
         } satisfies LineCreate;
       }
 
@@ -622,6 +636,7 @@ export async function createQuoteFromRfq(input: CreateQuoteFromRfqInput) {
             taxRate: line.taxRate,
             lineTotal: line.lineTotal,
             sortOrder: line.sortOrder,
+            rfqLineId: line.rfqLineId ?? null,
             discountPercent: line.discountPercent ?? 0,
             customItem: Boolean(line.customItem),
           };

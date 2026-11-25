@@ -23,6 +23,7 @@ import {
 import { validateFutureDateTime } from "@/lib/datetime/future-datetime";
 import { useFutureDateTimeField } from "@/lib/datetime/use-future-datetime-field";
 import { parseLocalDateTimeValue } from "@/components/ui/date-time-picker";
+import { useToast } from "@/components/app-toast";
 import { leadsKeys } from "@/lib/leads/query";
 import { extractRfqItems } from "@/lib/rfq-items";
 
@@ -265,7 +266,9 @@ export function LeadDetailDrawer({
 }: Props) {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [saving, setSaving] = useState(false);
+  const [schedulingFollowUp, setSchedulingFollowUp] = useState(false);
   const [note, setNote] = useState("");
   const [followTitle, setFollowTitle] = useState("");
   const [followDue, setFollowDue] = useState("");
@@ -527,15 +530,18 @@ export function LeadDetailDrawer({
   }
 
   async function scheduleFollowUp() {
-    if (!leadId || !followDue) return;
+    if (!leadId || !followDue || schedulingFollowUp) return;
+    setSchedulingFollowUp(true);
     const due = parseLocalDateTimeValue(followDue) ?? new Date(followDue);
     if (Number.isNaN(due.getTime())) {
       window.alert("Pick a valid date and time");
+      setSchedulingFollowUp(false);
       return;
     }
     const futureErr = validateFutureDateTime(due);
     if (futureErr) {
       window.alert(futureErr);
+      setSchedulingFollowUp(false);
       return;
     }
     const dueIso = due.toISOString();
@@ -553,6 +559,7 @@ export function LeadDetailDrawer({
       window.alert(
         typeof data.error === "string" ? data.error : "Could not schedule follow-up"
       );
+      setSchedulingFollowUp(false);
       return;
     }
     const created = (await res.json().catch(() => null)) as {
@@ -565,6 +572,7 @@ export function LeadDetailDrawer({
     } | null;
     setFollowTitle("");
     setFollowDue("");
+    toast("Follow-up scheduled");
     setLead((prev) =>
       prev
         ? {
@@ -585,6 +593,7 @@ export function LeadDetailDrawer({
         : prev
     );
     onChanged?.({ nextFollowUpAt: dueIso });
+    setSchedulingFollowUp(false);
   }
 
   if (!open) return null;
@@ -888,11 +897,11 @@ export function LeadDetailDrawer({
               ) : null}
               <button
                 type="button"
-                disabled={Boolean(followDueFutureError)}
+                disabled={Boolean(followDueFutureError) || schedulingFollowUp}
                 onClick={() => void scheduleFollowUp()}
                 className="text-sm font-medium text-mid-green hover:text-dark-primary disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Schedule follow-up
+                {schedulingFollowUp ? "Scheduling…" : "Schedule follow-up"}
               </button>
             </div>
           ) : null}

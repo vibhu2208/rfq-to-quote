@@ -6,6 +6,8 @@ export const LEADS_PAGE_SIZE = 50;
 export type LeadsListFilters = {
   take?: number;
   skip?: number;
+  /** When false, list API skips stage/intake aggregations (faster first paint). */
+  includeCounts?: boolean;
   intakeKind?: LeadIntakeFilter | "all" | string;
   q?: string;
   stage?: string;
@@ -249,12 +251,42 @@ export function buildLeadsSearchParams(filters: LeadsListFilters) {
   else params.delete("slaStatus");
   if (filters.openRfq) params.set("openRfq", "1");
   else params.delete("openRfq");
-  if (filters.sort && filters.sort !== "created") params.set("sort", filters.sort);
-  else params.delete("sort");
-  if (filters.dir) params.set("dir", filters.dir);
-  else params.delete("dir");
+  if (filters.includeCounts === false) params.set("includeCounts", "0");
+  else params.delete("includeCounts");
+  const sort = filters.sort || "created";
+  const dir = filters.dir || "desc";
+  params.set("sort", sort);
+  params.set("dir", dir);
 
   return params;
+}
+
+export async function fetchLeadListCounts(
+  filters: Omit<LeadsListFilters, "includeCounts" | "take" | "skip">
+): Promise<Pick<LeadsListResponse, "stageCounts" | "intakeKindCounts">> {
+  const params = buildLeadsSearchParams({
+    ...filters,
+    take: 0,
+    skip: 0,
+    includeCounts: true,
+  });
+  params.set("countsOnly", "1");
+  const res = await fetch(`/api/leads?${params}`);
+  if (!res.ok) {
+    return {
+      stageCounts: {},
+      intakeKindCounts: { REQUIREMENT: 0, JUNK: 0, SKIPPED: 0 },
+    };
+  }
+  const data = await res.json();
+  return {
+    stageCounts: data.stageCounts || {},
+    intakeKindCounts: {
+      REQUIREMENT: data.intakeKindCounts?.REQUIREMENT ?? 0,
+      JUNK: data.intakeKindCounts?.JUNK ?? 0,
+      SKIPPED: data.intakeKindCounts?.SKIPPED ?? 0,
+    },
+  };
 }
 
 export async function fetchLeadsList(

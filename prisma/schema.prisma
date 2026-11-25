@@ -643,6 +643,8 @@ model QuoteLineItem {
   taxRate        Decimal  @default(18) @db.Decimal(5, 2)
   lineTotal      Decimal  @default(0) @db.Decimal(14, 2)
   sortOrder      Int      @default(0)
+  /// RFQ workspace line number — stable key for draft sync; null for manual quote lines.
+  rfqLineId      Int?
 
   quote   Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)

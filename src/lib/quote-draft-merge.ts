@@ -3,6 +3,7 @@ import { effectiveUnitPrice } from "@/lib/quote-discount";
 
 export type DraftMergeExistingLine = {
   id: string;
+  rfqLineId?: number | null;
   productId: string | null;
   aliasName: string;
   description: string;
@@ -30,6 +31,7 @@ export type DraftMergeIncomingLine = {
 
 export type DraftMergeOutgoingLine = Omit<DraftMergeExistingLine, "id"> & {
   id?: string;
+  rfqLineId?: number | null;
   lineTotal: number;
 };
 
@@ -50,10 +52,6 @@ export type DraftMergeChange =
       id: string;
       aliasName: string;
     };
-
-function normAlias(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
 
 function lineTotal(line: {
   qty: number;
@@ -82,43 +80,13 @@ function matchExisting(
   pool: DraftMergeExistingLine[],
   used: Set<string>
 ): DraftMergeExistingLine | undefined {
-  const byRfq = pool.find(
-    (row) => !used.has(row.id) && row.sortOrder === incoming.rfqLineId
+  return pool.find(
+    (row) => !used.has(row.id) && row.rfqLineId != null && row.rfqLineId === incoming.rfqLineId
   );
-  if (byRfq) return byRfq;
+}
 
-  const incomingAlias = normAlias(incoming.aliasName || "");
-  if (incoming.productId) {
-    const byProduct = pool.find(
-      (row) =>
-        !used.has(row.id) &&
-        row.productId === incoming.productId &&
-        (!incomingAlias ||
-          !row.aliasName ||
-          normAlias(row.aliasName) === incomingAlias)
-    );
-    if (byProduct) return byProduct;
-  }
-
-  if (incomingAlias) {
-    const byAlias = pool.find(
-      (row) => !used.has(row.id) && normAlias(row.aliasName) === incomingAlias
-    );
-    if (byAlias) return byAlias;
-  }
-
-  if (!incoming.productId) {
-    const manual = pool.find(
-      (row) =>
-        !used.has(row.id) &&
-        row.productId == null &&
-        incomingAlias &&
-        normAlias(row.aliasName) === incomingAlias
-    );
-    if (manual) return manual;
-  }
-
-  return undefined;
+export function draftMergeActionableChanges(changes: DraftMergeChange[]): DraftMergeChange[] {
+  return changes.filter((change) => change.kind !== "keep");
 }
 
 /**
@@ -137,7 +105,7 @@ export function mergeDraftQuoteLines(
   const usedExisting = new Set<string>();
   const merged: DraftMergeOutgoingLine[] = [];
   const changes: DraftMergeChange[] = [];
-  const pool = [...existing].sort((a, b) => a.sortOrder - b.sortOrder);
+  const pool = [...existing];
 
   for (const row of sortedIncoming) {
     if (seenRfq.has(row.rfqLineId)) continue;
@@ -149,7 +117,10 @@ export function mergeDraftQuoteLines(
     if (prior) {
       usedExisting.add(prior.id);
       const fields: string[] = [];
-      if (prior.productId !== row.productId) fields.push("catalog");
+      const nextProductId = row.productId ?? prior.productId;
+      if ((prior.productId ?? null) !== (nextProductId ?? null)) {
+        fields.push("catalog");
+      }
       const qty = prior.qty > 0 ? prior.qty : row.qty > 0 ? row.qty : 1;
       const unitPrice =
         prior.unitPrice > 0
@@ -157,8 +128,9 @@ export function mergeDraftQuoteLines(
           : pickCatalogPrice(row.productId, row.unitPrice, opts?.catalogUnitPrice);
       const next: DraftMergeOutgoingLine = {
         id: prior.id,
-        productId: row.productId ?? prior.productId,
-        aliasName: clientName || prior.aliasName,
+        rfqLineId: row.rfqLineId,
+        productId: nextProductId,
+        aliasName: prior.aliasName?.trim() ? prior.aliasName : clientName,
         description: prior.description,
         qty,
         unit: row.unit?.trim() || prior.unit || "pcs",
@@ -170,7 +142,7 @@ export function mergeDraftQuoteLines(
         costVendorName: row.costVendorName?.trim() || prior.costVendorName || "",
         discountPercent: prior.discountPercent ?? 0,
         taxRate: prior.taxRate,
-        sortOrder: row.rfqLineId,
+        sortOrder: prior.sortOrder,
         customItem: prior.customItem,
         lineTotal: 0,
       };
@@ -192,6 +164,7 @@ export function mergeDraftQuoteLines(
     const qty = row.qty > 0 ? row.qty : 1;
     const created: DraftMergeOutgoingLine = {
       productId: row.productId,
+      rfqLineId: row.rfqLineId,
       aliasName: clientName,
       description: "",
       qty,
@@ -201,7 +174,7 @@ export function mergeDraftQuoteLines(
       costVendorName: row.costVendorName?.trim() || "",
       discountPercent: 0,
       taxRate: 18,
-      sortOrder: row.rfqLineId,
+      sortOrder: merged.length,
       customItem: !row.productId,
       lineTotal: 0,
     };
@@ -220,6 +193,11 @@ export function mergeDraftQuoteLines(
     changes.push({ kind: "keep", id: row.id, aliasName: row.aliasName });
   }
 
-  merged.sort((a, b) => a.sortOrder - b.sortOrder || a.aliasName.localeCompare(b.aliasName));
+  merged.sort(
+    (a, b) =>
+      (a.rfqLineId ?? 999_999) - (b.rfqLineId ?? 999_999) ||
+      a.sortOrder - b.sortOrder ||
+      a.aliasName.localeCompare(b.aliasName)
+  );
   return { lines: merged, changes };
 }

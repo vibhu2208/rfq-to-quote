@@ -252,6 +252,15 @@ export function acceptHighConfidenceSelections<T extends WorkspaceMatch>(
   return { next, acceptedLines };
 }
 
+/** RFQ requirement lines that are missing from the products panel list. */
+export function rfqRequirementsMissingFromProductPanel(
+  parsed: Array<{ lineNumber: number }>,
+  productPanel: Array<{ lineNumber: number }>
+): number[] {
+  const panelIds = new Set(productPanel.map((row) => row.lineNumber));
+  return parsed.filter((row) => !panelIds.has(row.lineNumber)).map((row) => row.lineNumber);
+}
+
 export function mergeAddedRequirementLines<T extends { lineNumber: number; matches: WorkspaceMatch[] }>(
   items: T[],
   requirements: RfqRequirementItem[],

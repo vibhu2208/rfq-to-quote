@@ -11,7 +11,7 @@ import {
   formatMoneyCommitRangeError,
   resolveMoneyCommit,
 } from "@/lib/calc-money-commit";
-import { sanitizeAmountDraft } from "@/lib/percent-input";
+import { sanitizeMoneyDraft } from "@/lib/percent-input";
 
 type Props = {
   value: number;
@@ -117,7 +117,7 @@ export function CalcMoneyInput({
           setText(raw.replace(/[^0-9.,+\-*/%()\s=]/g, ""));
           return;
         }
-        setText(sanitizeAmountDraft(raw.replace(/[^0-9.+\-*/%()\s=,]/g, "")));
+        setText(sanitizeMoneyDraft(raw.replace(/[^0-9.+\-*/%()\s=,]/g, "")));
       }}
       onKeyDown={onKeyDown}
       className={className}

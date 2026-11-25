@@ -96,7 +96,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   sidebar?: ReactNode;
-  activeSection?: PreviewSection;
+  activeSection?: PreviewSection | null;
   onSelectSection?: (section: PreviewSection) => void;
 };
 
@@ -109,7 +109,7 @@ function EditableBlock({
   children,
 }: {
   section: PreviewSection;
-  activeSection?: PreviewSection;
+  activeSection?: PreviewSection | null;
   onSelectSection?: (section: PreviewSection) => void;
   label: string;
   className?: string;

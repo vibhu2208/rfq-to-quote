@@ -635,10 +635,10 @@ export function shouldAutoBindCatalogMatch(
   requirementText: string
 ): boolean {
   if (!match || match.score < MIN_AUTO_BIND_SCORE) return false;
+  const productText = `${match.product.name} ${match.product.description || ""}`;
+  if (catalogBindingLooksMismatched(requirementText, productText)) return false;
   const req = extractMatchConstraints(requirementText);
-  const product = extractMatchConstraints(
-    `${match.product.name} ${match.product.description || ""}`
-  );
+  const product = extractMatchConstraints(productText);
   return !constraintsConflict(req, product);
 }
 
