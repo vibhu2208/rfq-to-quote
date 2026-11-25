@@ -168,10 +168,7 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
   if (autoParse && input.rawText.trim()) {
     try {
       return await parseAndUpdateRfq(rfq.id);
-    } catch (e) {
-      const message = userFacingParseError(
-        e instanceof Error ? e.message : "Parse failed"
-      );
+    } catch {
       const heuristic = parseRfqHeuristic(input.rawText, input.subject);
       const normalized = normalizeParsedItemCategories(
         heuristic.items.map((item, index) => ({
@@ -186,6 +183,10 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
         })),
         heuristic.productCategory
       );
+      const fallbackNote =
+        normalized.items.length >= 2
+          ? null
+          : "AI parsing is temporarily unavailable. Used heuristic fallback — use Re-parse when AI is available.";
       return prisma.rfq.update({
         where: { id: rfq.id },
         data: {
@@ -200,7 +201,7 @@ export async function createRfqWithMessage(input: CreateRfqInput) {
             },
           } as Prisma.InputJsonValue,
           parseConfidence: heuristic.confidence,
-          parseError: message,
+          parseError: fallbackNote,
           status: "NEEDS_REVIEW",
         },
         include: { messages: { orderBy: { createdAt: "asc" } } },
@@ -223,9 +224,14 @@ export async function parseAndUpdateRfq(rfqId: string) {
     result = await parseRfqWithAi(rfq.rawText, rfq.subject);
   } catch (aiErr) {
     result = parseRfqHeuristic(rfq.rawText, rfq.subject);
-    parseNote = userFacingParseError(
-      aiErr instanceof Error ? aiErr.message : "Parse failed"
-    );
+    const fallbackCount = result.items?.length ?? 0;
+    if (fallbackCount >= 2) {
+      parseNote = null;
+    } else {
+      parseNote =
+        "AI parsing is temporarily unavailable. Used heuristic fallback — use Re-parse when AI is available.";
+    }
+    void aiErr;
   }
   const status = nextStatusAfterParse(
     rfq.status,

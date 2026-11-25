@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireSession } from "@/lib/api";
 import {
   createQuoteFromRfq,
+  previewSyncDraftQuoteFromRfq,
   QuoteLineValidationError,
   syncDraftQuoteFromRfq,
 } from "@/lib/quote-from-rfq";
@@ -20,6 +21,7 @@ const bodySchema = z.object({
     .array(
       z.object({
         productId: z.string().min(1).optional().nullable(),
+        rfqLineId: z.coerce.number().int().positive().optional(),
         qty: z.coerce.number().optional(),
         unitPrice: z.coerce.number().optional(),
         costPrice: z.coerce.number().optional(),
@@ -30,6 +32,7 @@ const bodySchema = z.object({
     )
     .optional(),
   syncDraft: z.boolean().optional(),
+  preview: z.boolean().optional(),
 });
 
 /**
@@ -47,6 +50,7 @@ export async function POST(req: NextRequest, { params }: Params) {
   let quantities: Record<string, number> = {};
   let lines: Array<{
     productId: string | null;
+    rfqLineId?: number;
     qty: number;
     unitPrice?: number;
     costPrice?: number;
@@ -55,6 +59,7 @@ export async function POST(req: NextRequest, { params }: Params) {
     unit?: string;
   }> = [];
   let syncDraft = false;
+  let preview = false;
   try {
     const json = await req.json().catch(() => ({}));
     const parsed = bodySchema.safeParse(json);
@@ -62,8 +67,10 @@ export async function POST(req: NextRequest, { params }: Params) {
       productIds = parsed.data.productIds || [];
       quantities = parsed.data.quantities || {};
       syncDraft = Boolean(parsed.data.syncDraft);
+      preview = Boolean(parsed.data.preview);
       lines = (parsed.data.lines || []).map((line) => ({
         productId: line.productId?.trim() || null,
+        rfqLineId: line.rfqLineId,
         qty: line.qty && line.qty > 0 ? line.qty : 1,
         unitPrice: line.unitPrice,
         costPrice: line.costPrice,
@@ -89,6 +96,7 @@ export async function POST(req: NextRequest, { params }: Params) {
         lines.length > 0
           ? lines.map((line) => ({
               productId: line.productId,
+              rfqLineId: line.rfqLineId,
               qty: line.qty,
               unitPrice: line.unitPrice,
               costPrice: line.costPrice,
@@ -98,6 +106,14 @@ export async function POST(req: NextRequest, { params }: Params) {
             }))
           : undefined,
     };
+
+    if (preview && syncDraft) {
+      const draftPreview = await previewSyncDraftQuoteFromRfq(createInput);
+      if (draftPreview) {
+        return NextResponse.json({ preview: draftPreview }, { status: 200 });
+      }
+    }
+
     const quote = syncDraft
       ? await syncDraftQuoteFromRfq(createInput)
       : await createQuoteFromRfq({

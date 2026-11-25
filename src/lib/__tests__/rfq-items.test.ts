@@ -4,6 +4,7 @@ import {
   extractRequirementsFromText,
   extractRfqItems,
   looksLikeMergedSummary,
+  parseQuantityFromDescription,
   resolveParsedItems,
 } from "@/lib/rfq-items";
 
@@ -19,6 +20,16 @@ We currently have an IT hardware requirement and would like to invite you to sha
 • Wi-Fi Routers / Access Points – 10 Units
 • Printers – 5 Units
 • UPS Systems – 20 Units`;
+
+describe("parseQuantityFromDescription", () => {
+  it("reads qty from free text such as HDMI cable 3m x 5", () => {
+    expect(parseQuantityFromDescription("QA test HDMI cable 3m x 5")).toMatchObject({
+      description: "QA test HDMI cable 3m",
+      quantity: 5,
+      unit: "pcs",
+    });
+  });
+});
 
 describe("extractRequirementsFromText", () => {
   it("parses bulleted product lists with quantities from email RFQs", () => {

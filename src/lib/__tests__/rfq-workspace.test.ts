@@ -86,6 +86,25 @@ describe("restoreVisibleLineSelection", () => {
   });
 });
 
+describe("restoreVisibleLineSelection", () => {
+  it("does not auto-select a spec-mismatched top match", () => {
+    const mismatch = match("151454", 90, "151454 HDMI CABLE 5METER", "HDMI cable 5 meter");
+    const selection = restoreVisibleLineSelection({
+      saved: {},
+      items: [
+        {
+          lineNumber: 1,
+          requirementText: "QA test HDMI cable 3m",
+          matches: [mismatch],
+        },
+      ],
+      extraIdsByLine: {},
+      autoWhenEmpty: true,
+    });
+    expect(selection[1]).toBeUndefined();
+  });
+});
+
 describe("acceptHighConfidenceSelections", () => {
   it("KAN-58: accepts a strong compatible match and skips a spec mismatch", () => {
     const strong = match("151041", 70, "16 PORT SWITCH", "16 port gigabit switch");

@@ -18,4 +18,14 @@ describe("parseRfqHeuristic", () => {
       50
     );
   });
+
+  it("parses × counts and qty suffixes in plain lines", () => {
+    const parsed = parseRfqHeuristic(
+      `Requirements:\n24-port switch ×3\nCAT6 patch cord 1 m ×50\n- UPS 5 nos\nqty: 2 patch panels`,
+      "Networking"
+    );
+    expect(parsed.items.length).toBeGreaterThanOrEqual(4);
+    expect(parsed.items.find((i) => /switch/i.test(i.description || ""))?.quantity).toBe(3);
+    expect(parsed.items.find((i) => /patch cord/i.test(i.description || ""))?.quantity).toBe(50);
+  });
 });
